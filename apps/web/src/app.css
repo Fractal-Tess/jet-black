@@ -1,0 +1,11 @@
+@import "tailwindcss";
+@import "@workspace/ui/globals.css";
+@source "../../../packages/ui/src/**/*.{html,svelte,ts}";
+
+::selection {
+  background: color-mix(in oklch, var(--primary) 35%, transparent);
+}
+a {
+  color: inherit;
+  text-decoration: none;
+}

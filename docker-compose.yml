@@ -78,7 +78,7 @@ services:
         condition: service_healthy
     environment:
       HOSTNAME: 0.0.0.0
-      NEXT_PUBLIC_CONVEX_URL: ${NEXT_PUBLIC_CONVEX_URL:-}
+      PUBLIC_CONVEX_URL: ${PUBLIC_CONVEX_URL:-http://127.0.0.1:3210}
       NODE_ENV: production
       PORT: 3000
     healthcheck:

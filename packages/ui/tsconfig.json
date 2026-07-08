@@ -1,11 +1,9 @@
 {
-  "extends": "@workspace/typescript-config/react-library.json",
+  "extends": "./.svelte-kit/tsconfig.json",
   "compilerOptions": {
-    "baseUrl": ".",
-    "paths": {
-      "@workspace/ui/*": ["./src/*"]
-    }
-  },
-  "include": ["."],
-  "exclude": ["node_modules", "dist"]
+    "allowJs": true,
+    "checkJs": true,
+    "moduleResolution": "bundler",
+    "strict": true
+  }
 }

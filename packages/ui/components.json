@@ -1,23 +1,13 @@
 {
-  "$schema": "https://ui.shadcn.com/schema.json",
-  "style": "base-nova",
-  "rsc": true,
-  "tsx": true,
-  "tailwind": {
-    "config": "",
-    "css": "src/styles/globals.css",
-    "baseColor": "neutral",
-    "cssVariables": true
-  },
-  "iconLibrary": "lucide",
+  "$schema": "https://next.shadcn-svelte.com/schema.json",
+  "tailwind": { "css": "src/app.css", "baseColor": "neutral" },
   "aliases": {
-    "components": "@workspace/ui/components",
-    "utils": "@workspace/ui/lib/utils",
-    "hooks": "@workspace/ui/hooks",
-    "lib": "@workspace/ui/lib",
-    "ui": "@workspace/ui/components"
+    "components": "@lib/components",
+    "utils": "@lib/utils",
+    "ui": "@lib/components",
+    "hooks": "@lib/hooks",
+    "lib": "@lib"
   },
-  "rtl": false,
-  "menuColor": "default",
-  "menuAccent": "subtle"
+  "typescript": true,
+  "registry": "https://next.shadcn-svelte.com/registry"
 }

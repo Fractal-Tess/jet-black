@@ -10,21 +10,18 @@
     "build:web": "vite build",
     "preview": "vite preview",
     "lint": "bunx ultracite check .",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "svelte-check --tsconfig ./tsconfig.json"
   },
   "dependencies": {
     "@tauri-apps/api": "^2.11.0",
     "@workspace/ui": "workspace:*",
-    "react": "^19.2.6",
-    "react-dom": "^19.2.6"
+    "svelte": "^5.53.3"
   },
   "devDependencies": {
-    "@tailwindcss/postcss": "^4.3.0",
+    "@sveltejs/vite-plugin-svelte": "^7.0.0",
+    "@tailwindcss/vite": "^4.3.0",
     "@tauri-apps/cli": "^2.11.2",
-    "@types/react": "^19.2.15",
-    "@types/react-dom": "^19.2.3",
-    "@vitejs/plugin-react": "^6.0.2",
-    "@workspace/typescript-config": "workspace:*",
+    "svelte-check": "^4.4.3",
     "typescript": "^6.0.3",
     "vite": "^8.0.15"
   }

@@ -1,27 +1,27 @@
 {
-    "name": "react-monorepo",
-    "version": "0.1.0",
-    "private": true,
-    "scripts": {
-        "dev": "infisical run -- turbo dev",
-        "lint": "bunx turbo run lint",
-        "format": "bunx ultracite fix databases/convex"
-    },
-    "devDependencies": {
-        "@biomejs/biome": "2.4.16",
-        "@workspace/typescript-config": "workspace:*",
-        "lefthook": "^2.1.9",
-        "turbo": "^2.9.16",
-        "typescript": "6.0.3",
-        "ultracite": "7.8.1"
-    },
-    "packageManager": "bun@1.3.14",
-    "engines": {
-        "node": ">=20"
-    },
-    "workspaces": [
-        "apps/*",
-        "databases/*",
-        "packages/*"
-    ]
+  "name": "jet-black",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "dev": "infisical run -- turbo dev",
+    "lint": "bunx turbo run lint",
+    "format": "bunx ultracite fix databases/convex"
+  },
+  "devDependencies": {
+    "@biomejs/biome": "2.4.16",
+    "@workspace/typescript-config": "workspace:*",
+    "lefthook": "^2.1.9",
+    "turbo": "^2.9.16",
+    "typescript": "6.0.3",
+    "ultracite": "7.8.1"
+  },
+  "packageManager": "bun@1.3.14",
+  "engines": {
+    "node": ">=20"
+  },
+  "workspaces": [
+    "apps/*",
+    "databases/*",
+    "packages/*"
+  ]
 }

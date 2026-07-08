@@ -3,7 +3,7 @@
   "ui": "tui",
   "globalEnv": [
     "NODE_ENV",
-    "NEXT_PUBLIC_CONVEX_URL",
+    "PUBLIC_CONVEX_URL",
     "PLAYWRIGHT_BROWSERS_PATH",
     "PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH",
     "PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD",
@@ -13,7 +13,7 @@
     "build": {
       "dependsOn": ["^build"],
       "inputs": ["$TURBO_DEFAULT$", ".env*"],
-      "outputs": [".next/**", "!.next/cache/**"]
+      "outputs": [".svelte-kit/**", "build/**"]
     },
     "lint": {
       "dependsOn": ["^lint"]

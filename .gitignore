@@ -25,6 +25,7 @@ test-results/
 
 # Build Outputs
 .next/
+.svelte-kit/
 out/
 build
 dist
@@ -48,6 +49,7 @@ __pycache__/
 # Local agent artifacts
 .coex
 .codex
+references/
 
 # devenv
 .devenv/

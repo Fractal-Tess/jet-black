@@ -1,41 +1,37 @@
 {
-  "name": "web",
+  "name": "@workspace/web",
   "version": "0.1.0",
   "type": "module",
   "private": true,
   "scripts": {
-    "dev": "infisical run --path=/web -- next dev --hostname 0.0.0.0 --turbopack",
-    "build": "infisical run --path=/web -- next build",
+    "dev": "infisical run --path=/web -- vite dev --host 0.0.0.0",
+    "build": "infisical run --path=/web -- vite build",
     "lint": "bunx ultracite check .",
-    "start": "infisical run --path=/web -- next start",
+    "prepare": "svelte-kit sync",
+    "preview": "vite preview",
+    "start": "node build",
     "test": "infisical run --path=/web -- playwright test",
-    "typecheck": "infisical run --path=/web -- tsc --noEmit"
+    "typecheck": "infisical run --path=/web -- svelte-kit sync && svelte-check --tsconfig ./tsconfig.json"
   },
   "dependencies": {
     "@convex-dev/better-auth": "^0.12.2",
-    "@t3-oss/env-nextjs": "^0.13.11",
     "@workspace/convex": "workspace:*",
-    "@workspace/pocketbase": "workspace:*",
     "@workspace/shared": "workspace:*",
     "@workspace/ui": "workspace:*",
     "better-auth": "1.6.13",
     "convex": "^1.39.1",
-    "lucide-react": "^1.17.0",
-    "next": "16.2.6",
-    "next-themes": "^0.4.6",
-    "ogl": "^1.0.11",
-    "react": "^19.2.6",
-    "react-dom": "^19.2.6",
-    "zod": "^4.4.3",
-    "zustand": "^5.0.14"
+    "svelte": "^5.53.3",
+    "zod": "^4.4.3"
   },
   "devDependencies": {
     "@playwright/test": "^1.60.0",
-    "@tailwindcss/postcss": "^4.3.0",
+    "@sveltejs/adapter-node": "^5.5.4",
+    "@sveltejs/kit": "^2.53.0",
+    "@sveltejs/vite-plugin-svelte": "^7.0.0",
+    "@tailwindcss/vite": "^4.3.0",
     "@types/node": "^25.9.1",
-    "@types/react": "^19.2.15",
-    "@types/react-dom": "^19.2.3",
-    "@workspace/typescript-config": "workspace:*",
-    "typescript": "^6.0.3"
+    "svelte-check": "^4.4.3",
+    "typescript": "^6.0.3",
+    "vite": "^8.0.15"
   }
 }

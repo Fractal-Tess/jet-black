@@ -3,13 +3,12 @@
   "tasks": {
     "build": {
       "inputs": ["$TURBO_DEFAULT$", ".env*"],
-      "outputs": [".next/**", "!.next/cache/**"],
+      "outputs": [".svelte-kit/**", "build/**"],
       "env": [
         "BETTER_AUTH_SECRET",
         "BETTER_AUTH_TRUSTED_ORIGINS",
         "CONVEX_SITE_URL",
         "CONVEX_URL",
-        "NEXT_ALLOWED_DEV_ORIGINS",
         "SITE_URL"
       ]
     },

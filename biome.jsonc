@@ -2,10 +2,13 @@
   "$schema": "./node_modules/@biomejs/biome/configuration_schema.json",
   "extends": [
     "ultracite/biome/core",
-    "ultracite/biome/next",
-    "ultracite/biome/react",
     "ultracite/biome/vitest"
   ],
+  "css": {
+    "parser": {
+      "tailwindDirectives": true
+    }
+  },
   "files": {
     "includes": ["**", "!databases/pocketbase/pb_migrations/**", "!databases/pocketbase/pocketbase-types.ts", "!databases/convex/convex/_generated/**", "!databases/convex/convex/betterAuth/_generated/**", "!apps/desktop/src-tauri/gen/**"]
   },
@@ -24,5 +27,28 @@
         }
       }
     }
-  }
+  },
+  "overrides": [
+    {
+      "includes": ["**/*.svelte"],
+      "linter": {
+        "rules": {
+          "correctness": {
+            "noUnusedImports": "off",
+            "noUnusedVariables": "off"
+          }
+        }
+      }
+    },
+    {
+      "includes": ["packages/ui/src/lib/components/**/index.ts"],
+      "linter": {
+        "rules": {
+          "performance": {
+            "noBarrelFile": "off"
+          }
+        }
+      }
+    }
+  ]
 }

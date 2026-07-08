@@ -9,7 +9,7 @@ const AUTH_BACKEND_URL = "http://127.0.0.1:3211";
 const APP_ORIGIN = "http://127.0.0.1:3000";
 
 function uniqueEmail(prefix: string) {
-  return `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}@react-monorepo.local`;
+  return `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}@jet-black.local`;
 }
 
 async function isAuthBackendAvailable(request: APIRequestContext) {

@@ -6,9 +6,9 @@ Expected envs:
 
 - `CONVEX_URL`
 - `CONVEX_SITE_URL`
-- `NEXT_ALLOWED_DEV_ORIGINS` optional, comma-separated
+- `PUBLIC_CONVEX_URL` optional public deployment URL
 
-Env access in this app is centralized through `apps/web/env.ts` using `@t3-oss/env-nextjs`.
+Server env access uses SvelteKit's `$env/dynamic/private` module.
 
 Use the existing scripts:
 

@@ -24,8 +24,8 @@ ENV NODE_ENV=production
 ENV PORT=3000
 ENV HOSTNAME=0.0.0.0
 
-RUN bunx next build
+RUN bun run build
 
 EXPOSE 3000
 
-CMD ["bunx", "next", "start", "--hostname", "0.0.0.0", "--port", "3000"]
+CMD ["node", "build"]

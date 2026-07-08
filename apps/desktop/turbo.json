@@ -5,8 +5,8 @@
       "outputs": [
         "dist/**",
         "src-tauri/target/release/bundle/**",
-        "src-tauri/target/release/react-monorepo-desktop",
-        "src-tauri/target/release/react-monorepo-desktop.exe"
+        "src-tauri/target/release/jet-black-desktop",
+        "src-tauri/target/release/jet-black-desktop.exe"
       ]
     },
     "dev": {
