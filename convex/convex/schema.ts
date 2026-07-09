@@ -7,14 +7,6 @@ export default defineSchema(
       body: v.string(),
       source: v.string(),
     }),
-    scrapeRuns: defineTable({
-      createdAt: v.number(),
-      instruction: v.optional(v.string()),
-      mode: v.string(),
-      resultJson: v.string(),
-      summary: v.string(),
-      url: v.string(),
-    }).index("by_createdAt", ["createdAt"]),
   },
   { schemaValidation: true }
 );

@@ -1,31 +1,37 @@
-FROM oven/bun:1.3.12 AS deps
+FROM oven/bun:1.3.12 AS base
 
 WORKDIR /app
 
-COPY package.json bun.lock ./
-COPY apps/web/package.json apps/web/package.json
-COPY apps/worker/package.json apps/worker/package.json
-COPY databases/convex/package.json databases/convex/package.json
-COPY packages/shared/package.json packages/shared/package.json
-COPY packages/typescript-config/package.json packages/typescript-config/package.json
-COPY packages/ui/package.json packages/ui/package.json
+FROM base AS pruner
 
-RUN bun install --frozen-lockfile --ignore-scripts
-
-FROM deps AS runner
-
-WORKDIR /app
+RUN bun install --global turbo@2.9.16
 
 COPY . .
 
+RUN turbo prune @workspace/web --docker
+
+FROM base AS builder
+
+COPY --from=pruner /app/out/json/ .
+
+RUN bun install --frozen-lockfile --ignore-scripts
+
+COPY --from=pruner /app/out/full/ .
+
 WORKDIR /app/apps/web
 
+RUN bunx --bun vite build
+
+FROM base AS runner
+
+ENV HOST=0.0.0.0
 ENV NODE_ENV=production
 ENV PORT=3000
-ENV HOSTNAME=0.0.0.0
 
-RUN bun run build
+COPY --from=builder /app /app
+
+WORKDIR /app/apps/web
 
 EXPOSE 3000
 
-CMD ["node", "build"]
+CMD ["bun", "build/index.js"]

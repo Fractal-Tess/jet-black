@@ -1,6 +1,7 @@
 {
   "name": "@workspace/convex",
   "private": true,
+  "type": "module",
   "version": "0.1.0",
   "scripts": {
     "auth:generate": "cd convex/betterAuth && bunx @better-auth/cli generate -y",

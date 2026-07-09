@@ -53,6 +53,3 @@ references/
 
 # devenv
 .devenv/
-
-# PocketBase local data
-apps/pocketbase/pb_data/

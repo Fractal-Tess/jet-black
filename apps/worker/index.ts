@@ -23,7 +23,6 @@ export type HealthPayload = {
     configured: boolean;
     connected: boolean;
     recentMessages: number;
-    recentScrapes: number;
   };
   environment: string;
   healthy: boolean;
@@ -43,7 +42,6 @@ export function buildHealthPayload({
   convexConfigured,
   convexConnected,
   recentMessages,
-  recentScrapes,
   environment,
   databaseConfigured,
   databaseConnected,
@@ -52,7 +50,6 @@ export function buildHealthPayload({
   convexConfigured: boolean;
   convexConnected: boolean;
   recentMessages: number;
-  recentScrapes: number;
   environment: string;
   databaseConfigured: boolean;
   databaseConnected: boolean;
@@ -64,7 +61,6 @@ export function buildHealthPayload({
       configured: convexConfigured,
       connected: convexConnected,
       recentMessages,
-      recentScrapes,
     },
     environment,
     healthy:
@@ -83,20 +79,15 @@ export async function fetchConvexSummary(deploymentUrl?: string) {
     return {
       connected: false,
       recentMessages: 0,
-      recentScrapes: 0,
     };
   }
 
   const client = new ConvexHttpClient(deploymentUrl);
-  const [messages, scrapes] = await Promise.all([
-    client.query(api.messages.list, {}),
-    client.query(api.scrapes.listRecent, { limit: 4 }),
-  ]);
+  const messages = await client.query(api.messages.list, {});
 
   return {
     connected: true,
     recentMessages: messages.length,
-    recentScrapes: scrapes.length,
   };
 }
 
@@ -149,7 +140,6 @@ export async function buildRootMessage() {
     fetchConvexSummary(process.env.CONVEX_URL).catch(() => ({
       connected: false,
       recentMessages: 0,
-      recentScrapes: 0,
     })),
   ]);
 
@@ -177,14 +167,12 @@ export function createServer() {
           fetchConvexSummary(process.env.CONVEX_URL).catch(() => ({
             connected: false,
             recentMessages: 0,
-            recentScrapes: 0,
           })),
         ]);
         const payload = buildHealthPayload({
           convexConfigured: hasConvex,
           convexConnected: convexSummary.connected,
           recentMessages: convexSummary.recentMessages,
-          recentScrapes: convexSummary.recentScrapes,
           environment,
           databaseConfigured: hasDatabase,
           databaseConnected: databaseSummary.connected,

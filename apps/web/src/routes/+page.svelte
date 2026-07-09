@@ -17,7 +17,7 @@ let { data } = $props();
     <div class="pointer-events-none absolute -left-40 top-10 h-96 w-96 rounded-full bg-primary/10 blur-[120px]"></div>
     <div class="relative self-center">
       <p class="font-mono text-xs uppercase tracking-[0.3em] text-primary">SvelteKit · Convex · Bun</p>
-      <h1 class="mt-5 max-w-3xl text-5xl font-semibold leading-[0.98] tracking-tight md:text-7xl">A minimal starter for apps, auth, workers & scraping.</h1>
+      <h1 class="mt-5 max-w-3xl text-5xl font-semibold leading-[0.98] tracking-tight md:text-7xl">A minimal starter for apps, auth, and workers.</h1>
       <p class="mt-7 max-w-2xl text-lg leading-relaxed text-muted-foreground">Shared Svelte UI, server-rendered routes, Better Auth, and live Convex data in one focused workspace.</p>
       <div class="mt-9 flex gap-3">
         <a class="rounded-full bg-primary px-6 py-3 font-medium text-primary-foreground transition hover:-translate-y-0.5" href="/login">Get started</a>

@@ -28,7 +28,6 @@ describe("worker", () => {
         convexConfigured: false,
         convexConnected: false,
         recentMessages: 0,
-        recentScrapes: 0,
         environment: "test",
         databaseConfigured: false,
         databaseConnected: false,
@@ -40,7 +39,6 @@ describe("worker", () => {
         configured: false,
         connected: false,
         recentMessages: 0,
-        recentScrapes: 0,
       },
       environment: "test",
       healthy: true,
@@ -60,7 +58,6 @@ describe("worker", () => {
     await expect(fetchConvexSummary(undefined)).resolves.toEqual({
       connected: false,
       recentMessages: 0,
-      recentScrapes: 0,
     });
   });
 });

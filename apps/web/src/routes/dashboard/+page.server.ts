@@ -10,5 +10,5 @@ export const load = async ({ fetch }) => {
   if (!session?.user) {
     redirect(303, "/login");
   }
-  return { ...(await loadPreview(4)), user: session.user };
+  return { ...(await loadPreview()), user: session.user };
 };
