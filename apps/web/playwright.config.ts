@@ -1,21 +1,22 @@
 import { defineConfig, devices } from "@playwright/test";
 
-import { env } from "./env";
-
-const port = 3000;
-const chromiumExecutablePath = env.PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH;
+const port = 5173;
+const chromiumExecutablePath = process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH;
 const appOrigin = `http://127.0.0.1:${port}`;
 
 export default defineConfig({
+  fullyParallel: true,
   testDir: "./tests",
+  timeout: 30_000,
   use: {
     baseURL: appOrigin,
+    screenshot: "only-on-failure",
     trace: "on-first-retry",
   },
   webServer: {
-    command: `bun run dev -- --port ${port} --hostname 127.0.0.1`,
+    command: `bun run dev -- --port ${port} --strictPort`,
     port,
-    reuseExistingServer: false,
+    reuseExistingServer: true,
     timeout: 180_000,
   },
   projects: [

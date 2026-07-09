@@ -1,4 +1,5 @@
 <script lang="ts">
+import { onMount } from "svelte";
 import { goto } from "$app/navigation";
 import { authClient } from "$lib/auth-client";
 
@@ -9,7 +10,12 @@ let name = $state("");
 let email = $state("");
 let password = $state("");
 let error = $state("");
+let hydrated = $state(false);
 let submitting = $state(false);
+
+onMount(() => {
+  hydrated = true;
+});
 
 async function submit(event: SubmitEvent) {
   event.preventDefault();
@@ -60,7 +66,10 @@ function switchMode(nextMode: "sign-in" | "sign-up") {
   />
 </svelte:head>
 
-<main class="relative flex min-h-screen flex-col overflow-hidden bg-[#0d0e0e] text-[#f0f0ef]">
+<main
+  class="relative flex min-h-screen flex-col overflow-hidden bg-[#0d0e0e] text-[#f0f0ef]"
+  data-hydrated={hydrated}
+>
   <div
     aria-hidden="true"
     class="pointer-events-none absolute inset-0 bg-[radial-gradient(circle_at_50%_38%,rgba(255,184,0,0.045),transparent_28%)]"

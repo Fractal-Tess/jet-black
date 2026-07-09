@@ -6,7 +6,7 @@
   "scripts": {
     "auth:generate": "cd convex/betterAuth && bunx @better-auth/cli@1.4.21 generate -y",
     "data": "infisical run --path=/convex -- convex data --deployment local",
-    "dev": "infisical run --path=/convex -- convex dev --local",
+    "dev": "infisical run --path=/convex -- convex dev --local --local-cloud-port 3210 --local-site-port 3211",
     "dashboard": "infisical run --path=/convex -- convex dashboard --deployment local",
     "logs": "infisical run --path=/convex -- convex logs --deployment local",
     "lint": "bunx ultracite check .",
