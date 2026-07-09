@@ -18,9 +18,7 @@ RUN bun install --frozen-lockfile --ignore-scripts
 
 COPY --from=pruner /app/out/full/ .
 
-WORKDIR /app/apps/web
-
-RUN bunx --bun vite build
+RUN bunx turbo run build --filter=@workspace/web
 
 FROM base AS runner
 

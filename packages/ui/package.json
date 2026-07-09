@@ -4,6 +4,7 @@
   "type": "module",
   "private": true,
   "scripts": {
+    "build": "svelte-kit sync",
     "dev": "vite dev",
     "lint": "bunx ultracite check src svelte.config.js vite.config.ts",
     "prepare": "svelte-kit sync",

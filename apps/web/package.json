@@ -5,7 +5,7 @@
   "private": true,
   "scripts": {
     "dev": "infisical run --path=/web -- vite dev --host 0.0.0.0",
-    "build": "infisical run --path=/web -- vite build",
+    "build": "vite build",
     "lint": "bunx ultracite check .",
     "prepare": "svelte-kit sync",
     "preview": "vite preview",
