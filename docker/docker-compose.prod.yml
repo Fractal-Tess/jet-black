@@ -38,9 +38,6 @@ services:
       timeout: 5s
       retries: 30
       start_period: 10s
-    ports:
-      - "${CONVEX_PORT:-3210}:3210"
-      - "${CONVEX_SITE_PORT:-3211}:3211"
     volumes:
       - convex_credentials:/convex/data
 
@@ -88,9 +85,6 @@ services:
       timeout: 5s
       retries: 12
       start_period: 10s
-    ports:
-      - "${WEB_PORT:-3000}:3000"
-
 volumes:
   convex_credentials:
   convex_postgres_data:
