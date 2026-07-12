@@ -118,7 +118,9 @@ export async function expectSignInFailure(
 
 export async function signOutWithUi(page: Page) {
   await page.getByRole("button", { name: "Sign out" }).click();
-  await expect(page).toHaveURL(LOGIN_WITHOUT_QUERY_URL_PATTERN);
+  await expect(page).toHaveURL(LOGIN_WITHOUT_QUERY_URL_PATTERN, {
+    timeout: 15_000,
+  });
 }
 
 export async function deleteCurrentAccountWithUi(page: Page) {

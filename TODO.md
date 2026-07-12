@@ -97,16 +97,16 @@ Observed in `references/plane`:
 
 ## Phase 2: kanban MVP
 
-- [ ] Build Convex mutation to move an issue between states.
+- [x] Build Convex mutation path to move an issue between states.
 - [ ] Add `position` or `sortOrder` to issues for ordering inside a state.
 - [ ] Add mutation to reorder within a state.
 - [ ] Add mutation to reorder across states.
-- [ ] Build kanban board grouped by issue state.
-- [ ] Build Plane-style kanban card:
-  - [ ] Identifier.
-  - [ ] Title.
-  - [ ] Priority.
-  - [ ] State.
+- [x] Build kanban board grouped by issue state.
+- [x] Build Plane-style kanban card:
+  - [x] Identifier.
+  - [x] Title.
+  - [x] Priority.
+  - [x] State.
   - [ ] Assignee avatar placeholder.
   - [ ] Comment count.
   - [ ] Module/cycle badges once those exist.

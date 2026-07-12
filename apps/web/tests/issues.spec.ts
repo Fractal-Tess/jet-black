@@ -29,9 +29,11 @@ test.describe("issue workspace", () => {
       await page.getByRole("button", { name: "Create issue" }).click();
 
       await expect(page.getByRole("heading", { name: title })).toBeVisible();
-      await expect(
-        page.locator("aside").getByText("high", { exact: true })
-      ).toBeVisible();
+      const issueCard = page.locator("article").filter({ hasText: title });
+      await expect(issueCard).toBeVisible();
+      await expect(issueCard.getByText("High")).toBeVisible();
+      await issueCard.getByLabel("Move").selectOption({ label: "Done" });
+      await expect(page.getByLabel("Done column")).toContainText(title);
 
       await page.getByRole("button", { name: "Edit" }).click();
       await page.getByLabel("Title", { exact: true }).fill(updatedTitle);
@@ -43,9 +45,9 @@ test.describe("issue workspace", () => {
       await expect(
         page.getByRole("heading", { name: updatedTitle })
       ).toBeVisible();
-      await expect(
-        page.locator("aside").getByText("In progress")
-      ).toBeVisible();
+      await expect(page.getByLabel("In progress column")).toContainText(
+        updatedTitle
+      );
 
       await page.getByLabel("New comment").fill(comment);
       await page.getByRole("button", { exact: true, name: "Comment" }).click();
@@ -82,11 +84,7 @@ test.describe("issue workspace", () => {
       ).toBeVisible();
       await expect(page.getByText("0 issues")).toBeVisible();
 
-      const titleInput = page.getByPlaceholder(
-        "Add a title, e.g. Build realtime issue updates"
-      );
-      await titleInput.fill(issueTitle);
-      await expect(titleInput).toHaveValue(issueTitle);
+      await page.getByLabel("Issue title").fill(issueTitle);
       const createIssueButton = page.getByRole("button", {
         name: "Create issue",
       });

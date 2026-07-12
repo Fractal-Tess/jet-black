@@ -4,8 +4,8 @@ import { useAuth, useMutation, useQuery } from "convex-svelte";
 import { goto } from "$app/navigation";
 import { authClient } from "$lib/auth-client";
 import IssueDetail from "$lib/components/issues/IssueDetail.svelte";
-import IssueList from "$lib/components/issues/IssueList.svelte";
 import IssueStateSummary from "$lib/components/issues/IssueStateSummary.svelte";
+import KanbanBoard from "$lib/components/issues/KanbanBoard.svelte";
 import NewIssueForm from "$lib/components/issues/NewIssueForm.svelte";
 import type {
   Issue,
@@ -284,6 +284,17 @@ async function handleAddComment(body: string) {
   });
 }
 
+async function handleMoveIssue(issue: Issue, stateId: IssueState["_id"]) {
+  if (issue.stateId === stateId) {
+    return;
+  }
+
+  await updateIssue({
+    issueId: issue._id,
+    stateId,
+  });
+}
+
 async function handleCreateProject(input: { key: string; name: string }) {
   if (!viewerData?.activeWorkspace) {
     throw new Error("Workspace is still loading.");
@@ -441,8 +452,9 @@ async function handleSelectProject(nextProjectId: Project["_id"]) {
                   onCreate={handleCreateIssue}
                   project={activeProject}
                 />
-                <IssueList
+                <KanbanBoard
                   {issues}
+                  onMoveIssue={handleMoveIssue}
                   onSelect={async (issue) => {
                     selectedIssueId = issue._id;
 
@@ -457,6 +469,7 @@ async function handleSelectProject(nextProjectId: Project["_id"]) {
                     }
                   }}
                   {selectedIssueId}
+                  {states}
                 />
               </div>
 
