@@ -5,7 +5,12 @@ let { data } = $props();
 </script>
 
 <svelte:head>
-  <title>Issues · Jet Black</title>
+  <title>{data.module} · Jet Black</title>
 </svelte:head>
 
-<WorkspaceApp {data} />
+<WorkspaceApp
+  {data}
+  module={data.module}
+  projectId={data.projectId}
+  workspaceSlug={data.workspaceSlug}
+/>

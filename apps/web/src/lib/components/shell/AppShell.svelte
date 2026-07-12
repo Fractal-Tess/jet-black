@@ -3,8 +3,16 @@ import type { Snippet } from "svelte";
 import { goto } from "$app/navigation";
 import { authClient } from "$lib/auth-client";
 import type { Project, ViewerData } from "$lib/components/issues/types";
+import {
+  type ProjectModule,
+  projectModuleHref,
+  workspaceHref,
+  workspaceProjectsHref,
+} from "$lib/routes";
 
 let {
+  activeModule = "issues",
+  activeWorkspaceSlug,
   children,
   connected,
   creatingProject = false,
@@ -15,6 +23,8 @@ let {
   selectedProjectId,
   user,
 }: {
+  activeModule?: ProjectModule;
+  activeWorkspaceSlug?: string;
   children: Snippet;
   connected: boolean;
   creatingProject?: boolean;
@@ -45,6 +55,17 @@ const initials = $derived(
     .join("")
     .toUpperCase() ?? user.email.slice(0, 2).toUpperCase()
 );
+const selectedProject = $derived(
+  projects.find((project) => project._id === selectedProjectId) ?? null
+);
+const moduleLinks: { label: string; module: ProjectModule }[] = [
+  { label: "Issues", module: "issues" },
+  { label: "Intake", module: "intake" },
+  { label: "Cycles", module: "cycles" },
+  { label: "Modules", module: "modules" },
+  { label: "Views", module: "views" },
+  { label: "Pages", module: "pages" },
+];
 
 async function signOut() {
   signingOut = true;
@@ -143,7 +164,10 @@ async function createProject() {
       >
         ☰
       </button>
-      <a class="flex min-w-0 items-center gap-2" href="/dashboard">
+      <a
+        class="flex min-w-0 items-center gap-2"
+        href={activeWorkspaceSlug ? workspaceHref(activeWorkspaceSlug) : "/dashboard"}
+      >
         <span
           class="grid size-7 shrink-0 place-items-center rounded-md border border-amber-400/30 bg-amber-400/5"
         >
@@ -224,7 +248,7 @@ async function createProject() {
         </a>
         <a
           class="flex h-8 items-center gap-2 rounded-md bg-white/10 px-3 text-zinc-100"
-          href="/dashboard"
+          href={activeWorkspaceSlug ? workspaceHref(activeWorkspaceSlug) : "/dashboard"}
         >
           <span aria-hidden="true">⌂</span>
           Home
@@ -235,7 +259,9 @@ async function createProject() {
         <p class="mb-2 px-2 text-xs font-medium text-zinc-600">Workspace</p>
         <a
           class="flex h-8 items-center gap-2 rounded-md px-3 text-zinc-400 transition hover:bg-white/5 hover:text-zinc-200"
-          href="/dashboard"
+          href={activeWorkspaceSlug
+            ? workspaceProjectsHref(activeWorkspaceSlug)
+            : "/dashboard"}
         >
           <span aria-hidden="true">▣</span>
           Projects
@@ -298,20 +324,26 @@ async function createProject() {
         {/if}
         <div class="space-y-1">
           {#each projects as project (project._id)}
-            <button
+            <a
               class="flex h-8 w-full items-center gap-2 rounded-md px-3 text-left text-zinc-400 transition hover:bg-white/5 hover:text-zinc-200 {selectedProjectId ===
               project._id
                 ? 'bg-white/10 text-zinc-100'
                 : ''}"
+              href={activeWorkspaceSlug
+                ? projectModuleHref({
+                    module: "issues",
+                    projectId: project._id,
+                    workspaceSlug: activeWorkspaceSlug,
+                  })
+                : "/dashboard"}
               onclick={() => onSelectProject(project._id)}
-              type="button"
             >
               <span
                 class="size-2 rounded-sm"
                 style:background-color={project.color}
               ></span>
               <span class="truncate">{project.name}</span>
-            </button>
+            </a>
           {:else}
             <div
               class="rounded-md border border-dashed border-white/10 px-3 py-4 text-xs leading-5 text-zinc-600"
@@ -321,6 +353,44 @@ async function createProject() {
           {/each}
         </div>
       </div>
+
+      {#if activeWorkspaceSlug && selectedProject}
+        <div>
+          <p class="mb-2 px-2 text-xs font-medium text-zinc-600">
+            {selectedProject.name}
+          </p>
+          <div class="space-y-1">
+            {#each moduleLinks as item (item.module)}
+              <a
+                class="flex h-8 items-center gap-2 rounded-md px-3 text-zinc-400 transition hover:bg-white/5 hover:text-zinc-200 {activeModule ===
+                item.module
+                  ? 'bg-white/10 text-zinc-100'
+                  : ''}"
+                href={projectModuleHref({
+                  module: item.module,
+                  projectId: selectedProject._id,
+                  workspaceSlug: activeWorkspaceSlug,
+                })}
+              >
+                <span aria-hidden="true">
+                  {item.module === "issues"
+                    ? "□"
+                    : item.module === "intake"
+                      ? "◇"
+                      : item.module === "cycles"
+                        ? "◌"
+                        : item.module === "modules"
+                          ? "▦"
+                          : item.module === "views"
+                            ? "◫"
+                            : "≡"}
+                </span>
+                {item.label}
+              </a>
+            {/each}
+          </div>
+        </div>
+      {/if}
     </nav>
 
     <div class="border-t border-white/10 p-3">

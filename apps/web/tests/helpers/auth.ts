@@ -3,17 +3,23 @@ import { expect, type Page } from "@playwright/test";
 export const DEFAULT_PASSWORD = "DevPassword123!";
 export const WRONG_PASSWORD = "WrongPassword123!";
 export const DASHBOARD_URL_PATTERN = /\/dashboard$/;
+export const AUTHENTICATED_APP_URL_PATTERN =
+  /\/(?:dashboard|workspace\/[^/]+(?:\/.*)?)$/;
 export const LOGIN_URL_PATTERN = /\/login(?:\?.*)?$/;
 export const LOGIN_WITHOUT_QUERY_URL_PATTERN = /\/login$/;
 export const PROTECTED_REDIRECT_URL_PATTERN =
   /\/login\?returnTo=(?:%2F|\/)dashboard$/;
+export const WORKSPACE_PROJECT_MODULE_URL_PATTERN =
+  /\/workspace\/[^/]+\/projects\/[^/]+\/issues$/;
 
 export function uniqueEmail(prefix: string) {
   return `${prefix}-${crypto.randomUUID()}@jet-black.local`;
 }
 
 export async function waitForHydration(page: Page) {
-  await expect(page.locator("[data-hydrated='true']")).toBeAttached();
+  await expect(page.locator("main[data-hydrated='true']")).toBeAttached();
+  await expect(page.getByLabel("Email")).toBeVisible();
+  await expect(page.getByLabel("Password")).toBeVisible();
 }
 
 export async function waitForDashboardReady(page: Page) {
@@ -22,7 +28,21 @@ export async function waitForDashboardReady(page: Page) {
   ).toBeVisible({
     timeout: 15_000,
   });
-  await expect(page.getByLabel("Issue title")).toBeVisible({
+
+  const issueTitle = page.getByLabel("Issue title");
+  const createDefaultWorkspace = page.getByRole("button", {
+    name: "Create default workspace",
+  });
+
+  try {
+    await expect(issueTitle).toBeVisible({ timeout: 10_000 });
+    return;
+  } catch {
+    await expect(createDefaultWorkspace).toBeVisible();
+    await createDefaultWorkspace.click({ force: true });
+  }
+
+  await expect(issueTitle).toBeVisible({
     timeout: 15_000,
   });
 }
@@ -31,6 +51,7 @@ export async function openCreateAccountMode(page: Page) {
   await page.goto("/login");
   await waitForHydration(page);
   await page.getByRole("button", { name: "Create an account" }).first().click();
+  await expect(page.getByLabel("Name")).toBeVisible();
 }
 
 export async function createAccountWithUi(
@@ -50,7 +71,7 @@ export async function createAccountWithUi(
   await page.getByLabel("Email").fill(email);
   await page.getByLabel("Password").fill(password);
   await page.getByRole("button", { name: "Create account" }).click();
-  await expect(page).toHaveURL(DASHBOARD_URL_PATTERN);
+  await expect(page).toHaveURL(AUTHENTICATED_APP_URL_PATTERN);
   await waitForDashboardReady(page);
 
   return { email, password };
@@ -65,7 +86,7 @@ export async function signInWithUi(
 ) {
   await page.goto("/login");
 
-  if (DASHBOARD_URL_PATTERN.test(page.url())) {
+  if (AUTHENTICATED_APP_URL_PATTERN.test(page.url())) {
     await waitForDashboardReady(page);
     return;
   }
@@ -74,7 +95,7 @@ export async function signInWithUi(
   await page.getByLabel("Email").fill(input.email);
   await page.getByLabel("Password").fill(input.password);
   await page.getByRole("button", { name: "Sign in", exact: true }).click();
-  await expect(page).toHaveURL(DASHBOARD_URL_PATTERN);
+  await expect(page).toHaveURL(AUTHENTICATED_APP_URL_PATTERN);
   await waitForDashboardReady(page);
 }
 
@@ -102,8 +123,12 @@ export async function signOutWithUi(page: Page) {
 
 export async function deleteCurrentAccountWithUi(page: Page) {
   await page.getByRole("button", { name: "Delete account" }).click();
-  await page.getByRole("button", { name: "Confirm delete account" }).click();
-  await expect(page).toHaveURL(LOGIN_WITHOUT_QUERY_URL_PATTERN);
+  const confirmDelete = page.getByRole("button", {
+    name: "Confirm delete account",
+  });
+  await expect(confirmDelete).toBeVisible();
+  await confirmDelete.click({ force: true });
+  await expect(page).toHaveURL(LOGIN_URL_PATTERN);
 }
 
 export async function cleanupAccountWithUi(
@@ -122,5 +147,6 @@ export async function cleanupAccountWithUi(
     await signInWithUi(page, account);
   }
 
+  await expect(deleteButton).toBeVisible();
   await deleteCurrentAccountWithUi(page);
 }

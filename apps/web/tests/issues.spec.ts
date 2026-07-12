@@ -71,23 +71,33 @@ test.describe("issue workspace", () => {
       await page.getByLabel("Project key").fill(projectKey);
       await page.locator("[data-testid='create-project-submit']").click();
 
-      await expect(page.locator("aside").getByText(projectName)).toBeVisible({
-        timeout: 15_000,
+      const projectLink = page.getByRole("link", {
+        exact: true,
+        name: projectName,
       });
-      await page.locator("aside").getByText(projectName).click();
+      await expect(projectLink).toBeVisible({ timeout: 15_000 });
+      await projectLink.click();
       await expect(
         page.getByRole("heading", { name: projectName }).first()
       ).toBeVisible();
       await expect(page.getByText("0 issues")).toBeVisible();
 
-      await page.getByLabel("Issue title").fill(issueTitle);
-      await page.getByRole("button", { name: "Create issue" }).click();
+      const titleInput = page.getByPlaceholder(
+        "Add a title, e.g. Build realtime issue updates"
+      );
+      await titleInput.fill(issueTitle);
+      await expect(titleInput).toHaveValue(issueTitle);
+      const createIssueButton = page.getByRole("button", {
+        name: "Create issue",
+      });
+      await expect(createIssueButton).toBeEnabled();
+      await createIssueButton.click();
 
       await expect(
         page.getByRole("heading", { name: issueTitle })
       ).toBeVisible();
       await expect(
-        page.locator("aside").getByText(`${projectKey}-1`)
+        page.getByText(`${projectKey.toUpperCase()}-1`).first()
       ).toBeVisible();
     } finally {
       await cleanupAccountWithUi(page, account);
