@@ -5,7 +5,6 @@ A full-stack Svelte workspace with SvelteKit, a shared shadcn-svelte-ready UI pa
 ## Stack
 
 - `apps/web`: SvelteKit app with Better Auth and Convex data.
-- `apps/worker`: Bun HTTP worker.
 - `convex`: standalone workspace for Convex schema, functions, auth, and the production migrator.
 - `packages/shared`: shared TypeScript helpers.
 - `packages/ui`: shared Svelte 5 components and Tailwind theme.

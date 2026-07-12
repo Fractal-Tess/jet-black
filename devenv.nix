@@ -61,7 +61,6 @@
 
   processes = {
     web.exec = "bun run --cwd apps/web dev";
-    worker.exec = "bun run --cwd apps/worker dev";
     convex.exec = "bun run --cwd convex dev";
   };
 }

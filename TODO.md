@@ -2,7 +2,7 @@
 
 Goal: build a lean Plane-style project tracker with realtime Convex data, keeping the product surface familiar while avoiding Plane's heavier backend, workers, API service, caches, and sync layers.
 
-Stack note: the current app is SvelteKit + Convex. The user mentioned Next.js in the latest planning request. Confirm before implementation whether to keep the current SvelteKit app or migrate the web app to Next.js. The product backlog below is framework-independent except for UI wiring.
+Stack note: the app is SvelteKit + Convex. The earlier Next.js mention was a misstatement; continue implementing in SvelteKit.
 
 ## Non-negotiable product constraints
 
@@ -57,8 +57,8 @@ Observed in `references/plane`:
 
 ## Phase 0: product and stack cleanup
 
-- [ ] Decide SvelteKit vs Next.js before adding routes.
-- [ ] Remove leftover worker package if still present and unused.
+- [x] Decide SvelteKit vs Next.js before adding routes.
+- [x] Remove leftover worker package if still present and unused.
 - [ ] Make the shell route structure match the product model:
   - [ ] `/` redirects based on auth.
   - [ ] `/login`
