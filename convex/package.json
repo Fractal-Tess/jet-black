@@ -11,7 +11,7 @@
     "logs": "infisical run --path=/convex -- convex logs --deployment local",
     "lint": "bunx ultracite check .",
     "format": "bunx ultracite fix .",
-    "seed": "infisical run --path=/convex -- convex run init:seed '{}' --deployment local",
+    "seed": "infisical run --path=/convex -- convex dev --local --local-cloud-port 3210 --local-site-port 3211 --once --run init:seed",
     "test": "infisical run --path=/convex -- bun test",
     "typecheck": "infisical run --path=/convex -- tsc --noEmit && infisical run --path=/convex -- tsc -p convex"
   },

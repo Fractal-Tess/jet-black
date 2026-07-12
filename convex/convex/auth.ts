@@ -4,7 +4,7 @@ import type { BetterAuthOptions } from "better-auth";
 import { betterAuth } from "better-auth/minimal";
 import { ConvexError } from "convex/values";
 
-import { components } from "./_generated/api";
+import { components, internal } from "./_generated/api";
 import type { DataModel } from "./_generated/dataModel";
 import { query } from "./_generated/server";
 import authConfig from "./auth.config";
@@ -12,15 +12,24 @@ import authSchema from "./betterAuth/schema";
 
 const DEFAULT_LOCAL_AUTH_SECRET =
   "7VqVpUDmlFBw6VgsQIbEcXfq8Zli81fLL/FzYEa2LtI=";
-const DEFAULT_LOCAL_SITE_URL = "http://127.0.0.1:3000";
+const DEFAULT_LOCAL_SITE_URL = "http://127.0.0.1:5173";
 const DEFAULT_TRUSTED_ORIGINS = [
   "http://127.0.0.1:3000",
   "http://127.0.0.1:3100",
+  "http://127.0.0.1:5173",
   "http://localhost:3000",
   "http://localhost:3100",
+  "http://localhost:5173",
   "http://vd.netbird.cloud:3000",
   "https://vd.netbird.cloud",
 ] as const;
+
+type CleanupMutationRunner = {
+  runMutation: (
+    mutation: typeof internal.mutations.accountCleanup.deleteForUser,
+    args: { userId: string }
+  ) => Promise<unknown>;
+};
 
 function getBaseUrl() {
   return process.env.SITE_URL ?? DEFAULT_LOCAL_SITE_URL;
@@ -84,6 +93,23 @@ export const createAuthOptions = (ctx: GenericCtx<DataModel>) =>
     emailAndPassword: {
       enabled: true,
       requireEmailVerification: false,
+    },
+    user: {
+      deleteUser: {
+        enabled: true,
+        beforeDelete: async (user) => {
+          if (!("runMutation" in ctx)) {
+            return;
+          }
+
+          await (ctx as CleanupMutationRunner).runMutation(
+            internal.mutations.accountCleanup.deleteForUser,
+            {
+              userId: user.id,
+            }
+          );
+        },
+      },
     },
     plugins: [convex({ authConfig })],
   }) satisfies BetterAuthOptions;

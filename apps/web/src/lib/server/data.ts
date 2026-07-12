@@ -10,7 +10,7 @@ export async function loadPreview() {
 
   try {
     const client = new ConvexHttpClient(url);
-    const messages = await client.query(api.messages.list, {});
+    const messages = await client.query(api.queries.messages.list, {});
     return { messages, connected: true };
   } catch {
     return { messages: [], connected: false };

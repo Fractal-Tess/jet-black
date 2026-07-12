@@ -1,12 +1,14 @@
-import { defineSchema, defineTable } from "convex/server";
-import { v } from "convex/values";
+import { defineSchema } from "convex/server";
+
+import { issueTables } from "./schema/issues";
+import { messageTables } from "./schema/messages";
+import { workspaceTables } from "./schema/workspaces";
 
 export default defineSchema(
   {
-    messages: defineTable({
-      body: v.string(),
-      source: v.string(),
-    }),
+    ...issueTables,
+    ...messageTables,
+    ...workspaceTables,
   },
   { schemaValidation: true }
 );

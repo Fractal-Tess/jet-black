@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 
-import { buildSeedMessage, normalizeMessageBody } from "./messages";
+import { buildSeedMessage, normalizeMessageBody } from "./lib/messages";
 
 describe("convex messages helpers", () => {
   test("normalizes whitespace", () => {

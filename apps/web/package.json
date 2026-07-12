@@ -20,6 +20,7 @@
     "@workspace/ui": "workspace:*",
     "better-auth": "1.6.13",
     "convex": "^1.39.1",
+    "convex-svelte": "^0.14.0",
     "svelte": "^5.53.3",
     "zod": "^4.4.3"
   },

@@ -83,7 +83,7 @@ export async function fetchConvexSummary(deploymentUrl?: string) {
   }
 
   const client = new ConvexHttpClient(deploymentUrl);
-  const messages = await client.query(api.messages.list, {});
+  const messages = await client.query(api.queries.messages.list, {});
 
   return {
     connected: true,
