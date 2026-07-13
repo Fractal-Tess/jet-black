@@ -64,6 +64,7 @@ const ensurePersonalWorkspace = useMutation(
 const createIssue = useMutation(api.mutations.issues.create);
 const updateIssue = useMutation(api.mutations.issues.update);
 const moveIssue = useMutation(api.mutations.issues.move);
+const archiveIssue = useMutation(api.mutations.issues.archive);
 const addAttachment = useMutation(api.mutations.attachments.addLink);
 const createComment = useMutation(api.mutations.comments.create);
 const createLabel = useMutation(api.mutations.labels.create);
@@ -79,6 +80,7 @@ let ensuredWorkspace = $state(false);
 let checkingConvexToken = $state(false);
 let convexTokenReady = $state(false);
 let leavingAuthenticatedSession = $state(false);
+let issueSearch = $state("");
 
 const viewer = useQuery(api.queries.workspaces.viewer, () =>
   auth.isAuthenticated && convexTokenReady && !leavingAuthenticatedSession
@@ -117,6 +119,20 @@ const labelsQuery = useQuery(api.queries.labels.listForProject, () =>
     : "skip"
 );
 const issues = $derived((issuesQuery.data as Issue[] | undefined) ?? []);
+const filteredIssues = $derived(
+  issues.filter((issue) => {
+    const search = issueSearch.trim().toLowerCase();
+
+    if (!search) {
+      return true;
+    }
+
+    return (
+      issue.title.toLowerCase().includes(search) ||
+      issue.identifier.toLowerCase().includes(search)
+    );
+  })
+);
 const states = $derived((statesQuery.data as IssueState[] | undefined) ?? []);
 const labels = $derived((labelsQuery.data as IssueLabel[] | undefined) ?? []);
 const selectedIssue = $derived(
@@ -381,6 +397,27 @@ async function handleMoveIssue(
   });
 }
 
+async function handleArchiveIssue() {
+  if (!(activeProject && selectedIssue)) {
+    return;
+  }
+
+  await archiveIssue({
+    issueId: selectedIssue._id,
+  });
+  selectedIssueId = undefined;
+
+  if (viewerData?.activeWorkspace) {
+    await goto(
+      projectModuleHref({
+        module: "issues",
+        projectId: activeProject._id,
+        workspaceSlug: viewerData.activeWorkspace.slug,
+      })
+    );
+  }
+}
+
 async function handleCreateProject(input: { key: string; name: string }) {
   if (!viewerData?.activeWorkspace) {
     throw new Error("Workspace is still loading.");
@@ -529,7 +566,18 @@ async function handleSelectProject(nextProjectId: Project["_id"]) {
           />
         {:else}
           <div class="space-y-5">
-            <IssueStateSummary {issues} {states} />
+            <div class="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
+              <IssueStateSummary issues={filteredIssues} {states} />
+              <label class="min-w-0 lg:w-72">
+                <span class="sr-only">Search issues</span>
+                <input
+                  bind:value={issueSearch}
+                  class="h-10 w-full rounded-lg border border-white/10 bg-[#101111] px-3 font-mono text-xs text-zinc-100 outline-none transition placeholder:text-zinc-600 focus:border-amber-400/60"
+                  placeholder="Search issue title or ID"
+                  type="search"
+                />
+              </label>
+            </div>
 
             <div class="grid gap-5 xl:grid-cols-[minmax(0,1fr)_420px]">
               <div class="space-y-5">
@@ -539,7 +587,7 @@ async function handleSelectProject(nextProjectId: Project["_id"]) {
                   project={activeProject}
                 />
                 <KanbanBoard
-                  {issues}
+                  issues={filteredIssues}
                   onMoveIssue={handleMoveIssue}
                   onQuickCreate={handleQuickCreateIssue}
                   onReorderIssue={handleMoveIssue}
@@ -567,6 +615,7 @@ async function handleSelectProject(nextProjectId: Project["_id"]) {
                 issue={selectedIssue}
                 {labels}
                 onAddAttachment={handleAddAttachment}
+                onArchiveIssue={handleArchiveIssue}
                 onAddComment={handleAddComment}
                 onCreateLabel={handleCreateLabel}
                 onToggleLabel={handleToggleLabel}

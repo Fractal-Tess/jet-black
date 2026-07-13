@@ -158,6 +158,51 @@ test.describe("issue workspace", () => {
     }
   });
 
+  test("searches and archives issues from the board", async ({ page }) => {
+    const account = await createAccountWithUi(page, {
+      name: "Archive User",
+      prefix: "issues-archive",
+    });
+    const archiveTitle = `Archive issue ${crypto.randomUUID()}`;
+    const seededTitle = "Wire realtime issue updates";
+
+    try {
+      const archiveCard = page.locator("article").filter({
+        hasText: archiveTitle,
+      });
+      const seededCard = page.locator("article").filter({
+        hasText: seededTitle,
+      });
+
+      await page.getByLabel("Quick issue title for Todo").fill(archiveTitle);
+      await page.getByRole("button", { name: "Add issue to Todo" }).click();
+
+      await expect(archiveCard).toBeVisible({ timeout: 10_000 });
+
+      await page.getByLabel("Search issues").fill(archiveTitle);
+      await expect(archiveCard).toBeVisible({ timeout: 10_000 });
+      await expect(seededCard).toBeHidden({ timeout: 10_000 });
+
+      await archiveCard
+        .getByRole("button")
+        .first()
+        .click({ force: true, timeout: 10_000 });
+      await expect(
+        page.getByRole("heading", { name: archiveTitle })
+      ).toBeVisible({ timeout: 10_000 });
+      await page
+        .getByRole("button", { exact: true, name: "Archive" })
+        .click({ force: true, timeout: 10_000 });
+
+      await expect(archiveCard).toBeHidden({ timeout: 10_000 });
+      await page.getByLabel("Search issues").fill("");
+      await expect(seededCard).toBeVisible({ timeout: 10_000 });
+      await expect(archiveCard).toBeHidden({ timeout: 10_000 });
+    } finally {
+      await cleanupAccountWithUi(page, account);
+    }
+  });
+
   test("moves an issue between states with drag and drop", async ({ page }) => {
     const account = await createAccountWithUi(page, {
       name: "Drag User",

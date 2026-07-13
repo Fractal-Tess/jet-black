@@ -14,6 +14,7 @@ let {
   issue,
   labels,
   onAddAttachment,
+  onArchiveIssue,
   onAddComment,
   onCreateLabel,
   onToggleLabel,
@@ -25,6 +26,7 @@ let {
   issue: Issue | null;
   labels: IssueLabel[];
   onAddAttachment: (input: { name: string; url: string }) => Promise<void>;
+  onArchiveIssue: () => Promise<void>;
   onAddComment: (body: string) => Promise<void>;
   onCreateLabel: (input: { color?: string; name: string }) => Promise<void>;
   onToggleLabel: (labelId: IssueLabel["_id"]) => Promise<void>;
@@ -55,6 +57,7 @@ let priority = $state<IssuePriority>("none");
 let startDate = $state("");
 let stateId = $state<IssueState["_id"] | undefined>();
 let targetDate = $state("");
+let archiving = $state(false);
 
 $effect(() => {
   if (!issue) {
@@ -145,6 +148,16 @@ async function addAttachment() {
 function issueHasLabel(labelId: IssueLabel["_id"]) {
   return issue?.labels.some((label) => label._id === labelId) ?? false;
 }
+
+async function archiveIssue() {
+  archiving = true;
+
+  try {
+    await onArchiveIssue();
+  } finally {
+    archiving = false;
+  }
+}
 </script>
 
 <aside class="rounded-xl border border-white/10 bg-[#151616]">
@@ -157,13 +170,23 @@ function issueHasLabel(labelId: IssueLabel["_id"]) {
             {editing ? "Edit issue" : issue.title}
           </h2>
         </div>
-        <button
-          class="h-8 rounded-md border border-white/10 px-3 text-xs text-zinc-400 transition hover:bg-white/[0.04] hover:text-zinc-100"
-          onclick={() => (editing = !editing)}
-          type="button"
-        >
-          {editing ? "Cancel" : "Edit"}
-        </button>
+        <div class="flex items-center gap-2">
+          <button
+            class="h-8 rounded-md border border-white/10 px-3 text-xs text-zinc-400 transition hover:bg-white/[0.04] hover:text-zinc-100"
+            onclick={() => (editing = !editing)}
+            type="button"
+          >
+            {editing ? "Cancel" : "Edit"}
+          </button>
+          <button
+            class="h-8 rounded-md border border-red-400/20 px-3 text-xs text-red-300 transition hover:bg-red-400/10 disabled:opacity-50"
+            disabled={archiving}
+            onclick={archiveIssue}
+            type="button"
+          >
+            {archiving ? "Archiving…" : "Archive"}
+          </button>
+        </div>
       </div>
     </div>
 

@@ -184,3 +184,30 @@ export const move = mutation({
     return args.issueId;
   },
 });
+
+export const archive = mutation({
+  args: {
+    issueId: v.id("issues"),
+  },
+  handler: async (ctx, args) => {
+    const user = await requireAuthUser(ctx);
+    const issue = await requireIssueAccess(ctx, user._id, args.issueId);
+
+    if (issue.archivedAt) {
+      return args.issueId;
+    }
+
+    await ctx.db.patch(args.issueId, {
+      archivedAt: Date.now(),
+      updatedAt: Date.now(),
+    });
+    await ctx.db.insert("issueActivities", {
+      actorUserId: user._id,
+      issueId: args.issueId,
+      message: "archived the issue",
+      workspaceId: issue.workspaceId,
+    });
+
+    return args.issueId;
+  },
+});

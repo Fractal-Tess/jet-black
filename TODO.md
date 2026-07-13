@@ -153,8 +153,8 @@ Observed in `references/plane`:
   - [x] Dates.
   - [ ] Comments.
   - [ ] Activity.
-- [ ] Add issue delete/archive.
-- [ ] Add issue search by title/identifier.
+- [x] Add issue delete/archive.
+- [x] Add issue search by title/identifier.
 - [ ] Add e2e coverage for all issue properties.
 
 ## Phase 4: list view

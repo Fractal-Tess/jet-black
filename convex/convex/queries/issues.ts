@@ -45,9 +45,10 @@ export const listForProject = query({
       )
       .order("desc")
       .collect();
+    const activeIssues = issues.filter((issue) => !issue.archivedAt);
 
     return await Promise.all(
-      issues.map(async (issue) => ({
+      activeIssues.map(async (issue) => ({
         ...issue,
         commentCount: await commentCountForIssue(ctx, issue._id),
         labels: await labelsForIssue(ctx, issue._id),
