@@ -66,7 +66,9 @@ test.describe("email and password authentication", () => {
       });
 
       await signInWithUi(page, account);
-      await page.getByLabel("Issue title").fill(issueTitle);
+      await page
+        .getByRole("textbox", { exact: true, name: "Issue title" })
+        .fill(issueTitle);
       await page
         .getByLabel("Issue description")
         .fill("Created by the authenticated lifecycle e2e flow.");

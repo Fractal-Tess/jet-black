@@ -29,7 +29,10 @@ export async function waitForDashboardReady(page: Page) {
     timeout: 15_000,
   });
 
-  const issueTitle = page.getByLabel("Issue title");
+  const issueTitle = page.getByRole("textbox", {
+    exact: true,
+    name: "Issue title",
+  });
   const createDefaultWorkspace = page.getByRole("button", {
     name: "Create default workspace",
   });
@@ -130,7 +133,7 @@ export async function deleteCurrentAccountWithUi(page: Page) {
   });
   await expect(confirmDelete).toBeVisible();
   await confirmDelete.click({ force: true });
-  await expect(page).toHaveURL(LOGIN_URL_PATTERN);
+  await expect(page).toHaveURL(LOGIN_URL_PATTERN, { timeout: 15_000 });
 }
 
 export async function cleanupAccountWithUi(

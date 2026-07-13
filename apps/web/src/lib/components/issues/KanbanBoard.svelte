@@ -4,6 +4,7 @@ import type { Issue, IssueState } from "./types";
 let {
   issues,
   onMoveIssue,
+  onQuickCreate,
   onReorderIssue,
   onSelect,
   selectedIssueId,
@@ -15,6 +16,7 @@ let {
     stateId: IssueState["_id"],
     position: number
   ) => Promise<void>;
+  onQuickCreate: (state: IssueState, title: string) => Promise<void>;
   onReorderIssue: (
     issue: Issue,
     stateId: IssueState["_id"],
@@ -24,6 +26,9 @@ let {
   selectedIssueId?: string;
   states: IssueState[];
 } = $props();
+
+let creatingStateId = $state<IssueState["_id"] | null>(null);
+let quickTitles = $state<Record<string, string>>({});
 
 const priorityLabel: Record<Issue["priority"], string> = {
   high: "High",
@@ -95,6 +100,31 @@ function assigneeInitials(issue: Issue) {
 function commentLabel(commentCount: number) {
   return `${commentCount} ${commentCount === 1 ? "comment" : "comments"}`;
 }
+
+function quickTitleForState(stateId: IssueState["_id"]) {
+  return quickTitles[stateId] ?? "";
+}
+
+function setQuickTitleForState(stateId: IssueState["_id"], title: string) {
+  quickTitles = { ...quickTitles, [stateId]: title };
+}
+
+async function createIssueInState(state: IssueState) {
+  const title = quickTitleForState(state._id).trim();
+
+  if (!title) {
+    return;
+  }
+
+  creatingStateId = state._id;
+
+  try {
+    await onQuickCreate(state, title);
+    setQuickTitleForState(state._id, "");
+  } finally {
+    creatingStateId = null;
+  }
+}
 </script>
 
 <section class="rounded-xl border border-white/10 bg-[#151616]">
@@ -135,6 +165,38 @@ function commentLabel(commentCount: number) {
         </div>
 
         <div class="space-y-2 p-2">
+          <form
+            class="rounded-lg border border-dashed border-white/[0.08] bg-black/10 p-2"
+            onsubmit={(event) => {
+              event.preventDefault();
+              createIssueInState(state);
+            }}
+          >
+            <label class="block">
+              <span class="sr-only">Quick issue title for {state.name}</span>
+              <input
+                aria-label={`Quick issue title for ${state.name}`}
+                class="h-8 w-full rounded-md border border-white/10 bg-[#0f1010] px-2 text-xs text-zinc-100 outline-none transition placeholder:text-zinc-700 focus:border-amber-400/60"
+                oninput={(event) =>
+                  setQuickTitleForState(state._id, event.currentTarget.value)}
+                placeholder={`Add to ${state.name}`}
+                value={quickTitleForState(state._id)}
+              />
+            </label>
+            <button
+              class="mt-2 h-7 w-full rounded-md border border-white/10 text-[11px] text-zinc-400 transition hover:bg-white/[0.04] hover:text-zinc-100 disabled:opacity-40"
+              disabled={
+                creatingStateId === state._id ||
+                !quickTitleForState(state._id).trim()
+              }
+              type="submit"
+            >
+              {creatingStateId === state._id
+                ? "Adding…"
+                : `Add issue to ${state.name}`}
+            </button>
+          </form>
+
           {#each stateIssues as issue, index (issue._id)}
             <article
               class="rounded-lg border border-white/[0.06] bg-white/[0.025] p-3 shadow-lg shadow-black/10 transition hover:-translate-y-0.5 hover:border-white/15 hover:bg-white/[0.04] {selectedIssueId ===

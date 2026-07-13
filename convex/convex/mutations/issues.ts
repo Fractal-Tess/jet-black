@@ -22,6 +22,7 @@ export const create = mutation({
     description: v.optional(v.string()),
     priority: priorityValidator,
     projectId: v.id("projects"),
+    stateId: v.optional(v.id("issueStates")),
     title: v.string(),
   },
   handler: async (ctx, args) => {
@@ -35,7 +36,13 @@ export const create = mutation({
 
     const now = Date.now();
     const sequenceId = await getNextSequenceId(ctx, project._id);
-    const stateId = await getDefaultStateId(ctx, project._id);
+    const stateId = args.stateId ?? (await getDefaultStateId(ctx, project._id));
+    const state = await ctx.db.get(stateId);
+
+    if (!state || state.projectId !== project._id) {
+      throw new ConvexError("Invalid issue state");
+    }
+
     const issueId = await ctx.db.insert("issues", {
       createdByUserId: user._id,
       description: args.description?.trim() || undefined,

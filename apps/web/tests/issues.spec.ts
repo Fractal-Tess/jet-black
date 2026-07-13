@@ -24,7 +24,9 @@ test.describe("issue workspace", () => {
       await expect(
         page.getByRole("heading", { name: "Good to see you, Issue" })
       ).toBeVisible();
-      await page.getByLabel("Issue title").fill(title);
+      await page
+        .getByRole("textbox", { exact: true, name: "Issue title" })
+        .fill(title);
       await page
         .getByLabel("Issue description")
         .fill("This issue was created by Playwright.");
@@ -87,11 +89,15 @@ test.describe("issue workspace", () => {
     const secondTitle = `Ordered issue B ${crypto.randomUUID()}`;
 
     try {
-      await page.getByLabel("Issue title").fill(firstTitle);
+      await page
+        .getByRole("textbox", { exact: true, name: "Issue title" })
+        .fill(firstTitle);
       await page.getByRole("button", { name: "Create issue" }).click();
       await expect(page.getByText(firstTitle).first()).toBeVisible();
 
-      await page.getByLabel("Issue title").fill(secondTitle);
+      await page
+        .getByRole("textbox", { exact: true, name: "Issue title" })
+        .fill(secondTitle);
       await page.getByRole("button", { name: "Create issue" }).click();
       await expect(page.getByText(secondTitle).first()).toBeVisible();
 
@@ -125,6 +131,24 @@ test.describe("issue workspace", () => {
     }
   });
 
+  test("creates an issue directly inside a kanban state", async ({ page }) => {
+    const account = await createAccountWithUi(page, {
+      name: "Quick User",
+      prefix: "issues-quick",
+    });
+    const title = `Quick issue ${crypto.randomUUID()}`;
+
+    try {
+      await page.getByLabel("Quick issue title for Done").fill(title);
+      await page.getByRole("button", { name: "Add issue to Done" }).click();
+
+      await expect(page.getByLabel("Done column")).toContainText(title);
+      await expect(page.getByRole("heading", { name: title })).toBeVisible();
+    } finally {
+      await cleanupAccountWithUi(page, account);
+    }
+  });
+
   test("creates a project and creates an issue inside it", async ({ page }) => {
     const account = await createAccountWithUi(page, {
       name: "Project User",
@@ -152,6 +176,7 @@ test.describe("issue workspace", () => {
       await expect(page.getByText("0 issues")).toBeVisible();
 
       const issueTitleInput = page.getByRole("textbox", {
+        exact: true,
         name: "Issue title",
       });
       await expect(issueTitleInput).toBeEditable();

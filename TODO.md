@@ -111,7 +111,7 @@ Observed in `references/plane`:
   - [x] Assignee avatar placeholder.
   - [x] Comment count.
   - [ ] Module/cycle badges once those exist.
-- [ ] Add quick issue creation inside each state column.
+- [x] Add quick issue creation inside each state column.
 - [ ] Add drag-and-drop issue movement.
 - [ ] Add optimistic UI behavior where safe.
 - [ ] Ensure updates appear in another browser context without refresh.

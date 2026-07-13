@@ -246,6 +246,7 @@ $effect(() => {
 async function handleCreateIssue(input: {
   description?: string;
   priority: IssuePriority;
+  stateId?: IssueState["_id"];
   title: string;
 }) {
   if (!activeProject) {
@@ -273,6 +274,14 @@ async function handleCreateIssue(input: {
   } finally {
     creating = false;
   }
+}
+
+async function handleQuickCreateIssue(state: IssueState, title: string) {
+  await handleCreateIssue({
+    priority: "medium",
+    stateId: state._id,
+    title,
+  });
 }
 
 async function handleUpdateIssue(input: {
@@ -500,6 +509,7 @@ async function handleSelectProject(nextProjectId: Project["_id"]) {
                 <KanbanBoard
                   {issues}
                   onMoveIssue={handleMoveIssue}
+                  onQuickCreate={handleQuickCreateIssue}
                   onReorderIssue={handleMoveIssue}
                   onSelect={async (issue) => {
                     selectedIssueId = issue._id;
