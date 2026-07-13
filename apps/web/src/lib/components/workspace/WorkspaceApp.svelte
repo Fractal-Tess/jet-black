@@ -4,6 +4,7 @@ import { useAuth, useMutation, useQuery } from "convex-svelte";
 import { goto } from "$app/navigation";
 import { authClient } from "$lib/auth-client";
 import IssueDetail from "$lib/components/issues/IssueDetail.svelte";
+import IssueListView from "$lib/components/issues/IssueListView.svelte";
 import IssueStateSummary from "$lib/components/issues/IssueStateSummary.svelte";
 import KanbanBoard from "$lib/components/issues/KanbanBoard.svelte";
 import NewIssueForm from "$lib/components/issues/NewIssueForm.svelte";
@@ -81,6 +82,7 @@ let checkingConvexToken = $state(false);
 let convexTokenReady = $state(false);
 let leavingAuthenticatedSession = $state(false);
 let issueSearch = $state("");
+let issueView = $state<"board" | "list">("board");
 
 const viewer = useQuery(api.queries.workspaces.viewer, () =>
   auth.isAuthenticated && convexTokenReady && !leavingAuthenticatedSession
@@ -588,15 +590,41 @@ async function handleSelectProject(nextProjectId: Project["_id"]) {
           <div class="space-y-5">
             <div class="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
               <IssueStateSummary issues={filteredIssues} {states} />
-              <label class="min-w-0 lg:w-72">
-                <span class="sr-only">Search issues</span>
-                <input
-                  bind:value={issueSearch}
-                  class="h-10 w-full rounded-lg border border-white/10 bg-[#101111] px-3 font-mono text-xs text-zinc-100 outline-none transition placeholder:text-zinc-600 focus:border-amber-400/60"
-                  placeholder="Search issue title or ID"
-                  type="search"
-                />
-              </label>
+              <div class="flex min-w-0 flex-col gap-2 sm:flex-row sm:items-center">
+                <div
+                  class="inline-flex rounded-lg border border-white/10 bg-[#101111] p-1"
+                >
+                  <button
+                    class="h-8 rounded-md px-3 text-xs transition {issueView ===
+                    'board'
+                      ? 'bg-white/10 text-zinc-100'
+                      : 'text-zinc-500 hover:text-zinc-200'}"
+                    onclick={() => (issueView = "board")}
+                    type="button"
+                  >
+                    Board
+                  </button>
+                  <button
+                    class="h-8 rounded-md px-3 text-xs transition {issueView ===
+                    'list'
+                      ? 'bg-white/10 text-zinc-100'
+                      : 'text-zinc-500 hover:text-zinc-200'}"
+                    onclick={() => (issueView = "list")}
+                    type="button"
+                  >
+                    List
+                  </button>
+                </div>
+                <label class="min-w-0 sm:w-72">
+                  <span class="sr-only">Search issues</span>
+                  <input
+                    bind:value={issueSearch}
+                    class="h-10 w-full rounded-lg border border-white/10 bg-[#101111] px-3 font-mono text-xs text-zinc-100 outline-none transition placeholder:text-zinc-600 focus:border-amber-400/60"
+                    placeholder="Search issue title or ID"
+                    type="search"
+                  />
+                </label>
+              </div>
             </div>
 
             <div class="grid gap-5 xl:grid-cols-[minmax(0,1fr)_420px]">
@@ -606,27 +634,48 @@ async function handleSelectProject(nextProjectId: Project["_id"]) {
                   onCreate={handleCreateIssue}
                   project={activeProject}
                 />
-                <KanbanBoard
-                  issues={filteredIssues}
-                  onMoveIssue={handleMoveIssue}
-                  onQuickCreate={handleQuickCreateIssue}
-                  onReorderIssue={handleMoveIssue}
-                  onSelect={async (issue) => {
-                    selectedIssueId = issue._id;
+                {#if issueView === "board"}
+                  <KanbanBoard
+                    issues={filteredIssues}
+                    onMoveIssue={handleMoveIssue}
+                    onQuickCreate={handleQuickCreateIssue}
+                    onReorderIssue={handleMoveIssue}
+                    onSelect={async (issue) => {
+                      selectedIssueId = issue._id;
 
-                    if (viewerData?.activeWorkspace) {
-                      await goto(
-                        issueHref({
-                          issueId: issue._id,
-                          projectId: activeProject._id,
-                          workspaceSlug: viewerData.activeWorkspace.slug,
-                        })
-                      );
-                    }
-                  }}
-                  {selectedIssueId}
-                  {states}
-                />
+                      if (viewerData?.activeWorkspace) {
+                        await goto(
+                          issueHref({
+                            issueId: issue._id,
+                            projectId: activeProject._id,
+                            workspaceSlug: viewerData.activeWorkspace.slug,
+                          })
+                        );
+                      }
+                    }}
+                    {selectedIssueId}
+                    {states}
+                  />
+                {:else}
+                  <IssueListView
+                    issues={filteredIssues}
+                    onSelect={async (issue) => {
+                      selectedIssueId = issue._id;
+
+                      if (viewerData?.activeWorkspace) {
+                        await goto(
+                          issueHref({
+                            issueId: issue._id,
+                            projectId: activeProject._id,
+                            workspaceSlug: viewerData.activeWorkspace.slug,
+                          })
+                        );
+                      }
+                    }}
+                    {selectedIssueId}
+                    {states}
+                  />
+                {/if}
               </div>
 
               <IssueDetail

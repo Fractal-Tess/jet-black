@@ -174,10 +174,11 @@ test.describe("issue workspace", () => {
     const seededTitle = "Wire realtime issue updates";
 
     try {
-      const archiveCard = page.locator("article").filter({
+      const todoColumn = page.getByLabel("Todo column");
+      const archiveCard = todoColumn.locator("article").filter({
         hasText: archiveTitle,
       });
-      const seededCard = page.locator("article").filter({
+      const seededCard = todoColumn.locator("article").filter({
         hasText: seededTitle,
       });
 
@@ -205,6 +206,54 @@ test.describe("issue workspace", () => {
       await page.getByLabel("Search issues").fill("");
       await expect(seededCard).toBeVisible({ timeout: 10_000 });
       await expect(archiveCard).toBeHidden({ timeout: 10_000 });
+    } finally {
+      await cleanupAccountWithUi(page, account);
+    }
+  });
+
+  test("filters and sorts issues in list view", async ({ page }) => {
+    const account = await createAccountWithUi(page, {
+      name: "List User",
+      prefix: "issues-list",
+    });
+    const doneTitle = "Sketch pull request review workflow";
+    const firstTitle = "Finish email/password login";
+    const todoTitle = "Wire realtime issue updates";
+
+    try {
+      await page.getByRole("button", { exact: true, name: "List" }).click();
+      await expect(page.getByRole("table")).toContainText(todoTitle);
+      await expect(page.getByRole("table")).toContainText(doneTitle);
+
+      await page.getByLabel("Filter by state").selectOption({ label: "Todo" });
+      await expect(page.getByRole("table")).toContainText(todoTitle);
+      await expect(page.getByRole("table")).not.toContainText(doneTitle);
+
+      await page
+        .getByLabel("Filter by priority")
+        .selectOption({ label: "Urgent" });
+      await expect(page.getByRole("table")).toContainText(todoTitle);
+
+      await page
+        .getByLabel("Filter by state")
+        .selectOption({ label: "All states" });
+      await page
+        .getByLabel("Filter by priority")
+        .selectOption({ label: "All priorities" });
+      await page.getByRole("button", { name: "Title" }).click();
+
+      await expect
+        .poll(async () => {
+          const tableText = (await page.getByRole("table").textContent()) ?? "";
+
+          return (
+            tableText.includes(firstTitle) &&
+            tableText.includes(todoTitle) &&
+            tableText.indexOf(firstTitle) < tableText.indexOf(doneTitle) &&
+            tableText.indexOf(doneTitle) < tableText.indexOf(todoTitle)
+          );
+        })
+        .toBe(true);
     } finally {
       await cleanupAccountWithUi(page, account);
     }

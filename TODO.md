@@ -159,17 +159,17 @@ Observed in `references/plane`:
 
 ## Phase 4: list view
 
-- [ ] Add project issues list layout.
+- [x] Add project issues list layout.
 - [ ] Add sortable columns:
-  - [ ] Identifier.
-  - [ ] Title.
-  - [ ] State.
-  - [ ] Priority.
+  - [x] Identifier.
+  - [x] Title.
+  - [x] State.
+  - [x] Priority.
   - [ ] Assignee.
-  - [ ] Updated.
+  - [x] Updated.
 - [ ] Add filters:
-  - [ ] State.
-  - [ ] Priority.
+  - [x] State.
+  - [x] Priority.
   - [ ] Assignee.
   - [ ] Label.
   - [ ] Module.
@@ -182,6 +182,8 @@ Observed in `references/plane`:
   - [ ] Cycle.
 - [ ] Persist view preferences per user/project.
 - [ ] Add e2e tests for filtering, sorting, and grouping.
+  - [x] Filtering and sorting.
+  - [ ] Grouping.
 
 ## Phase 5: project settings
 
