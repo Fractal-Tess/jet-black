@@ -89,6 +89,20 @@ function issuesForState(stateId: IssueState["_id"]) {
                     {issue.description}
                   </span>
                 {/if}
+                {#if issue.labels.length > 0}
+                  <span class="mt-3 flex flex-wrap gap-1">
+                    {#each issue.labels as label (label._id)}
+                      <span
+                        class="rounded-full border px-1.5 py-0.5 text-[10px]"
+                        style:background-color={`${label.color}18`}
+                        style:border-color={`${label.color}44`}
+                        style:color={label.color}
+                      >
+                        {label.name}
+                      </span>
+                    {/each}
+                  </span>
+                {/if}
               </button>
 
               <div class="mt-3 flex items-center justify-between gap-2">

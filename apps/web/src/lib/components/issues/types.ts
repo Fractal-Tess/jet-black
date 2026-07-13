@@ -11,11 +11,20 @@ export type IssueState = {
   type: "backlog" | "unstarted" | "started" | "completed" | "cancelled";
 };
 
+export type IssueLabel = {
+  _id: Id<"issueLabels">;
+  color: string;
+  name: string;
+  projectId: Id<"projects">;
+  workspaceId: Id<"workspaces">;
+};
+
 export type Issue = {
   _creationTime: number;
   _id: Id<"issues">;
   description?: string;
   identifier: string;
+  labels: IssueLabel[];
   priority: IssuePriority;
   state: IssueState | null;
   stateId: Id<"issueStates">;

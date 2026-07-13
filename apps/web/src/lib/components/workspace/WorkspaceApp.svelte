@@ -9,6 +9,7 @@ import KanbanBoard from "$lib/components/issues/KanbanBoard.svelte";
 import NewIssueForm from "$lib/components/issues/NewIssueForm.svelte";
 import type {
   Issue,
+  IssueLabel,
   IssuePriority,
   IssueState,
   Project,
@@ -62,6 +63,8 @@ const ensurePersonalWorkspace = useMutation(
 const createIssue = useMutation(api.mutations.issues.create);
 const updateIssue = useMutation(api.mutations.issues.update);
 const createComment = useMutation(api.mutations.comments.create);
+const createLabel = useMutation(api.mutations.labels.create);
+const toggleIssueLabel = useMutation(api.mutations.labels.toggleForIssue);
 const createProject = useMutation(api.mutations.projects.create);
 
 let selectedIssueId = $state<Issue["_id"] | undefined>();
@@ -102,8 +105,17 @@ const statesQuery = useQuery(api.queries.workspaces.statesForProject, () =>
     ? { projectId: activeProject._id }
     : "skip"
 );
+const labelsQuery = useQuery(api.queries.labels.listForProject, () =>
+  auth.isAuthenticated &&
+  convexTokenReady &&
+  activeProject &&
+  !leavingAuthenticatedSession
+    ? { projectId: activeProject._id }
+    : "skip"
+);
 const issues = $derived((issuesQuery.data as Issue[] | undefined) ?? []);
 const states = $derived((statesQuery.data as IssueState[] | undefined) ?? []);
+const labels = $derived((labelsQuery.data as IssueLabel[] | undefined) ?? []);
 const selectedIssue = $derived(
   issues.find((issue) => issue._id === selectedIssueId) ?? issues[0] ?? null
 );
@@ -126,10 +138,15 @@ const firstName = $derived(
   (viewerData?.user.name ?? fallbackUser.name).trim().split(/\s+/)[0] ?? "there"
 );
 const loadingRealtimeData = $derived(
-  viewer.isLoading || issuesQuery.isLoading || statesQuery.isLoading
+  viewer.isLoading ||
+    issuesQuery.isLoading ||
+    statesQuery.isLoading ||
+    labelsQuery.isLoading
 );
 const realtimeError = $derived(
-  Boolean(viewer.error || issuesQuery.error || statesQuery.error)
+  Boolean(
+    viewer.error || issuesQuery.error || statesQuery.error || labelsQuery.error
+  )
 );
 const connected = $derived(!(loadingRealtimeData || realtimeError));
 const activeWorkspaceSlug = $derived(
@@ -281,6 +298,28 @@ async function handleAddComment(body: string) {
   await createComment({
     body,
     issueId: selectedIssue._id,
+  });
+}
+
+async function handleCreateLabel(input: { color?: string; name: string }) {
+  if (!activeProject) {
+    return;
+  }
+
+  await createLabel({
+    ...input,
+    projectId: activeProject._id,
+  });
+}
+
+async function handleToggleLabel(labelId: IssueLabel["_id"]) {
+  if (!selectedIssue) {
+    return;
+  }
+
+  await toggleIssueLabel({
+    issueId: selectedIssue._id,
+    labelId,
   });
 }
 
@@ -476,7 +515,10 @@ async function handleSelectProject(nextProjectId: Project["_id"]) {
               <IssueDetail
                 comments={comments}
                 issue={selectedIssue}
+                {labels}
                 onAddComment={handleAddComment}
+                onCreateLabel={handleCreateLabel}
+                onToggleLabel={handleToggleLabel}
                 onUpdateIssue={handleUpdateIssue}
                 {states}
               />

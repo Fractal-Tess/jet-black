@@ -15,6 +15,7 @@ test.describe("issue workspace", () => {
     const title = `Realtime issue ${crypto.randomUUID()}`;
     const updatedTitle = `${title} updated`;
     const comment = `Looks good ${crypto.randomUUID()}`;
+    const label = `Frontend ${crypto.randomUUID().slice(0, 8)}`;
 
     try {
       await expect(page).toHaveURL(DASHBOARD_URL_PATTERN);
@@ -48,6 +49,17 @@ test.describe("issue workspace", () => {
       await expect(page.getByLabel("In progress column")).toContainText(
         updatedTitle
       );
+
+      await page.getByLabel("New label name").fill(label);
+      await page.getByRole("button", { name: "Create label" }).click();
+      await expect(page.getByLabel(`Toggle ${label} label`)).toBeVisible();
+      await page.getByLabel(`Toggle ${label} label`).check();
+      await expect(
+        page
+          .locator("article")
+          .filter({ hasText: updatedTitle })
+          .getByText(label)
+      ).toBeVisible();
 
       await page.getByLabel("New comment").fill(comment);
       await page.getByRole("button", { exact: true, name: "Comment" }).click();

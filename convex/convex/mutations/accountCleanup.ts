@@ -39,6 +39,22 @@ export const deleteForUser = internalMutation({
         await ctx.db.delete(activity._id);
       }
 
+      const issueLabelAssignments = await ctx.db
+        .query("issueLabelAssignments")
+        .withIndex("by_workspaceId", (q) => q.eq("workspaceId", workspaceId))
+        .collect();
+      for (const assignment of issueLabelAssignments) {
+        await ctx.db.delete(assignment._id);
+      }
+
+      const issueLabels = await ctx.db
+        .query("issueLabels")
+        .withIndex("by_workspaceId", (q) => q.eq("workspaceId", workspaceId))
+        .collect();
+      for (const label of issueLabels) {
+        await ctx.db.delete(label._id);
+      }
+
       const issues = await ctx.db
         .query("issues")
         .withIndex("by_workspaceId", (q) => q.eq("workspaceId", workspaceId))

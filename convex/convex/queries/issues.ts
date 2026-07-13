@@ -1,11 +1,25 @@
 import { v } from "convex/values";
 
+import type { Id } from "../_generated/dataModel";
+import type { QueryCtx } from "../_generated/server";
 import { query } from "../_generated/server";
 import { requireAuthUser } from "../lib/auth";
 import {
   requireIssueAccess,
   requireProjectAccess,
 } from "../lib/workspaceAccess";
+
+async function labelsForIssue(ctx: QueryCtx, issueId: Id<"issues">) {
+  const assignments = await ctx.db
+    .query("issueLabelAssignments")
+    .withIndex("by_issueId", (q) => q.eq("issueId", issueId))
+    .collect();
+  const labels = await Promise.all(
+    assignments.map(async (assignment) => await ctx.db.get(assignment.labelId))
+  );
+
+  return labels.filter((label) => label !== null);
+}
 
 export const listForProject = query({
   args: {
@@ -26,6 +40,7 @@ export const listForProject = query({
     return await Promise.all(
       issues.map(async (issue) => ({
         ...issue,
+        labels: await labelsForIssue(ctx, issue._id),
         state: await ctx.db.get(issue.stateId),
       }))
     );
@@ -42,6 +57,7 @@ export const get = query({
 
     return {
       ...issue,
+      labels: await labelsForIssue(ctx, issue._id),
       project: await ctx.db.get(issue.projectId),
       state: await ctx.db.get(issue.stateId),
     };

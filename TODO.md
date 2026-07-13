@@ -49,6 +49,7 @@ Observed in `references/plane`:
 - [x] Issue update.
 - [x] Issue comments.
 - [x] Issue states.
+- [x] Issue labels.
 - [x] Basic project sidebar.
 - [x] Convex schema split into focused files.
 - [x] Convex queries/mutations folders.
@@ -130,7 +131,7 @@ Observed in `references/plane`:
   - [ ] `archivedAt`.
   - [ ] `completedAt`.
   - [ ] `createdAt`.
-- [ ] Add issue labels table and mutations.
+- [x] Add issue labels table and mutations.
 - [ ] Add issue attachments placeholder model.
 - [ ] Add issue links model.
 - [ ] Add issue relations model:
@@ -146,7 +147,7 @@ Observed in `references/plane`:
   - [ ] State.
   - [ ] Priority.
   - [ ] Assignee.
-  - [ ] Labels.
+  - [x] Labels.
   - [ ] Cycle.
   - [ ] Modules.
   - [ ] Dates.
