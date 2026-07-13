@@ -124,13 +124,13 @@ Observed in `references/plane`:
   - [ ] `labelIds`.
   - [ ] `moduleIds`.
   - [ ] `cycleId`.
-  - [ ] `parentIssueId`.
-  - [ ] `estimate`.
-  - [ ] `startDate`.
-  - [ ] `targetDate`.
-  - [ ] `archivedAt`.
-  - [ ] `completedAt`.
-  - [ ] `createdAt`.
+  - [x] `parentIssueId`.
+  - [x] `estimate`.
+  - [x] `startDate`.
+  - [x] `targetDate`.
+  - [x] `archivedAt`.
+  - [x] `completedAt`.
+  - [x] `createdAt`.
 - [x] Add issue labels table and mutations.
 - [ ] Add issue attachments placeholder model.
 - [ ] Add issue links model.
@@ -150,7 +150,7 @@ Observed in `references/plane`:
   - [x] Labels.
   - [ ] Cycle.
   - [ ] Modules.
-  - [ ] Dates.
+  - [x] Dates.
   - [ ] Comments.
   - [ ] Activity.
 - [ ] Add issue delete/archive.

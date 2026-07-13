@@ -54,6 +54,7 @@ export async function createSampleIssues(
     const sequenceId = index + 1;
     const issueId = await ctx.db.insert("issues", {
       createdByUserId: input.actorUserId,
+      createdAt: now + sequenceId,
       description: issueInput.description,
       identifier: `${input.projectKey}-${sequenceId}`,
       position: now + sequenceId,

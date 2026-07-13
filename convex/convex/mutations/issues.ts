@@ -45,6 +45,7 @@ export const create = mutation({
 
     const issueId = await ctx.db.insert("issues", {
       createdByUserId: user._id,
+      createdAt: now,
       description: args.description?.trim() || undefined,
       identifier: `${project.key}-${sequenceId}`,
       position: now,
@@ -71,9 +72,12 @@ export const create = mutation({
 export const update = mutation({
   args: {
     description: v.optional(v.string()),
+    estimate: v.optional(v.union(v.number(), v.null())),
     issueId: v.id("issues"),
     priority: v.optional(priorityValidator),
     stateId: v.optional(v.id("issueStates")),
+    startDate: v.optional(v.union(v.string(), v.null())),
+    targetDate: v.optional(v.union(v.string(), v.null())),
     title: v.optional(v.string()),
   },
   handler: async (ctx, args) => {
@@ -81,8 +85,12 @@ export const update = mutation({
     const issue = await requireIssueAccess(ctx, user._id, args.issueId);
     const patch: Partial<{
       description: string | undefined;
+      completedAt: number | undefined;
+      estimate: number | undefined;
       priority: "none" | "low" | "medium" | "high" | "urgent";
       stateId: Id<"issueStates">;
+      startDate: string | undefined;
+      targetDate: string | undefined;
       title: string;
       updatedAt: number;
     }> = { updatedAt: Date.now() };
@@ -103,12 +111,28 @@ export const update = mutation({
       patch.priority = args.priority;
     }
 
+    if (args.estimate !== undefined) {
+      patch.estimate = args.estimate ?? undefined;
+    }
+
+    if (args.startDate !== undefined) {
+      patch.startDate = args.startDate?.trim() || undefined;
+    }
+
+    if (args.targetDate !== undefined) {
+      patch.targetDate = args.targetDate?.trim() || undefined;
+    }
+
     if (args.stateId !== undefined) {
       const state = await ctx.db.get(args.stateId);
       if (!state || state.projectId !== issue.projectId) {
         throw new ConvexError("Invalid issue state");
       }
       patch.stateId = args.stateId;
+      patch.completedAt =
+        state.type === "completed"
+          ? (issue.completedAt ?? Date.now())
+          : undefined;
     }
 
     await ctx.db.patch(args.issueId, patch);
@@ -139,6 +163,10 @@ export const move = mutation({
     }
 
     await ctx.db.patch(args.issueId, {
+      completedAt:
+        state.type === "completed"
+          ? (issue.completedAt ?? Date.now())
+          : undefined,
       position: args.position,
       stateId: args.stateId,
       updatedAt: Date.now(),

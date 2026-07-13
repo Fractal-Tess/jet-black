@@ -42,14 +42,20 @@ test.describe("issue workspace", () => {
 
       await page.getByRole("button", { name: "Edit" }).click();
       await page.getByLabel("Title", { exact: true }).fill(updatedTitle);
+      await page.getByLabel("Estimate", { exact: true }).fill("3");
+      await page.getByLabel("Start date", { exact: true }).fill("2026-07-14");
       await page.locator("[data-testid='issue-state-select']").selectOption({
         label: "In progress",
       });
+      await page.getByLabel("Target date", { exact: true }).fill("2026-07-21");
       await page.getByRole("button", { name: "Save changes" }).click();
 
       await expect(
         page.getByRole("heading", { name: updatedTitle })
       ).toBeVisible();
+      await expect(page.getByText("3 points")).toBeVisible();
+      await expect(page.getByText("2026-07-14")).toBeVisible();
+      await expect(page.getByText("2026-07-21")).toBeVisible();
       await expect(page.getByLabel("In progress column")).toContainText(
         updatedTitle
       );
@@ -85,19 +91,17 @@ test.describe("issue workspace", () => {
       name: "Order User",
       prefix: "issues-order",
     });
-    const firstTitle = `Ordered issue A ${crypto.randomUUID()}`;
-    const secondTitle = `Ordered issue B ${crypto.randomUUID()}`;
+    const firstTitle = "Wire realtime issue updates";
+    const secondTitle = `Ordered issue ${crypto.randomUUID()}`;
 
     try {
-      await page.getByLabel("Quick issue title for Todo").fill(firstTitle);
-      await page.getByRole("button", { name: "Add issue to Todo" }).click();
-      await expect(page.getByText(firstTitle).first()).toBeVisible();
+      const todoColumn = page.getByLabel("Todo column");
+      await expect(todoColumn).toContainText(firstTitle);
 
       await page.getByLabel("Quick issue title for Todo").fill(secondTitle);
       await page.getByRole("button", { name: "Add issue to Todo" }).click();
       await expect(page.getByText(secondTitle).first()).toBeVisible();
 
-      const todoColumn = page.getByLabel("Todo column");
       await expect(todoColumn).toContainText(firstTitle);
       await expect(todoColumn).toContainText(secondTitle);
 

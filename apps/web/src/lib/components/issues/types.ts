@@ -22,16 +22,23 @@ export type IssueLabel = {
 export type Issue = {
   _creationTime: number;
   _id: Id<"issues">;
+  archivedAt?: number;
   assigneeUserId?: string;
   commentCount: number;
+  completedAt?: number;
+  createdAt?: number;
   createdByUserId: string;
   description?: string;
+  estimate?: number;
   identifier: string;
   labels: IssueLabel[];
+  parentIssueId?: Id<"issues">;
   position?: number;
   priority: IssuePriority;
   state: IssueState | null;
   stateId: Id<"issueStates">;
+  startDate?: string;
+  targetDate?: string;
   title: string;
   updatedAt: number;
 };

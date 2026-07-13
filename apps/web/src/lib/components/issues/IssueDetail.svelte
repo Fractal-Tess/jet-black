@@ -25,8 +25,11 @@ let {
   onToggleLabel: (labelId: IssueLabel["_id"]) => Promise<void>;
   onUpdateIssue: (input: {
     description?: string;
+    estimate?: number | null;
     priority?: IssuePriority;
     stateId?: IssueState["_id"];
+    startDate?: string | null;
+    targetDate?: string | null;
     title?: string;
   }) => Promise<void>;
   states: IssueState[];
@@ -39,8 +42,11 @@ let creatingLabel = $state(false);
 let newLabelName = $state("");
 let title = $state("");
 let description = $state("");
+let estimate = $state("");
 let priority = $state<IssuePriority>("none");
+let startDate = $state("");
 let stateId = $state<IssueState["_id"] | undefined>();
+let targetDate = $state("");
 
 $effect(() => {
   if (!issue) {
@@ -49,8 +55,11 @@ $effect(() => {
 
   title = issue.title;
   description = issue.description ?? "";
+  estimate = issue.estimate?.toString() ?? "";
   priority = issue.priority;
+  startDate = issue.startDate ?? "";
   stateId = issue.stateId;
+  targetDate = issue.targetDate ?? "";
 });
 
 async function saveIssue() {
@@ -58,13 +67,18 @@ async function saveIssue() {
     return;
   }
 
+  const normalizedEstimate = String(estimate).trim();
+
   saving = true;
 
   try {
     await onUpdateIssue({
       description,
+      estimate: normalizedEstimate ? Number(normalizedEstimate) : null,
       priority,
       stateId,
+      startDate: startDate || null,
+      targetDate: targetDate || null,
       title,
     });
     editing = false;
@@ -174,6 +188,37 @@ function issueHasLabel(labelId: IssueLabel["_id"]) {
             </label>
           </div>
 
+          <div class="grid gap-3 sm:grid-cols-3">
+            <label class="block">
+              <span class="mb-1 block text-xs text-zinc-500">Estimate</span>
+              <input
+                bind:value={estimate}
+                class="h-9 w-full rounded-md border border-white/10 bg-[#0f1010] px-2 text-xs text-zinc-200 outline-none focus:border-amber-400/60"
+                min="0"
+                placeholder="Points"
+                type="number"
+              />
+            </label>
+
+            <label class="block">
+              <span class="mb-1 block text-xs text-zinc-500">Start date</span>
+              <input
+                bind:value={startDate}
+                class="h-9 w-full rounded-md border border-white/10 bg-[#0f1010] px-2 text-xs text-zinc-200 outline-none focus:border-amber-400/60"
+                type="date"
+              />
+            </label>
+
+            <label class="block">
+              <span class="mb-1 block text-xs text-zinc-500">Target date</span>
+              <input
+                bind:value={targetDate}
+                class="h-9 w-full rounded-md border border-white/10 bg-[#0f1010] px-2 text-xs text-zinc-200 outline-none focus:border-amber-400/60"
+                type="date"
+              />
+            </label>
+          </div>
+
           <button
             class="h-9 rounded-md bg-amber-400 px-4 text-xs font-semibold text-black transition hover:bg-amber-300 disabled:opacity-50"
             disabled={saving || !title.trim()}
@@ -198,6 +243,23 @@ function issueHasLabel(labelId: IssueLabel["_id"]) {
           <div class="rounded-md border border-white/[0.06] p-3">
             <p class="text-xs text-zinc-600">Priority</p>
             <p class="mt-1 capitalize text-zinc-300">{issue.priority}</p>
+          </div>
+        </div>
+
+        <div class="grid gap-3 text-sm sm:grid-cols-3">
+          <div class="rounded-md border border-white/[0.06] p-3">
+            <p class="text-xs text-zinc-600">Estimate</p>
+            <p class="mt-1 text-zinc-300">
+              {issue.estimate !== undefined ? `${issue.estimate} points` : "No estimate"}
+            </p>
+          </div>
+          <div class="rounded-md border border-white/[0.06] p-3">
+            <p class="text-xs text-zinc-600">Start date</p>
+            <p class="mt-1 text-zinc-300">{issue.startDate ?? "Not set"}</p>
+          </div>
+          <div class="rounded-md border border-white/[0.06] p-3">
+            <p class="text-xs text-zinc-600">Target date</p>
+            <p class="mt-1 text-zinc-300">{issue.targetDate ?? "Not set"}</p>
           </div>
         </div>
 

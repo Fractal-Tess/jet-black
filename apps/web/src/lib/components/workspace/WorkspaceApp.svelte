@@ -160,6 +160,10 @@ async function ensureWorkspace() {
   try {
     await ensurePersonalWorkspace({});
     ensuredWorkspace = true;
+  } catch (error) {
+    if (!leavingAuthenticatedSession) {
+      throw error;
+    }
   } finally {
     ensuringWorkspace = false;
   }
@@ -286,8 +290,11 @@ async function handleQuickCreateIssue(state: IssueState, title: string) {
 
 async function handleUpdateIssue(input: {
   description?: string;
+  estimate?: number | null;
   priority?: IssuePriority;
   stateId?: IssueState["_id"];
+  startDate?: string | null;
+  targetDate?: string | null;
   title?: string;
 }) {
   if (!selectedIssue) {
