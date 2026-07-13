@@ -74,6 +74,7 @@ export const issueTables = {
     description: v.optional(v.string()),
     estimate: v.optional(v.number()),
     identifier: v.string(),
+    moduleId: v.optional(v.id("projectModules")),
     parentIssueId: v.optional(v.id("issues")),
     position: v.optional(v.number()),
     priority: issuePriority,

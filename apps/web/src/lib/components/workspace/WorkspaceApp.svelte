@@ -16,10 +16,12 @@ import type {
   IssuePriority,
   IssueState,
   Project,
+  ProjectModuleRecord,
   Sprint,
   ViewerData,
 } from "$lib/components/issues/types";
 import IntakeModule from "$lib/components/projects/IntakeModule.svelte";
+import ModulesModule from "$lib/components/projects/ModulesModule.svelte";
 import ProjectModulePlaceholder from "$lib/components/projects/ProjectModulePlaceholder.svelte";
 import SprintsModule from "$lib/components/projects/SprintsModule.svelte";
 import AppShell from "$lib/components/shell/AppShell.svelte";
@@ -73,6 +75,7 @@ const archiveIssue = useMutation(api.mutations.issues.archive);
 const acceptIntakeIssue = useMutation(api.mutations.intake.accept);
 const createIntakeIssue = useMutation(api.mutations.intake.create);
 const updateIntakeStatus = useMutation(api.mutations.intake.updateStatus);
+const createProjectModule = useMutation(api.mutations.modules.create);
 const createSprint = useMutation(api.mutations.sprints.create);
 const addAttachment = useMutation(api.mutations.attachments.addLink);
 const createComment = useMutation(api.mutations.comments.create);
@@ -84,6 +87,7 @@ let selectedIssueId = $state<Issue["_id"] | undefined>();
 let selectedProjectId = $state<Project["_id"] | undefined>();
 let creating = $state(false);
 let creatingIntake = $state(false);
+let creatingModule = $state(false);
 let creatingProject = $state(false);
 let creatingSprint = $state(false);
 let ensuringWorkspace = $state(false);
@@ -148,9 +152,21 @@ const sprintsQuery = useQuery(api.queries.sprints.listForProject, () =>
     ? { projectId: activeProject._id }
     : "skip"
 );
+const modulesQuery = useQuery(api.queries.modules.listForProject, () =>
+  auth.isAuthenticated &&
+  convexTokenReady &&
+  activeProject &&
+  activeModule === "modules" &&
+  !leavingAuthenticatedSession
+    ? { projectId: activeProject._id }
+    : "skip"
+);
 const issues = $derived((issuesQuery.data as Issue[] | undefined) ?? []);
 const intakeIssues = $derived(
   (intakeQuery.data as IntakeIssue[] | undefined) ?? []
+);
+const modules = $derived(
+  (modulesQuery.data as ProjectModuleRecord[] | undefined) ?? []
 );
 const sprints = $derived((sprintsQuery.data as Sprint[] | undefined) ?? []);
 const filteredIssues = $derived(
@@ -211,6 +227,7 @@ const loadingRealtimeData = $derived(
     issuesQuery.isLoading ||
     statesQuery.isLoading ||
     labelsQuery.isLoading ||
+    modulesQuery.isLoading ||
     intakeQuery.isLoading ||
     sprintsQuery.isLoading
 );
@@ -220,6 +237,7 @@ const realtimeError = $derived(
       issuesQuery.error ||
       statesQuery.error ||
       labelsQuery.error ||
+      modulesQuery.error ||
       intakeQuery.error ||
       sprintsQuery.error
   )
@@ -463,6 +481,38 @@ async function handleCreateSprint(input: {
   } finally {
     creatingSprint = false;
   }
+}
+
+async function handleCreateModule(input: {
+  description?: string;
+  name: string;
+  status?: ProjectModuleRecord["status"];
+  targetDate?: string;
+}) {
+  if (!activeProject) {
+    return;
+  }
+
+  creatingModule = true;
+
+  try {
+    await createProjectModule({
+      ...input,
+      projectId: activeProject._id,
+    });
+  } finally {
+    creatingModule = false;
+  }
+}
+
+async function handleAssignIssueToModule(
+  issueId: Issue["_id"],
+  moduleId: ProjectModuleRecord["_id"]
+) {
+  await updateIssue({
+    issueId,
+    moduleId,
+  });
 }
 
 async function handleAssignIssueToSprint(
@@ -713,6 +763,14 @@ async function handleSelectProject(nextProjectId: Project["_id"]) {
             onAssignIssue={handleAssignIssueToSprint}
             onCreate={handleCreateSprint}
             {sprints}
+          />
+        {:else if activeModule === "modules"}
+          <ModulesModule
+            creating={creatingModule}
+            issues={filteredIssues}
+            {modules}
+            onAssignIssue={handleAssignIssueToModule}
+            onCreate={handleCreateModule}
           />
         {:else if activeModule !== "issues"}
           <ProjectModulePlaceholder

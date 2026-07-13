@@ -7,6 +7,7 @@ import {
 } from "./helpers/auth";
 
 const INTAKE_URL_PATTERN = /\/intake$/;
+const MODULES_URL_PATTERN = /\/modules$/;
 const PAGES_URL_PATTERN = /\/pages$/;
 const SPRINTS_URL_PATTERN = /\/sprints$/;
 
@@ -36,6 +37,9 @@ test.describe("workspace navigation", () => {
         page.getByRole("link", { exact: true, name: "Sprints" })
       ).toBeVisible();
       await expect(
+        page.getByRole("link", { exact: true, name: "Modules" })
+      ).toBeVisible();
+      await expect(
         page.getByRole("link", { exact: true, name: "Pages" })
       ).toBeVisible();
 
@@ -49,6 +53,12 @@ test.describe("workspace navigation", () => {
       await expect(page).toHaveURL(SPRINTS_URL_PATTERN);
       await expect(
         page.getByRole("heading", { name: "New sprint" })
+      ).toBeVisible();
+
+      await page.getByRole("link", { exact: true, name: "Modules" }).click();
+      await expect(page).toHaveURL(MODULES_URL_PATTERN);
+      await expect(
+        page.getByRole("heading", { name: "New module" })
       ).toBeVisible();
 
       await page.getByRole("link", { exact: true, name: "Pages" }).click();

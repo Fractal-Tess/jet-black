@@ -32,6 +32,7 @@ export type Issue = {
   estimate?: number;
   identifier: string;
   labels: IssueLabel[];
+  moduleId?: Id<"projectModules">;
   parentIssueId?: Id<"issues">;
   position?: number;
   priority: IssuePriority;
@@ -55,6 +56,21 @@ export type Sprint = {
   name: string;
   projectId: Id<"projects">;
   startDate?: string;
+  updatedAt: number;
+  workspaceId: Id<"workspaces">;
+};
+
+export type ProjectModuleRecord = {
+  _creationTime: number;
+  _id: Id<"projectModules">;
+  createdAt: number;
+  createdByUserId: string;
+  description?: string;
+  leadUserId?: string;
+  name: string;
+  projectId: Id<"projects">;
+  status: "backlog" | "completed" | "in_progress" | "planned";
+  targetDate?: string;
   updatedAt: number;
   workspaceId: Id<"workspaces">;
 };

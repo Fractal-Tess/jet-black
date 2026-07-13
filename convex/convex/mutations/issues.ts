@@ -22,6 +22,7 @@ type IssueUpdatePatch = Partial<{
   completedAt: number | undefined;
   description: string | undefined;
   estimate: number | undefined;
+  moduleId: Id<"projectModules"> | undefined;
   priority: "none" | "low" | "medium" | "high" | "urgent";
   sprintId: Id<"sprints"> | undefined;
   startDate: string | undefined;
@@ -35,6 +36,7 @@ type IssueUpdateArgs = {
   description?: string;
   estimate?: number | null;
   issueId: Id<"issues">;
+  moduleId?: Id<"projectModules"> | null;
   priority?: "none" | "low" | "medium" | "high" | "urgent";
   sprintId?: Id<"sprints"> | null;
   startDate?: string | null;
@@ -92,6 +94,25 @@ async function applySprintPatch(
   patch.sprintId = args.sprintId ?? undefined;
 }
 
+async function applyModulePatch(
+  ctx: MutationCtx,
+  args: IssueUpdateArgs,
+  issue: Doc<"issues">,
+  patch: IssueUpdatePatch
+) {
+  if (args.moduleId === undefined) {
+    return;
+  }
+
+  const projectModule = args.moduleId ? await ctx.db.get(args.moduleId) : null;
+
+  if (args.moduleId && projectModule?.projectId !== issue.projectId) {
+    throw new ConvexError("Invalid module");
+  }
+
+  patch.moduleId = args.moduleId ?? undefined;
+}
+
 async function applyStatePatch(
   ctx: MutationCtx,
   args: IssueUpdateArgs,
@@ -116,6 +137,7 @@ async function applyStatePatch(
 export const create = mutation({
   args: {
     description: v.optional(v.string()),
+    moduleId: v.optional(v.id("projectModules")),
     parentIssueId: v.optional(v.id("issues")),
     priority: priorityValidator,
     projectId: v.id("projects"),
@@ -139,6 +161,9 @@ export const create = mutation({
     const parentIssue = args.parentIssueId
       ? await ctx.db.get(args.parentIssueId)
       : null;
+    const projectModule = args.moduleId
+      ? await ctx.db.get(args.moduleId)
+      : null;
     const sprint = args.sprintId ? await ctx.db.get(args.sprintId) : null;
 
     if (!state || state.projectId !== project._id) {
@@ -147,6 +172,10 @@ export const create = mutation({
 
     if (args.parentIssueId && parentIssue?.projectId !== project._id) {
       throw new ConvexError("Invalid parent issue");
+    }
+
+    if (args.moduleId && projectModule?.projectId !== project._id) {
+      throw new ConvexError("Invalid module");
     }
 
     if (args.sprintId && sprint?.projectId !== project._id) {
@@ -158,6 +187,7 @@ export const create = mutation({
       createdAt: now,
       description: args.description?.trim() || undefined,
       identifier: `${project.key}-${sequenceId}`,
+      moduleId: args.moduleId,
       parentIssueId: args.parentIssueId,
       position: now,
       priority: args.priority,
@@ -186,6 +216,7 @@ export const update = mutation({
     description: v.optional(v.string()),
     estimate: v.optional(v.union(v.number(), v.null())),
     issueId: v.id("issues"),
+    moduleId: v.optional(v.union(v.id("projectModules"), v.null())),
     priority: v.optional(priorityValidator),
     sprintId: v.optional(v.union(v.id("sprints"), v.null())),
     stateId: v.optional(v.id("issueStates")),
@@ -199,6 +230,7 @@ export const update = mutation({
     const patch: IssueUpdatePatch = { updatedAt: Date.now() };
 
     applyScalarIssuePatch(args, patch);
+    await applyModulePatch(ctx, args, issue, patch);
     await applySprintPatch(ctx, args, issue, patch);
     await applyStatePatch(ctx, args, issue, patch);
 
