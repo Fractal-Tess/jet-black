@@ -7,6 +7,7 @@ import {
   DEFAULT_PASSWORD,
   deleteCurrentAccountWithUi,
   expectSignInFailure,
+  fillMainIssueTitle,
   LOGIN_URL_PATTERN,
   LOGIN_WITHOUT_QUERY_URL_PATTERN,
   PROTECTED_REDIRECT_URL_PATTERN,
@@ -66,9 +67,7 @@ test.describe("email and password authentication", () => {
       });
 
       await signInWithUi(page, account);
-      await page
-        .getByRole("textbox", { exact: true, name: "Issue title" })
-        .fill(issueTitle);
+      await fillMainIssueTitle(page, issueTitle);
       await page
         .getByLabel("Issue description")
         .fill("Created by the authenticated lifecycle e2e flow.");

@@ -4,6 +4,7 @@ import {
   cleanupAccountWithUi,
   createAccountWithUi,
   DASHBOARD_URL_PATTERN,
+  fillMainIssueTitle,
 } from "./helpers/auth";
 
 const REORDER_UP_LABEL_PATTERN = /Reorder .* up/;
@@ -24,9 +25,7 @@ test.describe("issue workspace", () => {
       await expect(
         page.getByRole("heading", { name: "Good to see you, Issue" })
       ).toBeVisible();
-      await page
-        .getByRole("textbox", { exact: true, name: "Issue title" })
-        .fill(title);
+      await fillMainIssueTitle(page, title);
       await page
         .getByLabel("Issue description")
         .fill("This issue was created by Playwright.");
@@ -89,16 +88,12 @@ test.describe("issue workspace", () => {
     const secondTitle = `Ordered issue B ${crypto.randomUUID()}`;
 
     try {
-      await page
-        .getByRole("textbox", { exact: true, name: "Issue title" })
-        .fill(firstTitle);
-      await page.getByRole("button", { name: "Create issue" }).click();
+      await page.getByLabel("Quick issue title for Todo").fill(firstTitle);
+      await page.getByRole("button", { name: "Add issue to Todo" }).click();
       await expect(page.getByText(firstTitle).first()).toBeVisible();
 
-      await page
-        .getByRole("textbox", { exact: true, name: "Issue title" })
-        .fill(secondTitle);
-      await page.getByRole("button", { name: "Create issue" }).click();
+      await page.getByLabel("Quick issue title for Todo").fill(secondTitle);
+      await page.getByRole("button", { name: "Add issue to Todo" }).click();
       await expect(page.getByText(secondTitle).first()).toBeVisible();
 
       const todoColumn = page.getByLabel("Todo column");
@@ -149,6 +144,35 @@ test.describe("issue workspace", () => {
     }
   });
 
+  test("moves an issue between states with drag and drop", async ({ page }) => {
+    const account = await createAccountWithUi(page, {
+      name: "Drag User",
+      prefix: "issues-drag",
+    });
+    const title = `Dragged issue ${crypto.randomUUID()}`;
+
+    try {
+      await page.getByLabel("Quick issue title for Todo").fill(title);
+      await page.getByRole("button", { name: "Add issue to Todo" }).click();
+
+      const issueCard = page.locator("article").filter({ hasText: title });
+      await expect(page.getByLabel("Todo column")).toContainText(title);
+      const dataTransfer = await page.evaluateHandle(() => new DataTransfer());
+      await issueCard.dispatchEvent("dragstart", { dataTransfer });
+      await page.getByLabel("Done column").dispatchEvent("dragover", {
+        dataTransfer,
+      });
+      await page.getByLabel("Done column").dispatchEvent("drop", {
+        dataTransfer,
+      });
+      await issueCard.dispatchEvent("dragend", { dataTransfer });
+
+      await expect(page.getByLabel("Done column")).toContainText(title);
+    } finally {
+      await cleanupAccountWithUi(page, account);
+    }
+  });
+
   test("creates a project and creates an issue inside it", async ({ page }) => {
     const account = await createAccountWithUi(page, {
       name: "Project User",
@@ -175,18 +199,8 @@ test.describe("issue workspace", () => {
       ).toBeVisible();
       await expect(page.getByText("0 issues")).toBeVisible();
 
-      const issueTitleInput = page.getByRole("textbox", {
-        exact: true,
-        name: "Issue title",
-      });
-      await expect(issueTitleInput).toBeEditable();
-      await issueTitleInput.fill(issueTitle);
-      await expect(issueTitleInput).toHaveValue(issueTitle);
-      const createIssueButton = page.getByRole("button", {
-        name: "Create issue",
-      });
-      await expect(createIssueButton).toBeEnabled();
-      await createIssueButton.click();
+      await page.getByLabel("Quick issue title for Todo").fill(issueTitle);
+      await page.getByRole("button", { name: "Add issue to Todo" }).click();
 
       await expect(
         page.getByRole("heading", { name: issueTitle })

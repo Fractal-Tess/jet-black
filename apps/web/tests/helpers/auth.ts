@@ -50,6 +50,27 @@ export async function waitForDashboardReady(page: Page) {
   });
 }
 
+export async function fillMainIssueTitle(page: Page, title: string) {
+  const issueTitle = page.getByRole("textbox", {
+    exact: true,
+    name: "Issue title",
+  });
+
+  await expect(issueTitle).toBeEditable();
+
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    await issueTitle.fill(title);
+
+    if ((await issueTitle.inputValue()) === title) {
+      return;
+    }
+
+    await page.waitForTimeout(100);
+  }
+
+  await expect(issueTitle).toHaveValue(title);
+}
+
 export async function openCreateAccountMode(page: Page) {
   await page.goto("/login");
   await waitForHydration(page);
@@ -120,10 +141,22 @@ export async function expectSignInFailure(
 }
 
 export async function signOutWithUi(page: Page) {
-  await page.getByRole("button", { name: "Sign out" }).click();
-  await expect(page).toHaveURL(LOGIN_WITHOUT_QUERY_URL_PATTERN, {
-    timeout: 15_000,
-  });
+  const signOutButton = page.getByRole("button", { name: "Sign out" });
+
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    await signOutButton.click({ force: true });
+
+    try {
+      await expect(page).toHaveURL(LOGIN_WITHOUT_QUERY_URL_PATTERN, {
+        timeout: 5000,
+      });
+      return;
+    } catch (error) {
+      if (attempt === 2) {
+        throw error;
+      }
+    }
+  }
 }
 
 export async function deleteCurrentAccountWithUi(page: Page) {

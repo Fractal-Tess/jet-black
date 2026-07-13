@@ -28,6 +28,7 @@ let {
 } = $props();
 
 let creatingStateId = $state<IssueState["_id"] | null>(null);
+let draggingIssueId = $state<Issue["_id"] | null>(null);
 let quickTitles = $state<Record<string, string>>({});
 
 const priorityLabel: Record<Issue["priority"], string> = {
@@ -125,6 +126,35 @@ async function createIssueInState(state: IssueState) {
     creatingStateId = null;
   }
 }
+
+function handleDragStart(event: DragEvent, issue: Issue) {
+  draggingIssueId = issue._id;
+  event.dataTransfer?.setData("text/plain", issue._id);
+
+  if (event.dataTransfer) {
+    event.dataTransfer.effectAllowed = "move";
+  }
+}
+
+function handleDragEnd() {
+  draggingIssueId = null;
+}
+
+async function handleDrop(event: DragEvent, state: IssueState) {
+  event.preventDefault();
+
+  const issueId =
+    (event.dataTransfer?.getData("text/plain") as Issue["_id"]) ??
+    draggingIssueId;
+  const issue = issues.find((candidate) => candidate._id === issueId);
+
+  if (!issue) {
+    return;
+  }
+
+  await onMoveIssue(issue, state._id, positionAtStateEnd(state._id, issue._id));
+  draggingIssueId = null;
+}
 </script>
 
 <section class="rounded-xl border border-white/10 bg-[#151616]">
@@ -147,7 +177,11 @@ async function createIssueInState(state: IssueState) {
       {@const stateIssues = issuesForState(state._id)}
       <section
         aria-label={`${state.name} column`}
-        class="min-h-80 min-w-64 rounded-lg border border-white/[0.06] bg-[#101111]"
+        class="min-h-80 min-w-64 rounded-lg border border-white/[0.06] bg-[#101111] transition {draggingIssueId
+          ? 'border-amber-400/20'
+          : ''}"
+        ondragover={(event) => event.preventDefault()}
+        ondrop={(event) => handleDrop(event, state)}
       >
         <div class="flex items-center justify-between border-b border-white/[0.06] px-3 py-2">
           <div class="flex min-w-0 items-center gap-2">
@@ -203,6 +237,9 @@ async function createIssueInState(state: IssueState) {
               issue._id
                 ? 'border-amber-400/40 bg-amber-400/[0.04]'
                 : ''}"
+              draggable="true"
+              ondragend={handleDragEnd}
+              ondragstart={(event) => handleDragStart(event, issue)}
             >
               <button
                 class="block w-full text-left"

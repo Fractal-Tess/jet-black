@@ -112,11 +112,11 @@ Observed in `references/plane`:
   - [x] Comment count.
   - [ ] Module/cycle badges once those exist.
 - [x] Add quick issue creation inside each state column.
-- [ ] Add drag-and-drop issue movement.
+- [x] Add drag-and-drop issue movement.
 - [ ] Add optimistic UI behavior where safe.
 - [ ] Ensure updates appear in another browser context without refresh.
 - [ ] Add Playwright realtime test with two browser contexts.
-- [ ] Add Playwright kanban drag/drop tests.
+- [x] Add Playwright kanban drag/drop tests.
 
 ## Phase 3: issue model parity
 
