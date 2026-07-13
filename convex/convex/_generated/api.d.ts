@@ -28,6 +28,7 @@ import type * as mutations_issues from "../mutations/issues.js";
 import type * as mutations_labels from "../mutations/labels.js";
 import type * as mutations_messages from "../mutations/messages.js";
 import type * as mutations_projects from "../mutations/projects.js";
+import type * as mutations_sprints from "../mutations/sprints.js";
 import type * as mutations_workspaces from "../mutations/workspaces.js";
 import type * as queries_attachments from "../queries/attachments.js";
 import type * as queries_comments from "../queries/comments.js";
@@ -35,10 +36,12 @@ import type * as queries_intake from "../queries/intake.js";
 import type * as queries_issues from "../queries/issues.js";
 import type * as queries_labels from "../queries/labels.js";
 import type * as queries_messages from "../queries/messages.js";
+import type * as queries_sprints from "../queries/sprints.js";
 import type * as queries_workspaces from "../queries/workspaces.js";
 import type * as schema_intake from "../schema/intake.js";
 import type * as schema_issues from "../schema/issues.js";
 import type * as schema_messages from "../schema/messages.js";
+import type * as schema_sprints from "../schema/sprints.js";
 import type * as schema_workspaces from "../schema/workspaces.js";
 
 import type {
@@ -68,6 +71,7 @@ declare const fullApi: ApiFromModules<{
   "mutations/labels": typeof mutations_labels;
   "mutations/messages": typeof mutations_messages;
   "mutations/projects": typeof mutations_projects;
+  "mutations/sprints": typeof mutations_sprints;
   "mutations/workspaces": typeof mutations_workspaces;
   "queries/attachments": typeof queries_attachments;
   "queries/comments": typeof queries_comments;
@@ -75,10 +79,12 @@ declare const fullApi: ApiFromModules<{
   "queries/issues": typeof queries_issues;
   "queries/labels": typeof queries_labels;
   "queries/messages": typeof queries_messages;
+  "queries/sprints": typeof queries_sprints;
   "queries/workspaces": typeof queries_workspaces;
   "schema/intake": typeof schema_intake;
   "schema/issues": typeof schema_issues;
   "schema/messages": typeof schema_messages;
+  "schema/sprints": typeof schema_sprints;
   "schema/workspaces": typeof schema_workspaces;
 }>;
 

@@ -16,10 +16,12 @@ import type {
   IssuePriority,
   IssueState,
   Project,
+  Sprint,
   ViewerData,
 } from "$lib/components/issues/types";
 import IntakeModule from "$lib/components/projects/IntakeModule.svelte";
 import ProjectModulePlaceholder from "$lib/components/projects/ProjectModulePlaceholder.svelte";
+import SprintsModule from "$lib/components/projects/SprintsModule.svelte";
 import AppShell from "$lib/components/shell/AppShell.svelte";
 import {
   issueHref,
@@ -71,6 +73,7 @@ const archiveIssue = useMutation(api.mutations.issues.archive);
 const acceptIntakeIssue = useMutation(api.mutations.intake.accept);
 const createIntakeIssue = useMutation(api.mutations.intake.create);
 const updateIntakeStatus = useMutation(api.mutations.intake.updateStatus);
+const createSprint = useMutation(api.mutations.sprints.create);
 const addAttachment = useMutation(api.mutations.attachments.addLink);
 const createComment = useMutation(api.mutations.comments.create);
 const createLabel = useMutation(api.mutations.labels.create);
@@ -82,6 +85,7 @@ let selectedProjectId = $state<Project["_id"] | undefined>();
 let creating = $state(false);
 let creatingIntake = $state(false);
 let creatingProject = $state(false);
+let creatingSprint = $state(false);
 let ensuringWorkspace = $state(false);
 let ensuredWorkspace = $state(false);
 let checkingConvexToken = $state(false);
@@ -135,10 +139,20 @@ const intakeQuery = useQuery(api.queries.intake.listForProject, () =>
     ? { projectId: activeProject._id }
     : "skip"
 );
+const sprintsQuery = useQuery(api.queries.sprints.listForProject, () =>
+  auth.isAuthenticated &&
+  convexTokenReady &&
+  activeProject &&
+  activeModule === "sprints" &&
+  !leavingAuthenticatedSession
+    ? { projectId: activeProject._id }
+    : "skip"
+);
 const issues = $derived((issuesQuery.data as Issue[] | undefined) ?? []);
 const intakeIssues = $derived(
   (intakeQuery.data as IntakeIssue[] | undefined) ?? []
 );
+const sprints = $derived((sprintsQuery.data as Sprint[] | undefined) ?? []);
 const filteredIssues = $derived(
   issues.filter((issue) => {
     const search = issueSearch.trim().toLowerCase();
@@ -197,7 +211,8 @@ const loadingRealtimeData = $derived(
     issuesQuery.isLoading ||
     statesQuery.isLoading ||
     labelsQuery.isLoading ||
-    intakeQuery.isLoading
+    intakeQuery.isLoading ||
+    sprintsQuery.isLoading
 );
 const realtimeError = $derived(
   Boolean(
@@ -205,7 +220,8 @@ const realtimeError = $derived(
       issuesQuery.error ||
       statesQuery.error ||
       labelsQuery.error ||
-      intakeQuery.error
+      intakeQuery.error ||
+      sprintsQuery.error
   )
 );
 const connected = $derived(!(loadingRealtimeData || realtimeError));
@@ -411,6 +427,7 @@ async function handleUpdateIssue(input: {
   description?: string;
   estimate?: number | null;
   priority?: IssuePriority;
+  sprintId?: Sprint["_id"] | null;
   stateId?: IssueState["_id"];
   startDate?: string | null;
   targetDate?: string | null;
@@ -423,6 +440,38 @@ async function handleUpdateIssue(input: {
   await updateIssue({
     ...input,
     issueId: selectedIssue._id,
+  });
+}
+
+async function handleCreateSprint(input: {
+  description?: string;
+  endDate?: string;
+  name: string;
+  startDate?: string;
+}) {
+  if (!activeProject) {
+    return;
+  }
+
+  creatingSprint = true;
+
+  try {
+    await createSprint({
+      ...input,
+      projectId: activeProject._id,
+    });
+  } finally {
+    creatingSprint = false;
+  }
+}
+
+async function handleAssignIssueToSprint(
+  issueId: Issue["_id"],
+  sprintId: Sprint["_id"]
+) {
+  await updateIssue({
+    issueId,
+    sprintId,
   });
 }
 
@@ -656,6 +705,14 @@ async function handleSelectProject(nextProjectId: Project["_id"]) {
             onAccept={handleAcceptIntakeIssue}
             onCreate={handleCreateIntakeIssue}
             onDecline={handleDeclineIntakeIssue}
+          />
+        {:else if activeModule === "sprints"}
+          <SprintsModule
+            creating={creatingSprint}
+            issues={filteredIssues}
+            onAssignIssue={handleAssignIssueToSprint}
+            onCreate={handleCreateSprint}
+            {sprints}
           />
         {:else if activeModule !== "issues"}
           <ProjectModulePlaceholder

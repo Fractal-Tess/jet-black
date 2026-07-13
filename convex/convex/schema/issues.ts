@@ -79,6 +79,7 @@ export const issueTables = {
     priority: issuePriority,
     projectId: v.id("projects"),
     sequenceId: v.number(),
+    sprintId: v.optional(v.id("sprints")),
     stateId: v.id("issueStates"),
     startDate: v.optional(v.string()),
     targetDate: v.optional(v.string()),

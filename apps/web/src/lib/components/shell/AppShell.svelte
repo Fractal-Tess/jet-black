@@ -61,7 +61,7 @@ const selectedProject = $derived(
 const moduleLinks: { label: string; module: ProjectModule }[] = [
   { label: "Issues", module: "issues" },
   { label: "Intake", module: "intake" },
-  { label: "Cycles", module: "cycles" },
+  { label: "Sprints", module: "sprints" },
   { label: "Modules", module: "modules" },
   { label: "Views", module: "views" },
   { label: "Pages", module: "pages" },
@@ -377,7 +377,7 @@ async function createProject() {
                     ? "□"
                     : item.module === "intake"
                       ? "◇"
-                      : item.module === "cycles"
+                      : item.module === "sprints"
                         ? "◌"
                         : item.module === "modules"
                           ? "▦"

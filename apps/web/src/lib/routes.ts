@@ -1,20 +1,20 @@
 import type { Project, ViewerData } from "$lib/components/issues/types";
 
 export type ProjectModule =
-  | "cycles"
   | "intake"
   | "issues"
   | "modules"
   | "pages"
+  | "sprints"
   | "views";
 
 const DEFAULT_MODULE: ProjectModule = "issues";
 const PROJECT_MODULES = [
-  "cycles",
   "intake",
   "issues",
   "modules",
   "pages",
+  "sprints",
   "views",
 ] as const;
 

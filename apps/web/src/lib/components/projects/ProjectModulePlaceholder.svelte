@@ -17,12 +17,12 @@ let {
 } = $props();
 
 const copy: Record<Exclude<ProjectModule, "issues">, ModuleCopy> = {
-  cycles: {
-    cta: "Create cycle",
+  sprints: {
+    cta: "Create sprint",
     description:
       "Plan time-boxed work, track progress, and keep active scope visible.",
-    eyebrow: "Cycles",
-    title: "Cycles are next in the project loop.",
+    eyebrow: "Sprints",
+    title: "Sprints are next in the project loop.",
   },
   intake: {
     cta: "Add intake item",

@@ -8,6 +8,7 @@ import {
 
 const INTAKE_URL_PATTERN = /\/intake$/;
 const PAGES_URL_PATTERN = /\/pages$/;
+const SPRINTS_URL_PATTERN = /\/sprints$/;
 
 test.describe("workspace navigation", () => {
   test("uses URL-driven project modules", async ({ page }) => {
@@ -32,6 +33,9 @@ test.describe("workspace navigation", () => {
         page.getByRole("link", { exact: true, name: "Intake" })
       ).toBeVisible();
       await expect(
+        page.getByRole("link", { exact: true, name: "Sprints" })
+      ).toBeVisible();
+      await expect(
         page.getByRole("link", { exact: true, name: "Pages" })
       ).toBeVisible();
 
@@ -39,6 +43,12 @@ test.describe("workspace navigation", () => {
       await expect(page).toHaveURL(INTAKE_URL_PATTERN);
       await expect(
         page.getByRole("heading", { name: "New intake item" })
+      ).toBeVisible();
+
+      await page.getByRole("link", { exact: true, name: "Sprints" }).click();
+      await expect(page).toHaveURL(SPRINTS_URL_PATTERN);
+      await expect(
+        page.getByRole("heading", { name: "New sprint" })
       ).toBeVisible();
 
       await page.getByRole("link", { exact: true, name: "Pages" }).click();

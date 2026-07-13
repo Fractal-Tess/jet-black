@@ -36,12 +36,27 @@ export type Issue = {
   position?: number;
   priority: IssuePriority;
   projectId: Id<"projects">;
+  sprintId?: Id<"sprints">;
   state: IssueState | null;
   stateId: Id<"issueStates">;
   startDate?: string;
   targetDate?: string;
   title: string;
   updatedAt: number;
+};
+
+export type Sprint = {
+  _creationTime: number;
+  _id: Id<"sprints">;
+  createdAt: number;
+  createdByUserId: string;
+  description?: string;
+  endDate?: string;
+  name: string;
+  projectId: Id<"projects">;
+  startDate?: string;
+  updatedAt: number;
+  workspaceId: Id<"workspaces">;
 };
 
 export type IssueComment = {
