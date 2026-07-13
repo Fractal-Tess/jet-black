@@ -4,12 +4,22 @@ import type { Issue, IssueState } from "./types";
 let {
   issues,
   onMoveIssue,
+  onReorderIssue,
   onSelect,
   selectedIssueId,
   states,
 }: {
   issues: Issue[];
-  onMoveIssue: (issue: Issue, stateId: IssueState["_id"]) => Promise<void>;
+  onMoveIssue: (
+    issue: Issue,
+    stateId: IssueState["_id"],
+    position: number
+  ) => Promise<void>;
+  onReorderIssue: (
+    issue: Issue,
+    stateId: IssueState["_id"],
+    position: number
+  ) => Promise<void>;
   onSelect: (issue: Issue) => void;
   selectedIssueId?: string;
   states: IssueState[];
@@ -24,7 +34,56 @@ const priorityLabel: Record<Issue["priority"], string> = {
 };
 
 function issuesForState(stateId: IssueState["_id"]) {
-  return issues.filter((issue) => issue.stateId === stateId);
+  return issues
+    .filter((issue) => issue.stateId === stateId)
+    .toSorted((left, right) => {
+      const positionDelta = positionForIssue(left) - positionForIssue(right);
+
+      if (positionDelta !== 0) {
+        return positionDelta;
+      }
+
+      return left.identifier.localeCompare(right.identifier);
+    });
+}
+
+function positionForIssue(issue: Issue) {
+  return issue.position ?? issue._creationTime;
+}
+
+function positionBetween(beforeIssue?: Issue, afterIssue?: Issue) {
+  if (beforeIssue && afterIssue) {
+    return (positionForIssue(beforeIssue) + positionForIssue(afterIssue)) / 2;
+  }
+
+  if (beforeIssue) {
+    return positionForIssue(beforeIssue) + 1000;
+  }
+
+  if (afterIssue) {
+    return positionForIssue(afterIssue) - 1000;
+  }
+
+  return Date.now();
+}
+
+function positionForMoveUp(stateIssues: Issue[], index: number) {
+  return positionBetween(stateIssues[index - 2], stateIssues[index - 1]);
+}
+
+function positionForMoveDown(stateIssues: Issue[], index: number) {
+  return positionBetween(stateIssues[index + 1], stateIssues[index + 2]);
+}
+
+function positionAtStateEnd(
+  stateId: IssueState["_id"],
+  movedIssueId: Issue["_id"]
+) {
+  const stateIssues = issuesForState(stateId).filter(
+    (issue) => issue._id !== movedIssueId
+  );
+
+  return positionBetween(stateIssues.at(-1));
 }
 </script>
 
@@ -66,7 +125,7 @@ function issuesForState(stateId: IssueState["_id"]) {
         </div>
 
         <div class="space-y-2 p-2">
-          {#each stateIssues as issue (issue._id)}
+          {#each stateIssues as issue, index (issue._id)}
             <article
               class="rounded-lg border border-white/[0.06] bg-white/[0.025] p-3 shadow-lg shadow-black/10 transition hover:-translate-y-0.5 hover:border-white/15 hover:bg-white/[0.04] {selectedIssueId ===
               issue._id
@@ -111,23 +170,57 @@ function issuesForState(stateId: IssueState["_id"]) {
                 >
                   {priorityLabel[issue.priority]}
                 </span>
-                <label class="sr-only" for={`move-${issue._id}`}>
-                  Move {issue.identifier}
-                </label>
-                <select
-                  class="h-7 max-w-28 rounded-md border border-white/10 bg-[#0f1010] px-1 text-[11px] text-zinc-400 outline-none focus:border-amber-400/60"
-                  id={`move-${issue._id}`}
-                  value={issue.stateId}
-                  onchange={(event) => {
-                    const stateId = event.currentTarget
-                      .value as IssueState["_id"];
-                    onMoveIssue(issue, stateId);
-                  }}
-                >
-                  {#each states as option (option._id)}
-                    <option value={option._id}>{option.name}</option>
-                  {/each}
-                </select>
+                <div class="flex items-center gap-1">
+                  <button
+                    aria-label={`Reorder ${issue.identifier} up`}
+                    class="grid size-7 place-items-center rounded-md border border-white/10 text-xs text-zinc-500 transition hover:bg-white/[0.04] hover:text-zinc-200 disabled:opacity-30"
+                    disabled={index === 0}
+                    onclick={() =>
+                      onReorderIssue(
+                        issue,
+                        state._id,
+                        positionForMoveUp(stateIssues, index)
+                      )}
+                    type="button"
+                  >
+                    ↑
+                  </button>
+                  <button
+                    aria-label={`Reorder ${issue.identifier} down`}
+                    class="grid size-7 place-items-center rounded-md border border-white/10 text-xs text-zinc-500 transition hover:bg-white/[0.04] hover:text-zinc-200 disabled:opacity-30"
+                    disabled={index === stateIssues.length - 1}
+                    onclick={() =>
+                      onReorderIssue(
+                        issue,
+                        state._id,
+                        positionForMoveDown(stateIssues, index)
+                      )}
+                    type="button"
+                  >
+                    ↓
+                  </button>
+                  <label class="sr-only" for={`move-${issue._id}`}>
+                    Move {issue.identifier}
+                  </label>
+                  <select
+                    class="h-7 max-w-28 rounded-md border border-white/10 bg-[#0f1010] px-1 text-[11px] text-zinc-400 outline-none focus:border-amber-400/60"
+                    id={`move-${issue._id}`}
+                    value={issue.stateId}
+                    onchange={(event) => {
+                      const stateId = event.currentTarget
+                        .value as IssueState["_id"];
+                      onMoveIssue(
+                        issue,
+                        stateId,
+                        positionAtStateEnd(stateId, issue._id)
+                      );
+                    }}
+                  >
+                    {#each states as option (option._id)}
+                      <option value={option._id}>{option.name}</option>
+                    {/each}
+                  </select>
+                </div>
               </div>
             </article>
           {:else}

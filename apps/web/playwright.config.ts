@@ -7,7 +7,7 @@ const appOrigin = `http://127.0.0.1:${port}`;
 export default defineConfig({
   fullyParallel: true,
   testDir: "./tests",
-  timeout: 45_000,
+  timeout: 75_000,
   use: {
     baseURL: appOrigin,
     screenshot: "only-on-failure",

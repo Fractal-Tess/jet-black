@@ -62,6 +62,7 @@ const ensurePersonalWorkspace = useMutation(
 );
 const createIssue = useMutation(api.mutations.issues.create);
 const updateIssue = useMutation(api.mutations.issues.update);
+const moveIssue = useMutation(api.mutations.issues.move);
 const createComment = useMutation(api.mutations.comments.create);
 const createLabel = useMutation(api.mutations.labels.create);
 const toggleIssueLabel = useMutation(api.mutations.labels.toggleForIssue);
@@ -323,13 +324,18 @@ async function handleToggleLabel(labelId: IssueLabel["_id"]) {
   });
 }
 
-async function handleMoveIssue(issue: Issue, stateId: IssueState["_id"]) {
-  if (issue.stateId === stateId) {
+async function handleMoveIssue(
+  issue: Issue,
+  stateId: IssueState["_id"],
+  position: number
+) {
+  if (issue.stateId === stateId && issue.position === position) {
     return;
   }
 
-  await updateIssue({
+  await moveIssue({
     issueId: issue._id,
+    position,
     stateId,
   });
 }
@@ -494,6 +500,7 @@ async function handleSelectProject(nextProjectId: Project["_id"]) {
                 <KanbanBoard
                   {issues}
                   onMoveIssue={handleMoveIssue}
+                  onReorderIssue={handleMoveIssue}
                   onSelect={async (issue) => {
                     selectedIssueId = issue._id;
 

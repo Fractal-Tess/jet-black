@@ -56,6 +56,7 @@ export async function createSampleIssues(
       createdByUserId: input.actorUserId,
       description: issueInput.description,
       identifier: `${input.projectKey}-${sequenceId}`,
+      position: now + sequenceId,
       priority: issueInput.priority,
       projectId: input.projectId,
       sequenceId,

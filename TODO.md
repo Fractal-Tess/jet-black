@@ -99,9 +99,9 @@ Observed in `references/plane`:
 ## Phase 2: kanban MVP
 
 - [x] Build Convex mutation path to move an issue between states.
-- [ ] Add `position` or `sortOrder` to issues for ordering inside a state.
-- [ ] Add mutation to reorder within a state.
-- [ ] Add mutation to reorder across states.
+- [x] Add `position` or `sortOrder` to issues for ordering inside a state.
+- [x] Add mutation to reorder within a state.
+- [x] Add mutation to reorder across states.
 - [x] Build kanban board grouped by issue state.
 - [x] Build Plane-style kanban card:
   - [x] Identifier.

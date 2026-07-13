@@ -6,6 +6,8 @@ import {
   DASHBOARD_URL_PATTERN,
 } from "./helpers/auth";
 
+const REORDER_UP_LABEL_PATTERN = /Reorder .* up/;
+
 test.describe("issue workspace", () => {
   test("creates, updates, and comments on an issue", async ({ page }) => {
     const account = await createAccountWithUi(page, {
@@ -70,6 +72,53 @@ test.describe("issue workspace", () => {
     }
   });
 
+  test("reorders issues inside a kanban state", async ({ page }) => {
+    const account = await createAccountWithUi(page, {
+      name: "Order User",
+      prefix: "issues-order",
+    });
+    const firstTitle = `Ordered issue A ${crypto.randomUUID()}`;
+    const secondTitle = `Ordered issue B ${crypto.randomUUID()}`;
+
+    try {
+      await page.getByLabel("Issue title").fill(firstTitle);
+      await page.getByRole("button", { name: "Create issue" }).click();
+      await expect(page.getByText(firstTitle).first()).toBeVisible();
+
+      await page.getByLabel("Issue title").fill(secondTitle);
+      await page.getByRole("button", { name: "Create issue" }).click();
+      await expect(page.getByText(secondTitle).first()).toBeVisible();
+
+      const todoColumn = page.getByLabel("Todo column");
+      await expect(todoColumn).toContainText(firstTitle);
+      await expect(todoColumn).toContainText(secondTitle);
+
+      const initialColumnText = (await todoColumn.textContent()) ?? "";
+      expect(initialColumnText.indexOf(firstTitle)).toBeLessThan(
+        initialColumnText.indexOf(secondTitle)
+      );
+
+      await page
+        .locator("article")
+        .filter({ hasText: secondTitle })
+        .getByLabel(REORDER_UP_LABEL_PATTERN)
+        .click();
+
+      await expect
+        .poll(async () => {
+          const columnText = (await todoColumn.textContent()) ?? "";
+
+          return (
+            columnText.indexOf(secondTitle) >= 0 &&
+            columnText.indexOf(secondTitle) < columnText.indexOf(firstTitle)
+          );
+        })
+        .toBe(true);
+    } finally {
+      await cleanupAccountWithUi(page, account);
+    }
+  });
+
   test("creates a project and creates an issue inside it", async ({ page }) => {
     const account = await createAccountWithUi(page, {
       name: "Project User",
@@ -96,7 +145,12 @@ test.describe("issue workspace", () => {
       ).toBeVisible();
       await expect(page.getByText("0 issues")).toBeVisible();
 
-      await page.getByLabel("Issue title").fill(issueTitle);
+      const issueTitleInput = page.getByRole("textbox", {
+        name: "Issue title",
+      });
+      await expect(issueTitleInput).toBeEditable();
+      await issueTitleInput.fill(issueTitle);
+      await expect(issueTitleInput).toHaveValue(issueTitle);
       const createIssueButton = page.getByRole("button", {
         name: "Create issue",
       });

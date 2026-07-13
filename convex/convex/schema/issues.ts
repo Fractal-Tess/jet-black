@@ -59,6 +59,7 @@ export const issueTables = {
     createdByUserId: v.string(),
     description: v.optional(v.string()),
     identifier: v.string(),
+    position: v.optional(v.number()),
     priority: issuePriority,
     projectId: v.id("projects"),
     sequenceId: v.number(),
@@ -69,6 +70,11 @@ export const issueTables = {
   })
     .index("by_projectId", ["projectId"])
     .index("by_projectId_sequenceId", ["projectId", "sequenceId"])
+    .index("by_projectId_stateId_position", [
+      "projectId",
+      "stateId",
+      "position",
+    ])
     .index("by_workspaceId", ["workspaceId"])
     .searchIndex("search_title", {
       filterFields: ["projectId", "workspaceId"],

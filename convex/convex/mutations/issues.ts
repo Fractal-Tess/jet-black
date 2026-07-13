@@ -40,6 +40,7 @@ export const create = mutation({
       createdByUserId: user._id,
       description: args.description?.trim() || undefined,
       identifier: `${project.key}-${sequenceId}`,
+      position: now,
       priority: args.priority,
       projectId: project._id,
       sequenceId,
@@ -108,6 +109,40 @@ export const update = mutation({
       actorUserId: user._id,
       issueId: args.issueId,
       message: "updated the issue",
+      workspaceId: issue.workspaceId,
+    });
+
+    return args.issueId;
+  },
+});
+
+export const move = mutation({
+  args: {
+    issueId: v.id("issues"),
+    position: v.number(),
+    stateId: v.id("issueStates"),
+  },
+  handler: async (ctx, args) => {
+    const user = await requireAuthUser(ctx);
+    const issue = await requireIssueAccess(ctx, user._id, args.issueId);
+    const state = await ctx.db.get(args.stateId);
+
+    if (!state || state.projectId !== issue.projectId) {
+      throw new ConvexError("Invalid issue state");
+    }
+
+    await ctx.db.patch(args.issueId, {
+      position: args.position,
+      stateId: args.stateId,
+      updatedAt: Date.now(),
+    });
+    await ctx.db.insert("issueActivities", {
+      actorUserId: user._id,
+      issueId: args.issueId,
+      message:
+        args.stateId === issue.stateId
+          ? "reordered the issue"
+          : "moved the issue",
       workspaceId: issue.workspaceId,
     });
 

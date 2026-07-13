@@ -25,6 +25,7 @@ export type Issue = {
   description?: string;
   identifier: string;
   labels: IssueLabel[];
+  position?: number;
   priority: IssuePriority;
   state: IssueState | null;
   stateId: Id<"issueStates">;
