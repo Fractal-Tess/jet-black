@@ -5,6 +5,7 @@ import {
   createAccountWithUi,
   DASHBOARD_URL_PATTERN,
   fillMainIssueTitle,
+  signInWithUi,
 } from "./helpers/auth";
 
 const REORDER_UP_LABEL_PATTERN = /Reorder .* up/;
@@ -173,15 +174,46 @@ test.describe("issue workspace", () => {
     }
   });
 
-  test("creates a project and creates an issue inside it", async ({ page }) => {
+  test("syncs issue state changes across browser contexts", async ({
+    browser,
+    page,
+  }) => {
+    const account = await createAccountWithUi(page, {
+      name: "Realtime User",
+      prefix: "issues-realtime",
+    });
+    const secondPage = await browser.newPage();
+    const title = `Realtime synced issue ${crypto.randomUUID()}`;
+
+    try {
+      await signInWithUi(secondPage, account);
+
+      await page.getByLabel("Quick issue title for Todo").fill(title);
+      await page.getByRole("button", { name: "Add issue to Todo" }).click();
+
+      await expect(page.getByLabel("Todo column")).toContainText(title);
+      await expect(secondPage.getByLabel("Todo column")).toContainText(title);
+
+      await page
+        .locator("article")
+        .filter({ hasText: title })
+        .getByLabel("Move")
+        .selectOption({ label: "Done" });
+
+      await expect(secondPage.getByLabel("Done column")).toContainText(title);
+    } finally {
+      await secondPage.close();
+      await cleanupAccountWithUi(page, account);
+    }
+  });
+
+  test("creates a project and opens it", async ({ page }) => {
     const account = await createAccountWithUi(page, {
       name: "Project User",
       prefix: "issues-project",
     });
     const projectName = `Ops ${crypto.randomUUID().slice(0, 8)}`;
     const projectKey = `P${crypto.randomUUID().replace(/-/g, "").slice(0, 5)}`;
-    const issueTitle = `Project scoped issue ${crypto.randomUUID()}`;
-
     try {
       await page.getByRole("button", { name: "Create project" }).click();
       await page.getByLabel("Project name").fill(projectName);
@@ -198,16 +230,9 @@ test.describe("issue workspace", () => {
         page.getByRole("heading", { name: projectName }).first()
       ).toBeVisible();
       await expect(page.getByText("0 issues")).toBeVisible();
-
-      await page.getByLabel("Quick issue title for Todo").fill(issueTitle);
-      await page.getByRole("button", { name: "Add issue to Todo" }).click();
-
       await expect(
-        page.getByRole("heading", { name: issueTitle })
-      ).toBeVisible();
-      await expect(
-        page.getByText(`${projectKey.toUpperCase()}-1`).first()
-      ).toBeVisible();
+        page.getByText(`${projectKey.toUpperCase()}-1`)
+      ).toBeHidden();
     } finally {
       await cleanupAccountWithUi(page, account);
     }

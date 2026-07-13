@@ -114,8 +114,8 @@ Observed in `references/plane`:
 - [x] Add quick issue creation inside each state column.
 - [x] Add drag-and-drop issue movement.
 - [ ] Add optimistic UI behavior where safe.
-- [ ] Ensure updates appear in another browser context without refresh.
-- [ ] Add Playwright realtime test with two browser contexts.
+- [x] Ensure updates appear in another browser context without refresh.
+- [x] Add Playwright realtime test with two browser contexts.
 - [x] Add Playwright kanban drag/drop tests.
 
 ## Phase 3: issue model parity
