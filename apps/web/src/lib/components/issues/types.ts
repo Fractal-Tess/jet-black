@@ -51,6 +51,15 @@ export type IssueComment = {
   updatedAt: number;
 };
 
+export type IssueAttachment = {
+  _creationTime: number;
+  _id: Id<"issueAttachments">;
+  createdByUserId: string;
+  issueId: Id<"issues">;
+  name: string;
+  url: string;
+};
+
 export type Project = {
   _id: Id<"projects">;
   color: string;

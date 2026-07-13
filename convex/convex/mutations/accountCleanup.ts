@@ -1,6 +1,22 @@
 import { v } from "convex/values";
 
+import type { Id } from "../_generated/dataModel";
+import type { MutationCtx } from "../_generated/server";
 import { internalMutation } from "../_generated/server";
+
+async function deleteIssueAttachments(
+  ctx: MutationCtx,
+  workspaceId: Id<"workspaces">
+) {
+  const issueAttachments = await ctx.db
+    .query("issueAttachments")
+    .withIndex("by_workspaceId", (q) => q.eq("workspaceId", workspaceId))
+    .collect();
+
+  for (const attachment of issueAttachments) {
+    await ctx.db.delete(attachment._id);
+  }
+}
 
 export const deleteForUser = internalMutation({
   args: {
@@ -30,6 +46,8 @@ export const deleteForUser = internalMutation({
       for (const comment of issueComments) {
         await ctx.db.delete(comment._id);
       }
+
+      await deleteIssueAttachments(ctx, workspaceId);
 
       const issueActivities = await ctx.db
         .query("issueActivities")

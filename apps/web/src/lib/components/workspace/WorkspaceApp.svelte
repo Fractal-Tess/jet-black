@@ -9,6 +9,7 @@ import KanbanBoard from "$lib/components/issues/KanbanBoard.svelte";
 import NewIssueForm from "$lib/components/issues/NewIssueForm.svelte";
 import type {
   Issue,
+  IssueAttachment,
   IssueLabel,
   IssuePriority,
   IssueState,
@@ -63,6 +64,7 @@ const ensurePersonalWorkspace = useMutation(
 const createIssue = useMutation(api.mutations.issues.create);
 const updateIssue = useMutation(api.mutations.issues.update);
 const moveIssue = useMutation(api.mutations.issues.move);
+const addAttachment = useMutation(api.mutations.attachments.addLink);
 const createComment = useMutation(api.mutations.comments.create);
 const createLabel = useMutation(api.mutations.labels.create);
 const toggleIssueLabel = useMutation(api.mutations.labels.toggleForIssue);
@@ -128,7 +130,18 @@ const commentsQuery = useQuery(api.queries.comments.listForIssue, () =>
     ? { issueId: selectedIssue._id }
     : "skip"
 );
+const attachmentsQuery = useQuery(api.queries.attachments.listForIssue, () =>
+  auth.isAuthenticated &&
+  convexTokenReady &&
+  selectedIssue &&
+  !leavingAuthenticatedSession
+    ? { issueId: selectedIssue._id }
+    : "skip"
+);
 const comments = $derived(commentsQuery.data ?? []);
+const attachments = $derived(
+  (attachmentsQuery.data as IssueAttachment[] | undefined) ?? []
+);
 const fallbackUser = $derived({
   email: data.user.email,
   id: data.user.id,
@@ -315,6 +328,18 @@ async function handleAddComment(body: string) {
   await createComment({
     body,
     issueId: selectedIssue._id,
+  });
+}
+
+async function handleAddAttachment(input: { name: string; url: string }) {
+  if (!selectedIssue) {
+    return;
+  }
+
+  await addAttachment({
+    issueId: selectedIssue._id,
+    name: input.name,
+    url: input.url,
   });
 }
 
@@ -537,9 +562,11 @@ async function handleSelectProject(nextProjectId: Project["_id"]) {
               </div>
 
               <IssueDetail
+                {attachments}
                 comments={comments}
                 issue={selectedIssue}
                 {labels}
+                onAddAttachment={handleAddAttachment}
                 onAddComment={handleAddComment}
                 onCreateLabel={handleCreateLabel}
                 onToggleLabel={handleToggleLabel}

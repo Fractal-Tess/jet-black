@@ -35,6 +35,17 @@ export const issueTables = {
   })
     .index("by_issueId", ["issueId"])
     .index("by_workspaceId", ["workspaceId"]),
+  issueAttachments: defineTable({
+    createdByUserId: v.string(),
+    issueId: v.id("issues"),
+    name: v.string(),
+    projectId: v.id("projects"),
+    url: v.string(),
+    workspaceId: v.id("workspaces"),
+  })
+    .index("by_issueId", ["issueId"])
+    .index("by_projectId", ["projectId"])
+    .index("by_workspaceId", ["workspaceId"]),
   issueLabelAssignments: defineTable({
     issueId: v.id("issues"),
     labelId: v.id("issueLabels"),

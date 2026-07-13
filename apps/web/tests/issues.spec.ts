@@ -20,6 +20,8 @@ test.describe("issue workspace", () => {
     const updatedTitle = `${title} updated`;
     const comment = `Looks good ${crypto.randomUUID()}`;
     const label = `Frontend ${crypto.randomUUID().slice(0, 8)}`;
+    const attachmentName = `Spec ${crypto.randomUUID().slice(0, 8)}`;
+    const attachmentUrl = "https://example.com/spec";
 
     try {
       await expect(page).toHaveURL(DASHBOARD_URL_PATTERN);
@@ -69,6 +71,13 @@ test.describe("issue workspace", () => {
           .locator("article")
           .filter({ hasText: updatedTitle })
           .getByText(label)
+      ).toBeVisible();
+
+      await page.getByLabel("Attachment name").fill(attachmentName);
+      await page.getByLabel("Attachment URL").fill(attachmentUrl);
+      await page.getByRole("button", { name: "Add attachment" }).click();
+      await expect(
+        page.getByRole("link", { name: attachmentName })
       ).toBeVisible();
 
       await page.getByLabel("New comment").fill(comment);

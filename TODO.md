@@ -132,7 +132,7 @@ Observed in `references/plane`:
   - [x] `completedAt`.
   - [x] `createdAt`.
 - [x] Add issue labels table and mutations.
-- [ ] Add issue attachments placeholder model.
+- [x] Add issue attachments placeholder model.
 - [ ] Add issue links model.
 - [ ] Add issue relations model:
   - [ ] blocks.
