@@ -139,7 +139,7 @@ Observed in `references/plane`:
   - [ ] blocked by.
   - [ ] relates to.
   - [ ] duplicates.
-- [ ] Add sub-issues.
+- [x] Add sub-issues.
 - [ ] Add issue activity feed with structured event types.
 - [ ] Add rich issue detail drawer/page:
   - [ ] Title.

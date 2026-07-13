@@ -35,6 +35,7 @@ export type Issue = {
   parentIssueId?: Id<"issues">;
   position?: number;
   priority: IssuePriority;
+  projectId: Id<"projects">;
   state: IssueState | null;
   stateId: Id<"issueStates">;
   startDate?: string;

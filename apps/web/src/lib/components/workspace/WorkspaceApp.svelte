@@ -138,6 +138,11 @@ const labels = $derived((labelsQuery.data as IssueLabel[] | undefined) ?? []);
 const selectedIssue = $derived(
   issues.find((issue) => issue._id === selectedIssueId) ?? issues[0] ?? null
 );
+const selectedSubIssues = $derived(
+  selectedIssue
+    ? issues.filter((issue) => issue.parentIssueId === selectedIssue._id)
+    : []
+);
 const commentsQuery = useQuery(api.queries.comments.listForIssue, () =>
   auth.isAuthenticated &&
   convexTokenReady &&
@@ -278,6 +283,7 @@ $effect(() => {
 
 async function handleCreateIssue(input: {
   description?: string;
+  parentIssueId?: Issue["_id"];
   priority: IssuePriority;
   stateId?: IssueState["_id"];
   title: string;
@@ -313,6 +319,20 @@ async function handleQuickCreateIssue(state: IssueState, title: string) {
   await handleCreateIssue({
     priority: "medium",
     stateId: state._id,
+    title,
+  });
+}
+
+async function handleCreateSubIssue(title: string) {
+  if (!selectedIssue) {
+    return;
+  }
+
+  await createIssue({
+    parentIssueId: selectedIssue._id,
+    priority: "medium",
+    projectId: selectedIssue.projectId,
+    stateId: selectedIssue.stateId,
     title,
   });
 }
@@ -618,9 +638,11 @@ async function handleSelectProject(nextProjectId: Project["_id"]) {
                 onArchiveIssue={handleArchiveIssue}
                 onAddComment={handleAddComment}
                 onCreateLabel={handleCreateLabel}
+                onCreateSubIssue={handleCreateSubIssue}
                 onToggleLabel={handleToggleLabel}
                 onUpdateIssue={handleUpdateIssue}
                 {states}
+                subIssues={selectedSubIssues}
               />
             </div>
           </div>

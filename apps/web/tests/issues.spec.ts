@@ -22,6 +22,7 @@ test.describe("issue workspace", () => {
     const label = `Frontend ${crypto.randomUUID().slice(0, 8)}`;
     const attachmentName = `Spec ${crypto.randomUUID().slice(0, 8)}`;
     const attachmentUrl = "https://example.com/spec";
+    const subIssueTitle = `Sub issue ${crypto.randomUUID()}`;
 
     try {
       await expect(page).toHaveURL(DASHBOARD_URL_PATTERN);
@@ -79,6 +80,12 @@ test.describe("issue workspace", () => {
       await expect(
         page.getByRole("link", { name: attachmentName })
       ).toBeVisible();
+
+      await page.getByLabel("Sub-issue title").fill(subIssueTitle);
+      await page.getByRole("button", { exact: true, name: "Add" }).click();
+      await expect(
+        page.locator("article").filter({ hasText: subIssueTitle })
+      ).toHaveCount(2);
 
       await page.getByLabel("New comment").fill(comment);
       await page.getByRole("button", { exact: true, name: "Comment" }).click();

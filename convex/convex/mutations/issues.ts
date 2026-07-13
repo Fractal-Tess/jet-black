@@ -20,6 +20,7 @@ const priorityValidator = v.union(
 export const create = mutation({
   args: {
     description: v.optional(v.string()),
+    parentIssueId: v.optional(v.id("issues")),
     priority: priorityValidator,
     projectId: v.id("projects"),
     stateId: v.optional(v.id("issueStates")),
@@ -38,9 +39,16 @@ export const create = mutation({
     const sequenceId = await getNextSequenceId(ctx, project._id);
     const stateId = args.stateId ?? (await getDefaultStateId(ctx, project._id));
     const state = await ctx.db.get(stateId);
+    const parentIssue = args.parentIssueId
+      ? await ctx.db.get(args.parentIssueId)
+      : null;
 
     if (!state || state.projectId !== project._id) {
       throw new ConvexError("Invalid issue state");
+    }
+
+    if (args.parentIssueId && parentIssue?.projectId !== project._id) {
+      throw new ConvexError("Invalid parent issue");
     }
 
     const issueId = await ctx.db.insert("issues", {
@@ -48,6 +56,7 @@ export const create = mutation({
       createdAt: now,
       description: args.description?.trim() || undefined,
       identifier: `${project.key}-${sequenceId}`,
+      parentIssueId: args.parentIssueId,
       position: now,
       priority: args.priority,
       projectId: project._id,
@@ -61,7 +70,7 @@ export const create = mutation({
     await ctx.db.insert("issueActivities", {
       actorUserId: user._id,
       issueId,
-      message: "created the issue",
+      message: args.parentIssueId ? "created a sub-issue" : "created the issue",
       workspaceId: project.workspaceId,
     });
 
