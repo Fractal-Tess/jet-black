@@ -11,7 +11,7 @@ import {
 } from "$lib/routes";
 
 let {
-  activeModule = "issues",
+  activeModule = "tickets",
   activeWorkspaceSlug,
   children,
   connected,
@@ -59,7 +59,7 @@ const selectedProject = $derived(
   projects.find((project) => project._id === selectedProjectId) ?? null
 );
 const moduleLinks: { label: string; module: ProjectModule }[] = [
-  { label: "Issues", module: "issues" },
+  { label: "Tickets", module: "tickets" },
   { label: "Intake", module: "intake" },
   { label: "Sprints", module: "sprints" },
   { label: "Modules", module: "modules" },
@@ -331,7 +331,7 @@ async function createProject() {
                 : ''}"
               href={activeWorkspaceSlug
                 ? projectModuleHref({
-                    module: "issues",
+                    module: "tickets",
                     projectId: project._id,
                     workspaceSlug: activeWorkspaceSlug,
                   })
@@ -363,7 +363,8 @@ async function createProject() {
             {#each moduleLinks as item (item.module)}
               <a
                 class="flex h-8 items-center gap-2 rounded-md px-3 text-zinc-400 transition hover:bg-white/5 hover:text-zinc-200 {activeModule ===
-                item.module
+                  item.module ||
+                (activeModule === 'issues' && item.module === 'tickets')
                   ? 'bg-white/10 text-zinc-100'
                   : ''}"
                 href={projectModuleHref({
@@ -373,7 +374,7 @@ async function createProject() {
                 })}
               >
                 <span aria-hidden="true">
-                  {item.module === "issues"
+                  {item.module === "tickets"
                     ? "□"
                     : item.module === "intake"
                       ? "◇"

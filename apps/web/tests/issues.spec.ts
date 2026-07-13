@@ -372,7 +372,7 @@ test.describe("issue workspace", () => {
       await expect(
         page.getByRole("heading", { name: projectName }).first()
       ).toBeVisible();
-      await expect(page.getByText("0 issues")).toBeVisible();
+      await expect(page.getByText("0 tickets")).toBeVisible();
       await expect(
         page.getByText(`${projectKey.toUpperCase()}-1`)
       ).toBeHidden();

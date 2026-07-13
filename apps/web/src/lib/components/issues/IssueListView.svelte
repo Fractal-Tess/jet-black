@@ -91,7 +91,7 @@ function sortLabel(label: string, key: SortKey) {
       <p class="text-xs font-medium uppercase tracking-[0.18em] text-zinc-500">
         List
       </p>
-      <h2 class="mt-1 text-lg font-semibold text-zinc-100">Issues</h2>
+      <h2 class="mt-1 text-lg font-semibold text-zinc-100">Tickets</h2>
     </div>
 
     <div class="flex flex-wrap gap-2">

@@ -6,15 +6,17 @@ export type ProjectModule =
   | "modules"
   | "pages"
   | "sprints"
+  | "tickets"
   | "views";
 
-const DEFAULT_MODULE: ProjectModule = "issues";
+const DEFAULT_MODULE: ProjectModule = "tickets";
 const PROJECT_MODULES = [
   "intake",
   "issues",
   "modules",
   "pages",
   "sprints",
+  "tickets",
   "views",
 ] as const;
 

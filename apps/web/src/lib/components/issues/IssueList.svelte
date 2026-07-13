@@ -40,7 +40,7 @@ function formatAge(timestamp: number) {
   >
     <div>
       <p class="text-xs font-medium uppercase tracking-[0.18em] text-zinc-500">
-        Issues
+        Tickets
       </p>
       <h2 class="mt-1 text-lg font-semibold text-zinc-100">
         Work item inbox
@@ -110,7 +110,7 @@ function formatAge(timestamp: number) {
         >
           ◇
         </div>
-        <p class="mt-4 text-sm text-zinc-500">No issues yet.</p>
+        <p class="mt-4 text-sm text-zinc-500">No tickets yet.</p>
         <p class="mt-1 text-xs text-zinc-700">
           Create the first work item to start the project loop.
         </p>

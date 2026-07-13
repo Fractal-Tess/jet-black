@@ -12,11 +12,11 @@ let {
   module,
   projectName,
 }: {
-  module: Exclude<ProjectModule, "issues">;
+  module: Exclude<ProjectModule, "issues" | "tickets">;
   projectName: string;
 } = $props();
 
-const copy: Record<Exclude<ProjectModule, "issues">, ModuleCopy> = {
+const copy: Record<Exclude<ProjectModule, "issues" | "tickets">, ModuleCopy> = {
   sprints: {
     cta: "Create sprint",
     description:

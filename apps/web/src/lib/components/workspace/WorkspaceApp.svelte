@@ -34,9 +34,11 @@ import {
   projectModuleHref,
 } from "$lib/routes";
 
+type PlaceholderProjectModule = Exclude<ProjectModule, "issues" | "tickets">;
+
 let {
   data,
-  module = "issues",
+  module = "tickets",
   projectId,
   routeIssueId,
   workspaceSlug,
@@ -63,6 +65,12 @@ let {
 const activeModule: ProjectModule = $derived(
   normalizeProjectModule(module ?? data.module ?? data.activeModule)
 );
+const activeTicketsModule = $derived(
+  activeModule === "tickets" || activeModule === "issues"
+);
+const activePlaceholderModule = $derived(
+  placeholderProjectModule(activeModule)
+);
 const routeIssue = $derived(routeIssueId ?? data.issueId);
 const routeProjectId = $derived(projectId ?? data.projectId);
 const routeWorkspaceSlug = $derived(workspaceSlug ?? data.workspaceSlug);
@@ -86,6 +94,16 @@ const createComment = useMutation(api.mutations.comments.create);
 const createLabel = useMutation(api.mutations.labels.create);
 const toggleIssueLabel = useMutation(api.mutations.labels.toggleForIssue);
 const createProject = useMutation(api.mutations.projects.create);
+
+function placeholderProjectModule(
+  value: ProjectModule
+): PlaceholderProjectModule | null {
+  if (value === "issues" || value === "tickets") {
+    return null;
+  }
+
+  return value;
+}
 
 let selectedIssueId = $state<Issue["_id"] | undefined>();
 let selectedProjectId = $state<Project["_id"] | undefined>();
@@ -651,7 +669,7 @@ async function handleArchiveIssue() {
   if (viewerData?.activeWorkspace) {
     await goto(
       projectModuleHref({
-        module: "issues",
+        module: "tickets",
         projectId: activeProject._id,
         workspaceSlug: viewerData.activeWorkspace.slug,
       })
@@ -678,7 +696,7 @@ async function handleCreateProject(input: { key: string; name: string }) {
       selectedProjectId = project._id;
       await goto(
         projectModuleHref({
-          module: "issues",
+          module: "tickets",
           projectId: project._id,
           workspaceSlug: viewerData.activeWorkspace.slug,
         })
@@ -702,7 +720,7 @@ async function handleSelectProject(nextProjectId: Project["_id"]) {
 
   await goto(
     projectModuleHref({
-      module: "issues",
+      module: "tickets",
       projectId: nextProjectId,
       workspaceSlug: viewerData.activeWorkspace.slug,
     })
@@ -735,8 +753,8 @@ async function handleSelectProject(nextProjectId: Project["_id"]) {
         <span aria-hidden="true">⌂</span>
         <span>Home</span>
         <span class="text-zinc-700">/</span>
-        <span>{activeProject?.name ?? "Issues"}</span>
-        {#if activeModule !== "issues"}
+        <span>{activeProject?.name ?? "Tickets"}</span>
+        {#if !activeTicketsModule}
           <span class="text-zinc-700">/</span>
           <span class="capitalize">{activeModule}</span>
         {/if}
@@ -787,12 +805,12 @@ async function handleSelectProject(nextProjectId: Project["_id"]) {
             </h2>
             <p class="mt-1 max-w-2xl text-sm text-zinc-500">
               {activeProject.description ??
-                "Realtime issues, comments, and status changes."}
+                "Realtime tickets, comments, and status changes."}
             </p>
           </div>
           <div class="flex gap-2 text-xs text-zinc-500">
             <span class="rounded-md border border-white/10 px-2 py-1">
-              {issues.length} issues
+              {issues.length} tickets
             </span>
             <span class="rounded-md border border-white/10 px-2 py-1">
               {states.length} states
@@ -831,9 +849,9 @@ async function handleSelectProject(nextProjectId: Project["_id"]) {
             onUpdate={handleUpdatePage}
             {pages}
           />
-        {:else if activeModule !== "issues"}
+        {:else if activePlaceholderModule}
           <ProjectModulePlaceholder
-            module={activeModule}
+            module={activePlaceholderModule}
             projectName={activeProject.name}
           />
         {:else}

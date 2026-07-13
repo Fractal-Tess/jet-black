@@ -28,7 +28,7 @@ test.describe("workspace navigation", () => {
 
       await expect(page).toHaveURL(WORKSPACE_PROJECT_MODULE_URL_PATTERN);
       await expect(
-        page.getByRole("link", { exact: true, name: "Issues" })
+        page.getByRole("link", { exact: true, name: "Tickets" })
       ).toBeVisible();
       await expect(
         page.getByRole("link", { exact: true, name: "Intake" })

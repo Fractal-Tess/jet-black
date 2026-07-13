@@ -10,7 +10,7 @@ export const LOGIN_WITHOUT_QUERY_URL_PATTERN = /\/login$/;
 export const PROTECTED_REDIRECT_URL_PATTERN =
   /\/login\?returnTo=(?:%2F|\/)dashboard$/;
 export const WORKSPACE_PROJECT_MODULE_URL_PATTERN =
-  /\/workspace\/[^/]+\/projects\/[^/]+\/issues$/;
+  /\/workspace\/[^/]+\/projects\/[^/]+\/tickets$/;
 
 export function uniqueEmail(prefix: string) {
   return `${prefix}-${crypto.randomUUID()}@jet-black.local`;
