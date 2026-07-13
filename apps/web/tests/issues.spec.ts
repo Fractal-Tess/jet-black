@@ -67,6 +67,12 @@ test.describe("issue workspace", () => {
       await page.getByRole("button", { exact: true, name: "Comment" }).click();
 
       await expect(page.getByText(comment)).toBeVisible();
+      await expect(
+        page
+          .locator("article")
+          .filter({ hasText: updatedTitle })
+          .getByLabel("1 comment")
+      ).toBeVisible();
     } finally {
       await cleanupAccountWithUi(page, account);
     }

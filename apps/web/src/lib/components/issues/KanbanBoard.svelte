@@ -85,6 +85,16 @@ function positionAtStateEnd(
 
   return positionBetween(stateIssues.at(-1));
 }
+
+function assigneeInitials(issue: Issue) {
+  return (issue.assigneeUserId ?? issue.createdByUserId)
+    .slice(0, 2)
+    .toUpperCase();
+}
+
+function commentLabel(commentCount: number) {
+  return `${commentCount} ${commentCount === 1 ? "comment" : "comments"}`;
+}
 </script>
 
 <section class="rounded-xl border border-white/10 bg-[#151616]">
@@ -164,12 +174,27 @@ function positionAtStateEnd(
                 {/if}
               </button>
 
-              <div class="mt-3 flex items-center justify-between gap-2">
-                <span
-                  class="rounded-full border border-amber-400/15 bg-amber-400/5 px-2 py-0.5 text-[11px] text-amber-300"
-                >
-                  {priorityLabel[issue.priority]}
-                </span>
+              <div class="mt-3 flex flex-wrap items-center gap-2">
+                <div class="flex min-w-0 flex-1 flex-wrap items-center gap-2">
+                  <span
+                    class="rounded-full border border-amber-400/15 bg-amber-400/5 px-2 py-0.5 text-[11px] text-amber-300"
+                  >
+                    {priorityLabel[issue.priority]}
+                  </span>
+                  <span
+                    aria-label={commentLabel(issue.commentCount)}
+                    class="rounded-full border border-white/10 px-2 py-0.5 text-[11px] text-zinc-500"
+                  >
+                    💬 {issue.commentCount}
+                  </span>
+                  <span
+                    aria-label={`Assignee ${assigneeInitials(issue)}`}
+                    class="grid size-6 place-items-center rounded-full border border-white/10 bg-white/[0.04] font-mono text-[10px] text-zinc-400"
+                    title="Assignee placeholder"
+                  >
+                    {assigneeInitials(issue)}
+                  </span>
+                </div>
                 <div class="flex items-center gap-1">
                   <button
                     aria-label={`Reorder ${issue.identifier} up`}

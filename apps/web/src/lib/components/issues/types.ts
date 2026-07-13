@@ -22,6 +22,9 @@ export type IssueLabel = {
 export type Issue = {
   _creationTime: number;
   _id: Id<"issues">;
+  assigneeUserId?: string;
+  commentCount: number;
+  createdByUserId: string;
   description?: string;
   identifier: string;
   labels: IssueLabel[];

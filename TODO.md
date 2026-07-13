@@ -108,8 +108,8 @@ Observed in `references/plane`:
   - [x] Title.
   - [x] Priority.
   - [x] State.
-  - [ ] Assignee avatar placeholder.
-  - [ ] Comment count.
+  - [x] Assignee avatar placeholder.
+  - [x] Comment count.
   - [ ] Module/cycle badges once those exist.
 - [ ] Add quick issue creation inside each state column.
 - [ ] Add drag-and-drop issue movement.

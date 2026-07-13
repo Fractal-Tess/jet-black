@@ -21,6 +21,15 @@ async function labelsForIssue(ctx: QueryCtx, issueId: Id<"issues">) {
   return labels.filter((label) => label !== null);
 }
 
+async function commentCountForIssue(ctx: QueryCtx, issueId: Id<"issues">) {
+  const comments = await ctx.db
+    .query("issueComments")
+    .withIndex("by_issueId", (q) => q.eq("issueId", issueId))
+    .collect();
+
+  return comments.length;
+}
+
 export const listForProject = query({
   args: {
     projectId: v.id("projects"),
@@ -40,6 +49,7 @@ export const listForProject = query({
     return await Promise.all(
       issues.map(async (issue) => ({
         ...issue,
+        commentCount: await commentCountForIssue(ctx, issue._id),
         labels: await labelsForIssue(ctx, issue._id),
         state: await ctx.db.get(issue.stateId),
       }))
