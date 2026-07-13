@@ -212,19 +212,19 @@ Observed in `references/plane`:
 
 ## Phase 6: intake
 
-- [ ] Add intake issue schema:
-  - [ ] title.
-  - [ ] description.
-  - [ ] source.
-  - [ ] status: pending, accepted, declined, snoozed.
-  - [ ] projectId.
-  - [ ] createdByUserId.
-- [ ] Add project intake page.
-- [ ] Add create intake item.
-- [ ] Add accept intake item into real issue.
-- [ ] Add decline intake item.
+- [x] Add intake issue schema:
+  - [x] title.
+  - [x] description.
+  - [x] source.
+  - [x] status: pending, accepted, declined, snoozed.
+  - [x] projectId.
+  - [x] createdByUserId.
+- [x] Add project intake page.
+- [x] Add create intake item.
+- [x] Add accept intake item into real issue.
+- [x] Add decline intake item.
 - [ ] Add intake count badge in project nav.
-- [ ] Add e2e test for intake -> accepted issue.
+- [x] Add e2e test for intake -> accepted issue.
 
 ## Phase 7: cycles
 

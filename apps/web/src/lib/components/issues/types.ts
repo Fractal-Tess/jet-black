@@ -61,6 +61,19 @@ export type IssueAttachment = {
   url: string;
 };
 
+export type IntakeIssue = {
+  _creationTime: number;
+  _id: Id<"intakeIssues">;
+  acceptedIssueId?: Id<"issues">;
+  createdAt: number;
+  createdByUserId: string;
+  description?: string;
+  source: string;
+  status: "accepted" | "declined" | "pending" | "snoozed";
+  title: string;
+  updatedAt: number;
+};
+
 export type Project = {
   _id: Id<"projects">;
   color: string;

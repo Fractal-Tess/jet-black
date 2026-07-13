@@ -9,6 +9,7 @@ import {
 } from "./helpers/auth";
 
 const REORDER_UP_LABEL_PATTERN = /Reorder .* up/;
+const INTAKE_URL_PATTERN = /\/intake$/;
 
 test.describe("issue workspace", () => {
   test("creates, updates, and comments on an issue", async ({ page }) => {
@@ -254,6 +255,34 @@ test.describe("issue workspace", () => {
           );
         })
         .toBe(true);
+    } finally {
+      await cleanupAccountWithUi(page, account);
+    }
+  });
+
+  test("accepts intake items into issues", async ({ page }) => {
+    const account = await createAccountWithUi(page, {
+      name: "Intake User",
+      prefix: "issues-intake",
+    });
+    const title = `Intake request ${crypto.randomUUID()}`;
+
+    try {
+      await page.getByRole("link", { exact: true, name: "Intake" }).click();
+      await expect(page).toHaveURL(INTAKE_URL_PATTERN);
+
+      await page.getByLabel("Intake title").fill(title);
+      await page.getByLabel("Intake source").fill("support");
+      await page
+        .getByLabel("Intake description")
+        .fill("Created by the intake e2e flow.");
+      await page.getByRole("button", { name: "Add intake item" }).click();
+
+      await expect(page.getByText(title)).toBeVisible();
+      await page.getByRole("button", { exact: true, name: "Accept" }).click();
+
+      await expect(page.getByRole("heading", { name: title })).toBeVisible();
+      await expect(page.getByLabel("Todo column")).toContainText(title);
     } finally {
       await cleanupAccountWithUi(page, account);
     }

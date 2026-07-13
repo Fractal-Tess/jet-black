@@ -38,9 +38,7 @@ test.describe("workspace navigation", () => {
       await page.getByRole("link", { exact: true, name: "Intake" }).click();
       await expect(page).toHaveURL(INTAKE_URL_PATTERN);
       await expect(
-        page.getByRole("heading", {
-          name: "Triage draft work before it reaches the board.",
-        })
+        page.getByRole("heading", { name: "New intake item" })
       ).toBeVisible();
 
       await page.getByRole("link", { exact: true, name: "Pages" }).click();

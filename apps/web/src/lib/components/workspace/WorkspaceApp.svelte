@@ -9,6 +9,7 @@ import IssueStateSummary from "$lib/components/issues/IssueStateSummary.svelte";
 import KanbanBoard from "$lib/components/issues/KanbanBoard.svelte";
 import NewIssueForm from "$lib/components/issues/NewIssueForm.svelte";
 import type {
+  IntakeIssue,
   Issue,
   IssueAttachment,
   IssueLabel,
@@ -17,6 +18,7 @@ import type {
   Project,
   ViewerData,
 } from "$lib/components/issues/types";
+import IntakeModule from "$lib/components/projects/IntakeModule.svelte";
 import ProjectModulePlaceholder from "$lib/components/projects/ProjectModulePlaceholder.svelte";
 import AppShell from "$lib/components/shell/AppShell.svelte";
 import {
@@ -66,6 +68,9 @@ const createIssue = useMutation(api.mutations.issues.create);
 const updateIssue = useMutation(api.mutations.issues.update);
 const moveIssue = useMutation(api.mutations.issues.move);
 const archiveIssue = useMutation(api.mutations.issues.archive);
+const acceptIntakeIssue = useMutation(api.mutations.intake.accept);
+const createIntakeIssue = useMutation(api.mutations.intake.create);
+const updateIntakeStatus = useMutation(api.mutations.intake.updateStatus);
 const addAttachment = useMutation(api.mutations.attachments.addLink);
 const createComment = useMutation(api.mutations.comments.create);
 const createLabel = useMutation(api.mutations.labels.create);
@@ -75,6 +80,7 @@ const createProject = useMutation(api.mutations.projects.create);
 let selectedIssueId = $state<Issue["_id"] | undefined>();
 let selectedProjectId = $state<Project["_id"] | undefined>();
 let creating = $state(false);
+let creatingIntake = $state(false);
 let creatingProject = $state(false);
 let ensuringWorkspace = $state(false);
 let ensuredWorkspace = $state(false);
@@ -120,7 +126,19 @@ const labelsQuery = useQuery(api.queries.labels.listForProject, () =>
     ? { projectId: activeProject._id }
     : "skip"
 );
+const intakeQuery = useQuery(api.queries.intake.listForProject, () =>
+  auth.isAuthenticated &&
+  convexTokenReady &&
+  activeProject &&
+  activeModule === "intake" &&
+  !leavingAuthenticatedSession
+    ? { projectId: activeProject._id }
+    : "skip"
+);
 const issues = $derived((issuesQuery.data as Issue[] | undefined) ?? []);
+const intakeIssues = $derived(
+  (intakeQuery.data as IntakeIssue[] | undefined) ?? []
+);
 const filteredIssues = $derived(
   issues.filter((issue) => {
     const search = issueSearch.trim().toLowerCase();
@@ -178,11 +196,16 @@ const loadingRealtimeData = $derived(
   viewer.isLoading ||
     issuesQuery.isLoading ||
     statesQuery.isLoading ||
-    labelsQuery.isLoading
+    labelsQuery.isLoading ||
+    intakeQuery.isLoading
 );
 const realtimeError = $derived(
   Boolean(
-    viewer.error || issuesQuery.error || statesQuery.error || labelsQuery.error
+    viewer.error ||
+      issuesQuery.error ||
+      statesQuery.error ||
+      labelsQuery.error ||
+      intakeQuery.error
   )
 );
 const connected = $derived(!(loadingRealtimeData || realtimeError));
@@ -336,6 +359,51 @@ async function handleCreateSubIssue(title: string) {
     projectId: selectedIssue.projectId,
     stateId: selectedIssue.stateId,
     title,
+  });
+}
+
+async function handleCreateIntakeIssue(input: {
+  description?: string;
+  source?: string;
+  title: string;
+}) {
+  if (!activeProject) {
+    return;
+  }
+
+  creatingIntake = true;
+
+  try {
+    await createIntakeIssue({
+      ...input,
+      projectId: activeProject._id,
+    });
+  } finally {
+    creatingIntake = false;
+  }
+}
+
+async function handleAcceptIntakeIssue(intakeIssue: IntakeIssue) {
+  const issueId = await acceptIntakeIssue({
+    intakeIssueId: intakeIssue._id,
+  });
+
+  if (issueId && viewerData?.activeWorkspace && activeProject) {
+    selectedIssueId = issueId;
+    await goto(
+      issueHref({
+        issueId,
+        projectId: activeProject._id,
+        workspaceSlug: viewerData.activeWorkspace.slug,
+      })
+    );
+  }
+}
+
+async function handleDeclineIntakeIssue(intakeIssue: IntakeIssue) {
+  await updateIntakeStatus({
+    intakeIssueId: intakeIssue._id,
+    status: "declined",
   });
 }
 
@@ -581,7 +649,15 @@ async function handleSelectProject(nextProjectId: Project["_id"]) {
           </div>
         </div>
 
-        {#if activeModule !== "issues"}
+        {#if activeModule === "intake"}
+          <IntakeModule
+            creating={creatingIntake}
+            {intakeIssues}
+            onAccept={handleAcceptIntakeIssue}
+            onCreate={handleCreateIntakeIssue}
+            onDecline={handleDeclineIntakeIssue}
+          />
+        {:else if activeModule !== "issues"}
           <ProjectModulePlaceholder
             module={activeModule}
             projectName={activeProject.name}
