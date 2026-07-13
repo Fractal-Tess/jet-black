@@ -160,12 +160,26 @@ export async function signOutWithUi(page: Page) {
 }
 
 export async function deleteCurrentAccountWithUi(page: Page) {
-  await page.getByRole("button", { name: "Delete account" }).click();
-  const confirmDelete = page.getByRole("button", {
-    name: "Confirm delete account",
-  });
-  await expect(confirmDelete).toBeVisible();
-  await confirmDelete.click({ force: true });
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    await page.getByRole("button", { name: "Delete account" }).click({
+      force: true,
+    });
+
+    const confirmDelete = page.getByRole("button", {
+      name: "Confirm delete account",
+    });
+    await expect(confirmDelete).toBeVisible();
+
+    try {
+      await confirmDelete.click({ force: true, timeout: 5000 });
+      break;
+    } catch (error) {
+      if (attempt === 2) {
+        throw error;
+      }
+    }
+  }
+
   await expect(page).toHaveURL(LOGIN_URL_PATTERN, { timeout: 15_000 });
 }
 
