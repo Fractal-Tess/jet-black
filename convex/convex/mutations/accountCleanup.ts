@@ -57,6 +57,20 @@ async function deleteProjectModules(
   }
 }
 
+async function deleteProjectPages(
+  ctx: MutationCtx,
+  workspaceId: Id<"workspaces">
+) {
+  const pages = await ctx.db
+    .query("projectPages")
+    .withIndex("by_workspaceId", (q) => q.eq("workspaceId", workspaceId))
+    .collect();
+
+  for (const page of pages) {
+    await ctx.db.delete(page._id);
+  }
+}
+
 export const deleteForUser = internalMutation({
   args: {
     userId: v.string(),
@@ -89,6 +103,7 @@ export const deleteForUser = internalMutation({
       await deleteIssueAttachments(ctx, workspaceId);
       await deleteIntakeIssues(ctx, workspaceId);
       await deleteProjectModules(ctx, workspaceId);
+      await deleteProjectPages(ctx, workspaceId);
       await deleteSprints(ctx, workspaceId);
 
       const issueActivities = await ctx.db

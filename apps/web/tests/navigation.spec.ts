@@ -64,9 +64,7 @@ test.describe("workspace navigation", () => {
       await page.getByRole("link", { exact: true, name: "Pages" }).click();
       await expect(page).toHaveURL(PAGES_URL_PATTERN);
       await expect(
-        page.getByRole("heading", {
-          name: "Pages will keep project context close.",
-        })
+        page.getByRole("heading", { name: "New page" })
       ).toBeVisible();
     } finally {
       await cleanupAccountWithUi(page, account);

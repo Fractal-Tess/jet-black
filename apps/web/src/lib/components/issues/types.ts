@@ -75,6 +75,19 @@ export type ProjectModuleRecord = {
   workspaceId: Id<"workspaces">;
 };
 
+export type ProjectPage = {
+  _creationTime: number;
+  _id: Id<"projectPages">;
+  content: string;
+  createdAt: number;
+  createdByUserId: string;
+  icon?: string;
+  projectId: Id<"projects">;
+  title: string;
+  updatedAt: number;
+  workspaceId: Id<"workspaces">;
+};
+
 export type IssueComment = {
   _creationTime: number;
   _id: Id<"issueComments">;

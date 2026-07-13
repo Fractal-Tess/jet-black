@@ -17,11 +17,13 @@ import type {
   IssueState,
   Project,
   ProjectModuleRecord,
+  ProjectPage,
   Sprint,
   ViewerData,
 } from "$lib/components/issues/types";
 import IntakeModule from "$lib/components/projects/IntakeModule.svelte";
 import ModulesModule from "$lib/components/projects/ModulesModule.svelte";
+import PagesModule from "$lib/components/projects/PagesModule.svelte";
 import ProjectModulePlaceholder from "$lib/components/projects/ProjectModulePlaceholder.svelte";
 import SprintsModule from "$lib/components/projects/SprintsModule.svelte";
 import AppShell from "$lib/components/shell/AppShell.svelte";
@@ -76,6 +78,8 @@ const acceptIntakeIssue = useMutation(api.mutations.intake.accept);
 const createIntakeIssue = useMutation(api.mutations.intake.create);
 const updateIntakeStatus = useMutation(api.mutations.intake.updateStatus);
 const createProjectModule = useMutation(api.mutations.modules.create);
+const createPage = useMutation(api.mutations.pages.create);
+const updatePage = useMutation(api.mutations.pages.update);
 const createSprint = useMutation(api.mutations.sprints.create);
 const addAttachment = useMutation(api.mutations.attachments.addLink);
 const createComment = useMutation(api.mutations.comments.create);
@@ -88,6 +92,7 @@ let selectedProjectId = $state<Project["_id"] | undefined>();
 let creating = $state(false);
 let creatingIntake = $state(false);
 let creatingModule = $state(false);
+let creatingPage = $state(false);
 let creatingProject = $state(false);
 let creatingSprint = $state(false);
 let ensuringWorkspace = $state(false);
@@ -161,6 +166,15 @@ const modulesQuery = useQuery(api.queries.modules.listForProject, () =>
     ? { projectId: activeProject._id }
     : "skip"
 );
+const pagesQuery = useQuery(api.queries.pages.listForProject, () =>
+  auth.isAuthenticated &&
+  convexTokenReady &&
+  activeProject &&
+  activeModule === "pages" &&
+  !leavingAuthenticatedSession
+    ? { projectId: activeProject._id }
+    : "skip"
+);
 const issues = $derived((issuesQuery.data as Issue[] | undefined) ?? []);
 const intakeIssues = $derived(
   (intakeQuery.data as IntakeIssue[] | undefined) ?? []
@@ -168,6 +182,7 @@ const intakeIssues = $derived(
 const modules = $derived(
   (modulesQuery.data as ProjectModuleRecord[] | undefined) ?? []
 );
+const pages = $derived((pagesQuery.data as ProjectPage[] | undefined) ?? []);
 const sprints = $derived((sprintsQuery.data as Sprint[] | undefined) ?? []);
 const filteredIssues = $derived(
   issues.filter((issue) => {
@@ -228,6 +243,7 @@ const loadingRealtimeData = $derived(
     statesQuery.isLoading ||
     labelsQuery.isLoading ||
     modulesQuery.isLoading ||
+    pagesQuery.isLoading ||
     intakeQuery.isLoading ||
     sprintsQuery.isLoading
 );
@@ -238,6 +254,7 @@ const realtimeError = $derived(
       statesQuery.error ||
       labelsQuery.error ||
       modulesQuery.error ||
+      pagesQuery.error ||
       intakeQuery.error ||
       sprintsQuery.error
   )
@@ -503,6 +520,41 @@ async function handleCreateModule(input: {
   } finally {
     creatingModule = false;
   }
+}
+
+async function handleCreatePage(input: {
+  content?: string;
+  icon?: string;
+  title: string;
+}) {
+  if (!activeProject) {
+    return;
+  }
+
+  creatingPage = true;
+
+  try {
+    await createPage({
+      ...input,
+      projectId: activeProject._id,
+    });
+  } finally {
+    creatingPage = false;
+  }
+}
+
+async function handleUpdatePage(
+  pageId: ProjectPage["_id"],
+  input: {
+    content?: string;
+    icon?: string | null;
+    title?: string;
+  }
+) {
+  await updatePage({
+    ...input,
+    pageId,
+  });
 }
 
 async function handleAssignIssueToModule(
@@ -771,6 +823,13 @@ async function handleSelectProject(nextProjectId: Project["_id"]) {
             {modules}
             onAssignIssue={handleAssignIssueToModule}
             onCreate={handleCreateModule}
+          />
+        {:else if activeModule === "pages"}
+          <PagesModule
+            creating={creatingPage}
+            onCreate={handleCreatePage}
+            onUpdate={handleUpdatePage}
+            {pages}
           />
         {:else if activeModule !== "issues"}
           <ProjectModulePlaceholder
