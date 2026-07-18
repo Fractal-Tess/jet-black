@@ -19,6 +19,7 @@ const priorityValidator = v.union(
 );
 
 type IssueUpdatePatch = Partial<{
+  assigneeUserId: string | undefined;
   completedAt: number | undefined;
   description: string | undefined;
   estimate: number | undefined;
@@ -33,6 +34,7 @@ type IssueUpdatePatch = Partial<{
 }>;
 
 type IssueUpdateArgs = {
+  assigneeUserId?: string | null;
   description?: string;
   estimate?: number | null;
   issueId: Id<"issues">;
@@ -46,6 +48,10 @@ type IssueUpdateArgs = {
 };
 
 function applyScalarIssuePatch(args: IssueUpdateArgs, patch: IssueUpdatePatch) {
+  if (args.assigneeUserId !== undefined) {
+    patch.assigneeUserId = args.assigneeUserId ?? undefined;
+  }
+
   if (args.title !== undefined) {
     const title = args.title.trim();
     if (!title) {
@@ -213,6 +219,7 @@ export const create = mutation({
 
 export const update = mutation({
   args: {
+    assigneeUserId: v.optional(v.union(v.string(), v.null())),
     description: v.optional(v.string()),
     estimate: v.optional(v.union(v.number(), v.null())),
     issueId: v.id("issues"),

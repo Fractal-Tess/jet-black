@@ -12,11 +12,12 @@
     "lint": "bunx ultracite check .",
     "format": "bunx ultracite fix .",
     "seed": "infisical run --path=/convex -- convex dev --local --local-cloud-port 3210 --local-site-port 3211 --once --run init:seed",
-    "test": "infisical run --path=/convex -- bun test",
+    "test": "infisical run --path=/convex -- bun test && npx vitest run",
     "typecheck": "infisical run --path=/convex -- tsc --noEmit && infisical run --path=/convex -- tsc -p convex"
   },
   "exports": {
-    "./api": "./convex/_generated/api.js"
+    "./api": "./convex/_generated/api.js",
+    "./dataModel": "./convex/_generated/dataModel.d.ts"
   },
   "dependencies": {
     "@convex-dev/better-auth": "^0.12.2",
@@ -27,6 +28,8 @@
   "devDependencies": {
     "@types/bun": "latest",
     "@types/node": "^25.9.1",
-    "typescript": "^6.0.3"
+    "convex-test": "^0.0.54",
+    "typescript": "^6.0.3",
+    "vitest": "^4.1.10"
   }
 }

@@ -1,3 +1,4 @@
+import { v } from "convex/values";
 import { mutation } from "../_generated/server";
 import { requireAuthUser } from "../lib/auth";
 import {
@@ -7,6 +8,41 @@ import {
 import { createSampleIssues } from "../lib/sampleIssues";
 import { slugify } from "../lib/slugs";
 import { createDefaultIssueStates } from "../lib/states";
+
+export const createWorkspace = mutation({
+  args: {
+    name: v.string(),
+    slug: v.string(),
+  },
+  handler: async (ctx, args) => {
+    const user = await requireAuthUser(ctx);
+    const now = Date.now();
+
+    const existingSlug = await ctx.db
+      .query("workspaces")
+      .withIndex("by_slug", (q) => q.eq("slug", args.slug))
+      .first();
+
+    if (existingSlug) {
+      throw new Error("A workspace with this URL already exists.");
+    }
+
+    const workspaceId = await ctx.db.insert("workspaces", {
+      createdByUserId: user._id,
+      name: args.name.trim(),
+      slug: args.slug,
+      updatedAt: now,
+    });
+
+    await ctx.db.insert("workspaceMembers", {
+      role: "owner",
+      userId: user._id,
+      workspaceId,
+    });
+
+    return await ctx.db.get(workspaceId);
+  },
+});
 
 export const ensurePersonalWorkspace = mutation({
   args: {},

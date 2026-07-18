@@ -31,6 +31,7 @@ import type * as mutations_modules from "../mutations/modules.js";
 import type * as mutations_pages from "../mutations/pages.js";
 import type * as mutations_projects from "../mutations/projects.js";
 import type * as mutations_sprints from "../mutations/sprints.js";
+import type * as mutations_users from "../mutations/users.js";
 import type * as mutations_workspaces from "../mutations/workspaces.js";
 import type * as queries_attachments from "../queries/attachments.js";
 import type * as queries_comments from "../queries/comments.js";
@@ -80,6 +81,7 @@ declare const fullApi: ApiFromModules<{
   "mutations/pages": typeof mutations_pages;
   "mutations/projects": typeof mutations_projects;
   "mutations/sprints": typeof mutations_sprints;
+  "mutations/users": typeof mutations_users;
   "mutations/workspaces": typeof mutations_workspaces;
   "queries/attachments": typeof queries_attachments;
   "queries/comments": typeof queries_comments;

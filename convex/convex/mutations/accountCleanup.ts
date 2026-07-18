@@ -4,71 +4,38 @@ import type { Id } from "../_generated/dataModel";
 import type { MutationCtx } from "../_generated/server";
 import { internalMutation } from "../_generated/server";
 
-async function deleteIssueAttachments(
+const CASCADE_TABLES = [
+  "issueComments",
+  "issueAttachments",
+  "intakeIssues",
+  "projectModules",
+  "projectPages",
+  "sprints",
+  "issueActivities",
+  "issueLabelAssignments",
+  "issueLabels",
+  "issues",
+  "issueStates",
+  "projects",
+  "workspaceMembers",
+] as const;
+
+async function deleteWorkspaceData(
   ctx: MutationCtx,
   workspaceId: Id<"workspaces">
 ) {
-  const issueAttachments = await ctx.db
-    .query("issueAttachments")
-    .withIndex("by_workspaceId", (q) => q.eq("workspaceId", workspaceId))
-    .collect();
+  for (const table of CASCADE_TABLES) {
+    const records = await ctx.db
+      .query(table)
+      .withIndex("by_workspaceId", (q) => q.eq("workspaceId", workspaceId))
+      .collect();
 
-  for (const attachment of issueAttachments) {
-    await ctx.db.delete(attachment._id);
+    for (const record of records) {
+      await ctx.db.delete(record._id);
+    }
   }
-}
 
-async function deleteIntakeIssues(
-  ctx: MutationCtx,
-  workspaceId: Id<"workspaces">
-) {
-  const intakeIssues = await ctx.db
-    .query("intakeIssues")
-    .withIndex("by_workspaceId", (q) => q.eq("workspaceId", workspaceId))
-    .collect();
-
-  for (const intakeIssue of intakeIssues) {
-    await ctx.db.delete(intakeIssue._id);
-  }
-}
-
-async function deleteSprints(ctx: MutationCtx, workspaceId: Id<"workspaces">) {
-  const sprints = await ctx.db
-    .query("sprints")
-    .withIndex("by_workspaceId", (q) => q.eq("workspaceId", workspaceId))
-    .collect();
-
-  for (const sprint of sprints) {
-    await ctx.db.delete(sprint._id);
-  }
-}
-
-async function deleteProjectModules(
-  ctx: MutationCtx,
-  workspaceId: Id<"workspaces">
-) {
-  const projectModules = await ctx.db
-    .query("projectModules")
-    .withIndex("by_workspaceId", (q) => q.eq("workspaceId", workspaceId))
-    .collect();
-
-  for (const projectModule of projectModules) {
-    await ctx.db.delete(projectModule._id);
-  }
-}
-
-async function deleteProjectPages(
-  ctx: MutationCtx,
-  workspaceId: Id<"workspaces">
-) {
-  const pages = await ctx.db
-    .query("projectPages")
-    .withIndex("by_workspaceId", (q) => q.eq("workspaceId", workspaceId))
-    .collect();
-
-  for (const page of pages) {
-    await ctx.db.delete(page._id);
-  }
+  await ctx.db.delete(workspaceId);
 }
 
 export const deleteForUser = internalMutation({
@@ -80,91 +47,28 @@ export const deleteForUser = internalMutation({
       .query("workspaceMembers")
       .withIndex("by_userId", (q) => q.eq("userId", args.userId))
       .collect();
-    const ownedWorkspaces = await ctx.db
-      .query("workspaces")
-      .withIndex("by_createdByUserId", (q) =>
-        q.eq("createdByUserId", args.userId)
-      )
-      .collect();
-    const workspaceIds = new Set([
-      ...memberships.map((membership) => membership.workspaceId),
-      ...ownedWorkspaces.map((workspace) => workspace._id),
-    ]);
 
-    for (const workspaceId of workspaceIds) {
-      const issueComments = await ctx.db
-        .query("issueComments")
-        .withIndex("by_workspaceId", (q) => q.eq("workspaceId", workspaceId))
-        .collect();
-      for (const comment of issueComments) {
-        await ctx.db.delete(comment._id);
-      }
-
-      await deleteIssueAttachments(ctx, workspaceId);
-      await deleteIntakeIssues(ctx, workspaceId);
-      await deleteProjectModules(ctx, workspaceId);
-      await deleteProjectPages(ctx, workspaceId);
-      await deleteSprints(ctx, workspaceId);
-
-      const issueActivities = await ctx.db
-        .query("issueActivities")
-        .withIndex("by_workspaceId", (q) => q.eq("workspaceId", workspaceId))
-        .collect();
-      for (const activity of issueActivities) {
-        await ctx.db.delete(activity._id);
-      }
-
-      const issueLabelAssignments = await ctx.db
-        .query("issueLabelAssignments")
-        .withIndex("by_workspaceId", (q) => q.eq("workspaceId", workspaceId))
-        .collect();
-      for (const assignment of issueLabelAssignments) {
-        await ctx.db.delete(assignment._id);
-      }
-
-      const issueLabels = await ctx.db
-        .query("issueLabels")
-        .withIndex("by_workspaceId", (q) => q.eq("workspaceId", workspaceId))
-        .collect();
-      for (const label of issueLabels) {
-        await ctx.db.delete(label._id);
-      }
-
-      const issues = await ctx.db
-        .query("issues")
-        .withIndex("by_workspaceId", (q) => q.eq("workspaceId", workspaceId))
-        .collect();
-      for (const issue of issues) {
-        await ctx.db.delete(issue._id);
-      }
-
-      const issueStates = await ctx.db
-        .query("issueStates")
-        .withIndex("by_workspaceId", (q) => q.eq("workspaceId", workspaceId))
-        .collect();
-      for (const state of issueStates) {
-        await ctx.db.delete(state._id);
-      }
-
-      const projects = await ctx.db
-        .query("projects")
-        .withIndex("by_workspaceId", (q) => q.eq("workspaceId", workspaceId))
-        .collect();
-      for (const project of projects) {
-        await ctx.db.delete(project._id);
-      }
-
-      const workspaceMembers = await ctx.db
+    for (const membership of memberships) {
+      const allMembers = await ctx.db
         .query("workspaceMembers")
-        .withIndex("by_workspaceId", (q) => q.eq("workspaceId", workspaceId))
+        .withIndex("by_workspaceId", (q) =>
+          q.eq("workspaceId", membership.workspaceId)
+        )
         .collect();
-      for (const member of workspaceMembers) {
-        await ctx.db.delete(member._id);
+
+      const isOwner = membership.role === "owner";
+      const otherMembers = allMembers.filter((m) => m.userId !== args.userId);
+
+      if (isOwner && otherMembers.length > 0) {
+        throw new Error(
+          "Cannot delete account while you own a workspace with other members. Transfer ownership or remove all members first."
+        );
       }
 
-      const workspace = await ctx.db.get(workspaceId);
-      if (workspace?.createdByUserId === args.userId) {
-        await ctx.db.delete(workspace._id);
+      if (isOwner) {
+        await deleteWorkspaceData(ctx, membership.workspaceId);
+      } else {
+        await ctx.db.delete(membership._id);
       }
     }
 

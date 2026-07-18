@@ -4,8 +4,10 @@ import { v } from "convex/values";
 export const workspaceTables = {
   projects: defineTable({
     color: v.string(),
+    coverImageUrl: v.optional(v.string()),
     description: v.optional(v.string()),
     key: v.string(),
+    logoUrl: v.optional(v.string()),
     name: v.string(),
     slug: v.string(),
     updatedAt: v.number(),

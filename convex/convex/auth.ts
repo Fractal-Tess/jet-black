@@ -28,7 +28,7 @@ type CleanupMutationRunner = {
   runMutation: (
     mutation: typeof internal.mutations.accountCleanup.deleteForUser,
     args: { userId: string }
-  ) => Promise<unknown>;
+  ) => Promise<{ deleted: boolean }>;
 };
 
 function getBaseUrl() {
