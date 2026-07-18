@@ -9,7 +9,9 @@
   "files": {
     "includes": [
       "!convex/convex/_generated",
-      "!convex/convex/betterAuth/_generated"
+      "!convex/convex/betterAuth/_generated",
+      "!.claude/worktrees",
+      "!references"
     ]
   },
   "javascript": {
@@ -36,6 +38,11 @@
           "correctness": {
             "noUnusedImports": "off",
             "noUnusedVariables": "off"
+          },
+          "style": {
+            // Biome can't see Svelte template usage, so it wrongly
+            // converts component imports to type-only imports.
+            "useImportType": "off"
           }
         }
       }
@@ -46,6 +53,10 @@
         "rules": {
           "performance": {
             "noBarrelFile": "off"
+          },
+          "style": {
+            // shadcn-svelte index files re-export imported components.
+            "noExportedImports": "off"
           }
         }
       }
