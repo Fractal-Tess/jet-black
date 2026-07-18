@@ -83,7 +83,13 @@ function switchMode(nextMode: "sign-in" | "sign-up") {
       <span
         class="grid size-7 place-items-center rounded-md border border-amber-400/30 bg-amber-400/5 transition group-hover:border-amber-400/60"
       >
-        <span class="size-2.5 rotate-45 rounded-[2px] bg-amber-400"></span>
+        <img
+          alt=""
+          class="size-5 object-contain"
+          height="20"
+          src="/brand/logo-mark-light.png"
+          width="20"
+        />
       </span>
       Jet Black
     </a>

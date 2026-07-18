@@ -65,9 +65,33 @@ export function normalizeProjectModule(value?: string): ProjectModule {
   return DEFAULT_MODULE;
 }
 
-export function isProjectModule(value: unknown): value is ProjectModule {
+export function isProjectModule(
+  value: string | undefined
+): value is ProjectModule {
   return (
     typeof value === "string" &&
     PROJECT_MODULES.includes(value as ProjectModule)
   );
+}
+
+// ---------------------------------------------------------------------------
+// Settings route helpers
+// ---------------------------------------------------------------------------
+
+export function profileSettingsHref(tab = "general") {
+  return `/settings/profile/${tab}`;
+}
+
+export function workspaceSettingsHref(workspaceSlug: string, tab?: string) {
+  const base = `/workspace/${workspaceSlug}/settings`;
+  return tab ? `${base}/${tab}` : base;
+}
+
+export function projectSettingsHref(
+  workspaceSlug: string,
+  projectId: string,
+  tab?: string
+) {
+  const base = `/workspace/${workspaceSlug}/settings/projects/${projectId}`;
+  return tab ? `${base}/${tab}` : base;
 }

@@ -1,19 +1,20 @@
 import { redirect } from "@sveltejs/kit";
+import { z } from "zod";
 
-type SessionUser = {
-  email: string;
-  id: string;
-  image?: string | null;
-  name?: string | null;
-};
+const authSessionSchema = z.object({
+  session: z.object({
+    expiresAt: z.union([z.number(), z.string()]),
+    id: z.string(),
+  }),
+  user: z.object({
+    email: z.string(),
+    id: z.string(),
+    image: z.string().nullable().optional(),
+    name: z.string().nullable().optional(),
+  }),
+});
 
-export type AuthSession = {
-  session: {
-    expiresAt: number | string;
-    id: string;
-  };
-  user: SessionUser;
-};
+export type AuthSession = z.infer<typeof authSessionSchema>;
 
 type SessionFetch = (
   input: RequestInfo | URL,
@@ -27,13 +28,8 @@ export async function getSession(fetch: SessionFetch) {
     return null;
   }
 
-  const session: unknown = await response.json();
-
-  if (!isAuthSession(session)) {
-    return null;
-  }
-
-  return session;
+  const result = authSessionSchema.safeParse(await response.json());
+  return result.success ? result.data : null;
 }
 
 export async function requireSession(fetch: SessionFetch, returnTo: string) {
@@ -45,23 +41,4 @@ export async function requireSession(fetch: SessionFetch, returnTo: string) {
   }
 
   return session;
-}
-
-function isAuthSession(value: unknown): value is AuthSession {
-  if (!value || typeof value !== "object") {
-    return false;
-  }
-
-  const candidate = value as {
-    session?: { expiresAt?: unknown; id?: unknown };
-    user?: { email?: unknown; id?: unknown };
-  };
-
-  return (
-    (typeof candidate.session?.expiresAt === "number" ||
-      typeof candidate.session?.expiresAt === "string") &&
-    typeof candidate.session.id === "string" &&
-    typeof candidate.user?.email === "string" &&
-    typeof candidate.user.id === "string"
-  );
 }

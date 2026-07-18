@@ -1,15 +1,22 @@
 <script lang="ts">
 import { setupAuth, setupConvex } from "convex-svelte";
-import { untrack } from "svelte";
+import { onMount, untrack } from "svelte";
 import "../app.css";
 import { authClient } from "$lib/auth-client";
 
 let { children, data } = $props();
 
-const session = authClient.useSession();
+// Destructure SSR data first so it's available for initializing snapshot.
 const { convexUrl, isAuthenticated: initiallyAuthenticated } = untrack(
   () => data
 );
+
+// Reactive snapshot for Better Auth session state.
+// Seeded from SSR data — no eager fetch during server render.
+let authSnapshot = $state({
+  isAuthenticated: initiallyAuthenticated,
+  isLoading: false,
+});
 
 if (convexUrl) {
   setupConvex(convexUrl);
@@ -22,8 +29,8 @@ if (convexUrl) {
 
         return result.data?.token ?? null;
       },
-      isAuthenticated: Boolean($session.data?.session),
-      isLoading: $session.isPending,
+      isAuthenticated: authSnapshot.isAuthenticated,
+      isLoading: authSnapshot.isLoading,
     }),
     {
       initialState: {
@@ -32,6 +39,19 @@ if (convexUrl) {
     }
   );
 }
+
+onMount(() => {
+  const session = authClient.useSession();
+
+  const unsub = session.subscribe((value) => {
+    authSnapshot = {
+      isAuthenticated: Boolean(value.data?.session),
+      isLoading: value.isPending,
+    };
+  });
+
+  return unsub;
+});
 </script>
 
 <svelte:head>
