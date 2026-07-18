@@ -23,12 +23,10 @@ export async function waitForHydration(page: Page) {
 }
 
 export async function waitForDashboardReady(page: Page) {
-  const sidebarReady = page.getByRole("link", { name: "New work item" });
+  const sidebarReady = page.getByRole("link", { exact: true, name: "Home" });
   await expect(sidebarReady).toBeVisible({ timeout: 15_000 });
 
-  const dashboardReady = page
-    .getByRole("textbox", { exact: true, name: "Issue title" })
-    .or(page.getByRole("heading", { name: "Kanban" }));
+  const dashboardReady = page.getByRole("button", { name: "Add work item" });
 
   // Fast path: workspace dashboard already loaded
   await expect(dashboardReady)
@@ -51,9 +49,7 @@ export async function waitForDashboardReady(page: Page) {
     });
     await expect(createDefaultWorkspace).toBeVisible();
     await createDefaultWorkspace.click({ force: true });
-    await expect(page.getByRole("heading", { name: "Kanban" })).toBeVisible({
-      timeout: 15_000,
-    });
+    await expect(dashboardReady).toBeVisible({ timeout: 15_000 });
     return;
   }
 
@@ -92,15 +88,11 @@ export async function waitForDashboardReady(page: Page) {
   await page.getByTestId("create-project-submit").click();
 
   // Wait for tickets page with the kanban board
-  await expect(page.getByRole("heading", { name: "Kanban" })).toBeVisible({
-    timeout: 20_000,
-  });
+  await expect(dashboardReady).toBeVisible({ timeout: 20_000 });
 
   // Navigate back to /dashboard so callers get the expected URL
   await page.goto("/dashboard");
-  await expect(page.getByRole("heading", { name: "Kanban" })).toBeVisible({
-    timeout: 15_000,
-  });
+  await expect(dashboardReady).toBeVisible({ timeout: 15_000 });
 }
 
 export async function fillMainIssueTitle(page: Page, title: string) {
