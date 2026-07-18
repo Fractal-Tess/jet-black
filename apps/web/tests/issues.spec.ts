@@ -3,12 +3,12 @@ import { expect, test } from "@playwright/test";
 import {
   cleanupAccountWithUi,
   createAccountWithUi,
-  DASHBOARD_URL_PATTERN,
   fillMainIssueTitle,
   signInWithUi,
 } from "./helpers/auth";
 
 const REORDER_UP_LABEL_PATTERN = /Reorder .* up/;
+const PRIORITY_HIGH_LABEL_PATTERN = /Priority High/;
 const INTAKE_URL_PATTERN = /\/intake$/;
 
 test.describe("issue workspace", () => {
@@ -26,22 +26,21 @@ test.describe("issue workspace", () => {
     const subIssueTitle = `Sub issue ${crypto.randomUUID()}`;
 
     try {
-      await expect(page).toHaveURL(DASHBOARD_URL_PATTERN);
-      await expect(
-        page.getByRole("heading", { name: "Good to see you, Issue" })
-      ).toBeVisible();
       await fillMainIssueTitle(page, title);
       await page
         .getByLabel("Issue description")
         .fill("This issue was created by Playwright.");
       await page.getByLabel("Priority").selectOption("high");
-      await page.getByRole("button", { name: "Create issue" }).click();
+      await page.getByRole("button", { name: "Create work item" }).click();
 
       await expect(page.getByRole("heading", { name: title })).toBeVisible();
       const issueCard = page.locator("article").filter({ hasText: title });
       await expect(issueCard).toBeVisible();
-      await expect(issueCard.getByText("High")).toBeVisible();
-      await issueCard.getByLabel("Move").selectOption({ label: "Done" });
+      await expect(
+        issueCard.getByLabel(PRIORITY_HIGH_LABEL_PATTERN)
+      ).toBeVisible();
+      await issueCard.getByLabel("Move").click();
+      await page.getByRole("menuitem", { name: "Done" }).click();
       await expect(page.getByLabel("Done column")).toContainText(title);
 
       await page.getByRole("button", { name: "Edit" }).click();
@@ -212,49 +211,33 @@ test.describe("issue workspace", () => {
     }
   });
 
-  test("filters and sorts issues in list view", async ({ page }) => {
+  test("groups issues by state in list view", async ({ page }) => {
     const account = await createAccountWithUi(page, {
       name: "List User",
       prefix: "issues-list",
     });
     const doneTitle = "Sketch pull request review workflow";
-    const firstTitle = "Finish email/password login";
     const todoTitle = "Wire realtime issue updates";
+    const quickTitle = `Listed issue ${crypto.randomUUID()}`;
 
     try {
       await page.getByRole("button", { exact: true, name: "List" }).click();
-      await expect(page.getByRole("table")).toContainText(todoTitle);
-      await expect(page.getByRole("table")).toContainText(doneTitle);
 
-      await page.getByLabel("Filter by state").selectOption({ label: "Todo" });
-      await expect(page.getByRole("table")).toContainText(todoTitle);
-      await expect(page.getByRole("table")).not.toContainText(doneTitle);
+      const todoGroup = page.getByLabel("Todo group");
+      const doneGroup = page.getByLabel("Done group");
 
-      await page
-        .getByLabel("Filter by priority")
-        .selectOption({ label: "Urgent" });
-      await expect(page.getByRole("table")).toContainText(todoTitle);
+      await expect(todoGroup).toContainText(todoTitle);
+      await expect(doneGroup).toContainText(doneTitle);
+      await expect(todoGroup).not.toContainText(doneTitle);
 
-      await page
-        .getByLabel("Filter by state")
-        .selectOption({ label: "All states" });
-      await page
-        .getByLabel("Filter by priority")
-        .selectOption({ label: "All priorities" });
-      await page.getByRole("button", { name: "Title" }).click();
+      await page.getByLabel("Toggle Todo group").click();
+      await expect(todoGroup).not.toContainText(todoTitle);
+      await page.getByLabel("Toggle Todo group").click();
+      await expect(todoGroup).toContainText(todoTitle);
 
-      await expect
-        .poll(async () => {
-          const tableText = (await page.getByRole("table").textContent()) ?? "";
-
-          return (
-            tableText.includes(firstTitle) &&
-            tableText.includes(todoTitle) &&
-            tableText.indexOf(firstTitle) < tableText.indexOf(doneTitle) &&
-            tableText.indexOf(doneTitle) < tableText.indexOf(todoTitle)
-          );
-        })
-        .toBe(true);
+      await todoGroup.getByLabel("Quick issue title for Todo").fill(quickTitle);
+      await todoGroup.getByLabel("Add issue to Todo").click();
+      await expect(todoGroup).toContainText(quickTitle);
     } finally {
       await cleanupAccountWithUi(page, account);
     }
@@ -341,7 +324,8 @@ test.describe("issue workspace", () => {
         .locator("article")
         .filter({ hasText: title })
         .getByLabel("Move")
-        .selectOption({ label: "Done" });
+        .click();
+      await page.getByRole("menuitem", { name: "Done" }).click();
 
       await expect(secondPage.getByLabel("Done column")).toContainText(title);
     } finally {

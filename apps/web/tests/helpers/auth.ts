@@ -23,40 +23,93 @@ export async function waitForHydration(page: Page) {
 }
 
 export async function waitForDashboardReady(page: Page) {
-  await expect(
-    page.getByRole("button", { name: "Delete account" })
-  ).toBeVisible({
-    timeout: 15_000,
-  });
+  const sidebarReady = page.getByRole("link", { name: "New work item" });
+  await expect(sidebarReady).toBeVisible({ timeout: 15_000 });
 
-  const issueTitle = page.getByRole("textbox", {
-    exact: true,
-    name: "Issue title",
-  });
-  const createDefaultWorkspace = page.getByRole("button", {
-    name: "Create default workspace",
-  });
+  const dashboardReady = page
+    .getByRole("textbox", { exact: true, name: "Issue title" })
+    .or(page.getByRole("heading", { name: "Kanban" }));
 
-  try {
-    await expect(issueTitle).toBeVisible({ timeout: 10_000 });
+  // Fast path: workspace dashboard already loaded
+  await expect(dashboardReady)
+    .toBeVisible({ timeout: 5000 })
+    .catch(() => {
+      // No workspace yet — proceed to onboarding or legacy flow
+    });
+  if (await dashboardReady.isVisible()) {
     return;
-  } catch {
-    await expect(createDefaultWorkspace).toBeVisible();
-    await createDefaultWorkspace.click({ force: true });
   }
 
-  await expect(issueTitle).toBeVisible({
+  // Onboarding path: "Set up workspace" link for new accounts
+  const setUpWorkspace = page.getByRole("link", { name: "Set up workspace" });
+  try {
+    await expect(setUpWorkspace).toBeVisible({ timeout: 5000 });
+  } catch {
+    // Legacy fallback: "Create default workspace" button
+    const createDefaultWorkspace = page.getByRole("button", {
+      name: "Create default workspace",
+    });
+    await expect(createDefaultWorkspace).toBeVisible();
+    await createDefaultWorkspace.click({ force: true });
+    await expect(page.getByRole("heading", { name: "Kanban" })).toBeVisible({
+      timeout: 15_000,
+    });
+    return;
+  }
+
+  // --- Onboarding flow: Set up workspace → 2-step onboarding → project creation ---
+
+  await setUpWorkspace.click();
+
+  // Step 1: Profile setup
+  await expect(
+    page.getByRole("heading", { name: "Welcome to Jet Black" })
+  ).toBeVisible({ timeout: 10_000 });
+  await page.getByRole("button", { name: "Continue" }).click();
+
+  // Step 2: Create workspace with a unique name
+  await expect(
+    page.getByRole("heading", { name: "Create your workspace" })
+  ).toBeVisible({ timeout: 10_000 });
+  const workspaceName = `ws-${crypto.randomUUID().slice(0, 8)}`;
+  await page.getByLabel("Workspace name").fill(workspaceName);
+  await page.getByRole("button", { name: "Create workspace" }).click();
+
+  // Step 3: Create a default project via the sidebar modal.
+  // The onboarding workspace mutation does not create a project, so the
+  // workspace page shows "Create your first project" next to the sidebar.
+  await expect(
+    page.locator("aside").getByRole("button", { name: "Create project" })
+  ).toBeVisible({ timeout: 15_000 });
+  await page
+    .locator("aside")
+    .getByRole("button", { name: "Create project" })
+    .click();
+  await expect(page.getByLabel("Project name")).toBeVisible({
+    timeout: 10_000,
+  });
+  await page.getByLabel("Project name").fill("Jet Black");
+  await page.getByTestId("create-project-submit").click();
+
+  // Wait for tickets page with the kanban board
+  await expect(page.getByRole("heading", { name: "Kanban" })).toBeVisible({
+    timeout: 20_000,
+  });
+
+  // Navigate back to /dashboard so callers get the expected URL
+  await page.goto("/dashboard");
+  await expect(page.getByRole("heading", { name: "Kanban" })).toBeVisible({
     timeout: 15_000,
   });
 }
 
 export async function fillMainIssueTitle(page: Page, title: string) {
-  const issueTitle = page.getByRole("textbox", {
-    exact: true,
-    name: "Issue title",
-  });
+  // Open the issue creation modal via the header button
+  await page.getByRole("button", { name: "Add work item" }).click();
 
-  await expect(issueTitle).toBeEditable();
+  // The modal shows a "Title" input; wait for it to be editable
+  const issueTitle = page.getByLabel("Title").first();
+  await expect(issueTitle).toBeEditable({ timeout: 10_000 });
 
   for (let attempt = 0; attempt < 3; attempt += 1) {
     await issueTitle.fill(title);
@@ -160,27 +213,30 @@ export async function signOutWithUi(page: Page) {
 }
 
 export async function deleteCurrentAccountWithUi(page: Page) {
+  const deleteAccountBtn = page.getByRole("button", {
+    name: "Delete account",
+    exact: true,
+  });
+
   for (let attempt = 0; attempt < 3; attempt += 1) {
-    await page.getByRole("button", { name: "Delete account" }).click({
-      force: true,
-    });
-
-    const confirmDelete = page.getByRole("button", {
-      name: "Confirm delete account",
-    });
-    await expect(confirmDelete).toBeVisible();
-
     try {
-      await confirmDelete.click({ force: true, timeout: 5000 });
-      break;
+      await expect(deleteAccountBtn).toBeVisible({ timeout: 5000 });
+      await deleteAccountBtn.click();
+
+      const confirmDelete = page.getByRole("button", {
+        name: "Confirm delete account",
+        exact: true,
+      });
+      await expect(confirmDelete).toBeVisible({ timeout: 5000 });
+      await confirmDelete.click();
+      await expect(page).toHaveURL(LOGIN_URL_PATTERN, { timeout: 15_000 });
+      return;
     } catch (error) {
       if (attempt === 2) {
         throw error;
       }
     }
   }
-
-  await expect(page).toHaveURL(LOGIN_URL_PATTERN, { timeout: 15_000 });
 }
 
 export async function cleanupAccountWithUi(
@@ -194,9 +250,16 @@ export async function cleanupAccountWithUi(
     return;
   }
 
-  const deleteButton = page.getByRole("button", { name: "Delete account" });
+  const deleteButton = page.getByRole("button", {
+    name: "Delete account",
+    exact: true,
+  });
   if (!(await deleteButton.isVisible())) {
     await signInWithUi(page, account);
+    await page.goto("/settings/profile/danger");
+    await expect(
+      page.getByRole("heading", { name: "Danger zone" })
+    ).toBeVisible({ timeout: 10_000 });
   }
 
   await expect(deleteButton).toBeVisible();

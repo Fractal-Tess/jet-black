@@ -22,7 +22,7 @@ test.describe("project modules", () => {
       await page
         .getByLabel("Issue description")
         .fill("Created before assigning to a module.");
-      await page.getByRole("button", { name: "Create issue" }).click();
+      await page.getByRole("button", { name: "Create work item" }).click();
       await expect(
         page.getByRole("heading", { name: issueTitle })
       ).toBeVisible();

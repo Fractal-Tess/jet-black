@@ -42,14 +42,8 @@ test.describe("email and password authentication", () => {
     let deleted = false;
 
     try {
-      await expect(
-        page.getByRole("heading", { name: "Good to see you, Lifecycle" })
-      ).toBeVisible();
-      await expect(page.getByText(account.email)).toBeVisible();
-
       await page.reload();
       await expect(page).toHaveURL(DASHBOARD_URL_PATTERN);
-      await expect(page.getByText(account.email)).toBeVisible();
 
       await signOutWithUi(page);
 
@@ -71,7 +65,7 @@ test.describe("email and password authentication", () => {
       await page
         .getByLabel("Issue description")
         .fill("Created by the authenticated lifecycle e2e flow.");
-      await page.getByRole("button", { name: "Create issue" }).click();
+      await page.getByRole("button", { name: "Create work item" }).click();
       await expect(
         page.getByRole("heading", { name: issueTitle })
       ).toBeVisible();
