@@ -1,205 +1,213 @@
 <script lang="ts">
-import type { Issue, IssuePriority, IssueState } from "./types";
-
-type SortKey = "identifier" | "priority" | "state" | "title" | "updated";
+import ChevronRight from "lucide-svelte/icons/chevron-right";
+import Plus from "lucide-svelte/icons/plus";
+import {
+  compareIssues,
+  groupIssues,
+  type IssueDisplayOptions,
+  type IssueGroup,
+} from "./display-options";
+import IssuePropertyChips from "./IssuePropertyChips.svelte";
+import PriorityIcon from "./PriorityIcon.svelte";
+import StateTypeIcon from "./StateTypeIcon.svelte";
+import type {
+  Issue,
+  IssueState,
+  UpdateIssueInput,
+  WorkspaceMember,
+} from "./types";
 
 let {
+  displayOptions,
   issues,
+  members,
+  onMoveIssue,
+  onQuickCreate,
   onSelect,
+  onUpdateIssueFor,
   selectedIssueId,
   states,
 }: {
+  displayOptions: IssueDisplayOptions;
   issues: Issue[];
+  members: WorkspaceMember[];
+  onMoveIssue: (
+    issue: Issue,
+    stateId: IssueState["_id"],
+    position: number
+  ) => Promise<void>;
+  onQuickCreate: (state: IssueState, title: string) => Promise<void>;
   onSelect: (issue: Issue) => void;
+  onUpdateIssueFor: (issue: Issue, input: UpdateIssueInput) => Promise<void>;
   selectedIssueId?: string;
   states: IssueState[];
 } = $props();
 
-let priorityFilter = $state<IssuePriority | "all">("all");
-let sortDirection = $state<"asc" | "desc">("asc");
-let sortKey = $state<SortKey>("identifier");
-let stateFilter = $state<IssueState["_id"] | "all">("all");
+let collapsedGroupIds = $state<string[]>([]);
+let creatingGroupId = $state<string | null>(null);
+let quickTitles = $state<Record<string, string>>({});
 
-const priorityWeight: Record<IssuePriority, number> = {
-  none: 0,
-  low: 1,
-  medium: 2,
-  high: 3,
-  urgent: 4,
-};
+const groups = $derived(groupIssues(issues, states, displayOptions));
 
-const filteredIssues = $derived(
-  issues
-    .filter((issue) => stateFilter === "all" || issue.stateId === stateFilter)
+function isCollapsed(groupId: string) {
+  return collapsedGroupIds.includes(groupId);
+}
+
+function toggleGroup(groupId: string) {
+  collapsedGroupIds = isCollapsed(groupId)
+    ? collapsedGroupIds.filter((id) => id !== groupId)
+    : [...collapsedGroupIds, groupId];
+}
+
+function positionForIssue(issue: Issue) {
+  return issue.position ?? issue._creationTime;
+}
+
+async function handleMoveToState(issue: Issue, stateId: IssueState["_id"]) {
+  const targetIssues = issues
     .filter(
-      (issue) => priorityFilter === "all" || issue.priority === priorityFilter
+      (candidate) =>
+        candidate.stateId === stateId && candidate._id !== issue._id
     )
-    .toSorted((left, right) => compareIssues(left, right))
-);
+    .toSorted((left, right) => compareIssues(left, right, "manual"));
+  const lastIssue = targetIssues.at(-1);
+  const position = lastIssue ? positionForIssue(lastIssue) + 1000 : Date.now();
 
-function compareIssues(left: Issue, right: Issue) {
-  const direction = sortDirection === "asc" ? 1 : -1;
-
-  if (sortKey === "priority") {
-    return (
-      (priorityWeight[left.priority] - priorityWeight[right.priority]) *
-      direction
-    );
-  }
-
-  if (sortKey === "state") {
-    return stateName(left).localeCompare(stateName(right)) * direction;
-  }
-
-  if (sortKey === "updated") {
-    return (left.updatedAt - right.updatedAt) * direction;
-  }
-
-  return (
-    String(left[sortKey]).localeCompare(String(right[sortKey])) * direction
-  );
+  await onMoveIssue(issue, stateId, position);
 }
 
-function stateName(issue: Issue) {
-  return issue.state?.name ?? "No state";
-}
+async function submitQuickCreate(group: IssueGroup) {
+  const title = (quickTitles[group.id] ?? "").trim();
 
-function setSort(nextSortKey: SortKey) {
-  if (sortKey === nextSortKey) {
-    sortDirection = sortDirection === "asc" ? "desc" : "asc";
+  if (!(title && group.state)) {
     return;
   }
 
-  sortKey = nextSortKey;
-  sortDirection = "asc";
-}
+  creatingGroupId = group.id;
 
-function sortLabel(label: string, key: SortKey) {
-  if (sortKey !== key) {
-    return label;
+  try {
+    await onQuickCreate(group.state, title);
+    quickTitles = { ...quickTitles, [group.id]: "" };
+  } finally {
+    creatingGroupId = null;
   }
-
-  return `${label} ${sortDirection === "asc" ? "↑" : "↓"}`;
 }
 </script>
 
-<section class="rounded-xl border border-white/10 bg-[#151616]">
-  <div
-    class="flex flex-col gap-3 border-b border-white/[0.06] px-4 py-3 lg:flex-row lg:items-center lg:justify-between"
-  >
-    <div>
-      <p class="text-xs font-medium uppercase tracking-[0.18em] text-zinc-500">
-        List
-      </p>
-      <h2 class="mt-1 text-lg font-semibold text-zinc-100">Tickets</h2>
-    </div>
-
-    <div class="flex flex-wrap gap-2">
-      <label>
-        <span class="sr-only">Filter by state</span>
-        <select
-          bind:value={stateFilter}
-          class="h-8 rounded-md border border-white/10 bg-[#101111] px-2 text-xs text-zinc-300 outline-none focus:border-amber-400/60"
+<div class="flex flex-col">
+  {#each groups as group (group.id)}
+    <section aria-label={`${group.name} group`} class="border-b border-white/[0.06]">
+      <div class="flex items-center gap-2 px-3 py-2.5">
+        <button
+          aria-expanded={!isCollapsed(group.id)}
+          aria-label={`Toggle ${group.name} group`}
+          class="grid size-5 place-items-center rounded text-zinc-600 transition hover:bg-white/[0.06] hover:text-zinc-300"
+          onclick={() => toggleGroup(group.id)}
+          type="button"
         >
-          <option value="all">All states</option>
-          {#each states as state (state._id)}
-            <option value={state._id}>{state.name}</option>
-          {/each}
-        </select>
-      </label>
-
-      <label>
-        <span class="sr-only">Filter by priority</span>
-        <select
-          bind:value={priorityFilter}
-          class="h-8 rounded-md border border-white/10 bg-[#101111] px-2 text-xs text-zinc-300 outline-none focus:border-amber-400/60"
-        >
-          <option value="all">All priorities</option>
-          <option value="none">None</option>
-          <option value="low">Low</option>
-          <option value="medium">Medium</option>
-          <option value="high">High</option>
-          <option value="urgent">Urgent</option>
-        </select>
-      </label>
-    </div>
-  </div>
-
-  <div class="overflow-x-auto">
-    <table class="w-full min-w-[760px] text-left text-sm">
-      <thead class="border-b border-white/[0.06] text-xs text-zinc-600">
-        <tr>
-          <th class="px-4 py-2 font-medium">
-            <button type="button" onclick={() => setSort("identifier")}>
-              {sortLabel("ID", "identifier")}
-            </button>
-          </th>
-          <th class="px-4 py-2 font-medium">
-            <button type="button" onclick={() => setSort("title")}>
-              {sortLabel("Title", "title")}
-            </button>
-          </th>
-          <th class="px-4 py-2 font-medium">
-            <button type="button" onclick={() => setSort("state")}>
-              {sortLabel("State", "state")}
-            </button>
-          </th>
-          <th class="px-4 py-2 font-medium">
-            <button type="button" onclick={() => setSort("priority")}>
-              {sortLabel("Priority", "priority")}
-            </button>
-          </th>
-          <th class="px-4 py-2 font-medium">
-            <button type="button" onclick={() => setSort("updated")}>
-              {sortLabel("Updated", "updated")}
-            </button>
-          </th>
-        </tr>
-      </thead>
-      <tbody>
-        {#each filteredIssues as issue (issue._id)}
-          <tr
-            class="border-b border-white/[0.04] transition hover:bg-white/[0.03] {selectedIssueId ===
-            issue._id
-              ? 'bg-amber-400/[0.04]'
-              : ''}"
+          <ChevronRight
+            class="size-3.5 transition-transform {isCollapsed(group.id)
+              ? ''
+              : 'rotate-90'}"
+          />
+        </button>
+        {#if group.state}
+          <StateTypeIcon
+            class="size-3.5"
+            color={group.state.color}
+            type={group.state.type}
+          />
+        {:else if group.priority}
+          <PriorityIcon class="size-3.5" priority={group.priority} />
+        {/if}
+        <h3 class="text-sm font-medium text-zinc-200">{group.name}</h3>
+        <span class="text-sm tabular-nums text-zinc-500">
+          {group.issues.length}
+        </span>
+        {#if group.state}
+          <button
+            aria-label={`New work item in ${group.name}`}
+            class="ml-1 grid size-5 place-items-center rounded text-zinc-600 transition hover:bg-white/[0.06] hover:text-zinc-300"
+            onclick={() =>
+              document.getElementById(`list-quick-add-${group.id}`)?.focus()}
+            type="button"
           >
-            <td class="px-4 py-3 font-mono text-xs text-zinc-500">
-              {issue.identifier}
-            </td>
-            <td class="px-4 py-3">
+            <Plus class="size-3.5" />
+          </button>
+        {/if}
+      </div>
+
+      {#if !isCollapsed(group.id)}
+        <div>
+          {#each group.issues as issue (issue._id)}
+            <div
+              class="flex min-h-11 items-center gap-3 border-t border-white/[0.04] py-2 pr-3 pl-10 transition hover:bg-white/[0.03] {selectedIssueId ===
+              issue._id
+                ? 'bg-amber-400/[0.04]'
+                : ''}"
+            >
+              {#if displayOptions.properties.key}
+                <span
+                  class="w-16 shrink-0 font-mono text-[11px] text-zinc-500"
+                >
+                  {issue.identifier}
+                </span>
+              {/if}
               <button
-                class="text-left font-medium text-zinc-100 hover:text-amber-300"
+                class="min-w-0 flex-1 cursor-pointer truncate text-left text-[13px] font-medium text-zinc-100 transition hover:text-amber-300"
                 onclick={() => onSelect(issue)}
                 type="button"
               >
                 {issue.title}
               </button>
-            </td>
-            <td class="px-4 py-3">
-              <span class="inline-flex items-center gap-2 text-xs text-zinc-400">
-                <span
-                  class="size-2 rounded-full"
-                  style:background-color={issue.state?.color ?? "#71717a"}
-                ></span>
-                {stateName(issue)}
-              </span>
-            </td>
-            <td class="px-4 py-3 capitalize text-xs text-zinc-400">
-              {issue.priority}
-            </td>
-            <td class="px-4 py-3 font-mono text-xs text-zinc-600">
-              {new Date(issue.updatedAt).toLocaleDateString()}
-            </td>
-          </tr>
-        {:else}
-          <tr>
-            <td class="px-4 py-10 text-center text-xs text-zinc-600" colspan="5">
-              No issues match these filters.
-            </td>
-          </tr>
-        {/each}
-      </tbody>
-    </table>
-  </div>
-</section>
+              <div class="hidden shrink-0 sm:block">
+                <IssuePropertyChips
+                  {issue}
+                  {members}
+                  onMoveToState={(stateId) => handleMoveToState(issue, stateId)}
+                  onUpdate={(input) => onUpdateIssueFor(issue, input)}
+                  properties={displayOptions.properties}
+                  {states}
+                />
+              </div>
+            </div>
+          {/each}
+
+          {#if group.state}
+            <form
+              class="flex items-center gap-2 border-t border-white/[0.04] py-2 pr-3 pl-10 transition focus-within:bg-white/[0.02]"
+              onsubmit={(event) => {
+                event.preventDefault();
+                submitQuickCreate(group);
+              }}
+            >
+              <Plus class="size-3.5 shrink-0 text-zinc-600" />
+              <input
+                aria-label={`Quick issue title for ${group.name}`}
+                class="min-w-0 flex-1 bg-transparent text-[13px] text-zinc-100 outline-none placeholder:text-zinc-600"
+                id={`list-quick-add-${group.id}`}
+                oninput={(event) =>
+                  (quickTitles = {
+                    ...quickTitles,
+                    [group.id]: event.currentTarget.value,
+                  })}
+                placeholder="New work item"
+                value={quickTitles[group.id] ?? ""}
+              />
+              {#if (quickTitles[group.id] ?? "").trim()}
+                <button
+                  aria-label={`Add issue to ${group.name}`}
+                  class="h-6 shrink-0 rounded bg-amber-400 px-2 text-[11px] font-semibold text-black transition hover:bg-amber-300 disabled:opacity-50"
+                  disabled={creatingGroupId === group.id}
+                  type="submit"
+                >
+                  {creatingGroupId === group.id ? "Adding…" : "Add"}
+                </button>
+              {/if}
+            </form>
+          {/if}
+        </div>
+      {/if}
+    </section>
+  {/each}
+</div>

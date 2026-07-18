@@ -1,16 +1,33 @@
 <script lang="ts">
-import type { Issue, IssueState } from "./types";
+import {
+  compareIssues,
+  groupIssues,
+  type IssueDisplayOptions,
+  type IssueGroup,
+} from "./display-options";
+import KanbanColumn from "./KanbanColumn.svelte";
+import type {
+  Issue,
+  IssueState,
+  UpdateIssueInput,
+  WorkspaceMember,
+} from "./types";
 
 let {
+  displayOptions,
   issues,
+  members,
   onMoveIssue,
   onQuickCreate,
   onReorderIssue,
   onSelect,
+  onUpdateIssueFor,
   selectedIssueId,
   states,
 }: {
+  displayOptions: IssueDisplayOptions;
   issues: Issue[];
+  members: WorkspaceMember[];
   onMoveIssue: (
     issue: Issue,
     stateId: IssueState["_id"],
@@ -23,35 +40,18 @@ let {
     position: number
   ) => Promise<void>;
   onSelect: (issue: Issue) => void;
+  onUpdateIssueFor: (issue: Issue, input: UpdateIssueInput) => Promise<void>;
   selectedIssueId?: string;
   states: IssueState[];
 } = $props();
 
-let creatingStateId = $state<IssueState["_id"] | null>(null);
 let draggingIssueId = $state<Issue["_id"] | null>(null);
-let quickTitles = $state<Record<string, string>>({});
 
-const priorityLabel: Record<Issue["priority"], string> = {
-  high: "High",
-  low: "Low",
-  medium: "Medium",
-  none: "None",
-  urgent: "Urgent",
-};
+const groups = $derived(groupIssues(issues, states, displayOptions));
 
-function issuesForState(stateId: IssueState["_id"]) {
-  return issues
-    .filter((issue) => issue.stateId === stateId)
-    .toSorted((left, right) => {
-      const positionDelta = positionForIssue(left) - positionForIssue(right);
-
-      if (positionDelta !== 0) {
-        return positionDelta;
-      }
-
-      return left.identifier.localeCompare(right.identifier);
-    });
-}
+const canReorder = $derived(
+  displayOptions.groupBy === "state" && displayOptions.orderBy === "manual"
+);
 
 function positionForIssue(issue: Issue) {
   return issue.position ?? issue._creationTime;
@@ -73,58 +73,10 @@ function positionBetween(beforeIssue?: Issue, afterIssue?: Issue) {
   return Date.now();
 }
 
-function positionForMoveUp(stateIssues: Issue[], index: number) {
-  return positionBetween(stateIssues[index - 2], stateIssues[index - 1]);
-}
+function positionAtGroupEnd(group: IssueGroup, movedIssueId: Issue["_id"]) {
+  const remaining = group.issues.filter((issue) => issue._id !== movedIssueId);
 
-function positionForMoveDown(stateIssues: Issue[], index: number) {
-  return positionBetween(stateIssues[index + 1], stateIssues[index + 2]);
-}
-
-function positionAtStateEnd(
-  stateId: IssueState["_id"],
-  movedIssueId: Issue["_id"]
-) {
-  const stateIssues = issuesForState(stateId).filter(
-    (issue) => issue._id !== movedIssueId
-  );
-
-  return positionBetween(stateIssues.at(-1));
-}
-
-function assigneeInitials(issue: Issue) {
-  return (issue.assigneeUserId ?? issue.createdByUserId)
-    .slice(0, 2)
-    .toUpperCase();
-}
-
-function commentLabel(commentCount: number) {
-  return `${commentCount} ${commentCount === 1 ? "comment" : "comments"}`;
-}
-
-function quickTitleForState(stateId: IssueState["_id"]) {
-  return quickTitles[stateId] ?? "";
-}
-
-function setQuickTitleForState(stateId: IssueState["_id"], title: string) {
-  quickTitles = { ...quickTitles, [stateId]: title };
-}
-
-async function createIssueInState(state: IssueState) {
-  const title = quickTitleForState(state._id).trim();
-
-  if (!title) {
-    return;
-  }
-
-  creatingStateId = state._id;
-
-  try {
-    await onQuickCreate(state, title);
-    setQuickTitleForState(state._id, "");
-  } finally {
-    creatingStateId = null;
-  }
+  return positionBetween(remaining.at(-1));
 }
 
 function handleDragStart(event: DragEvent, issue: Issue) {
@@ -140,7 +92,7 @@ function handleDragEnd() {
   draggingIssueId = null;
 }
 
-async function handleDrop(event: DragEvent, state: IssueState) {
+async function handleDrop(event: DragEvent, group: IssueGroup) {
   event.preventDefault();
 
   const issueId =
@@ -148,214 +100,82 @@ async function handleDrop(event: DragEvent, state: IssueState) {
     draggingIssueId;
   const issue = issues.find((candidate) => candidate._id === issueId);
 
+  draggingIssueId = null;
+
   if (!issue) {
     return;
   }
 
-  await onMoveIssue(issue, state._id, positionAtStateEnd(state._id, issue._id));
-  draggingIssueId = null;
+  if (group.state) {
+    await onMoveIssue(
+      issue,
+      group.state._id,
+      positionAtGroupEnd(group, issue._id)
+    );
+    return;
+  }
+
+  if (group.priority && group.priority !== issue.priority) {
+    await onUpdateIssueFor(issue, { priority: group.priority });
+  }
+}
+
+async function handleReorder(
+  issue: Issue,
+  group: IssueGroup,
+  direction: "down" | "up",
+  index: number
+) {
+  if (!group.state) {
+    return;
+  }
+
+  const position =
+    direction === "up"
+      ? positionBetween(group.issues[index - 2], group.issues[index - 1])
+      : positionBetween(group.issues[index + 1], group.issues[index + 2]);
+
+  await onReorderIssue(issue, group.state._id, position);
+}
+
+async function handleMoveToState(issue: Issue, stateId: IssueState["_id"]) {
+  const targetIssues = issues
+    .filter(
+      (candidate) =>
+        candidate.stateId === stateId && candidate._id !== issue._id
+    )
+    .toSorted((left, right) => compareIssues(left, right, "manual"));
+
+  await onMoveIssue(issue, stateId, positionBetween(targetIssues.at(-1)));
+}
+
+async function handleQuickCreate(group: IssueGroup, title: string) {
+  if (!group.state) {
+    return;
+  }
+
+  await onQuickCreate(group.state, title);
 }
 </script>
 
-<section class="rounded-xl border border-white/10 bg-[#151616]">
-  <div
-    class="flex items-center justify-between border-b border-white/[0.06] px-4 py-3"
-  >
-    <div>
-      <p class="text-xs font-medium uppercase tracking-[0.18em] text-zinc-500">
-        Board
-      </p>
-      <h2 class="mt-1 text-lg font-semibold text-zinc-100">Kanban</h2>
-    </div>
-    <span class="rounded-md border border-white/10 px-2 py-1 text-xs text-zinc-500">
-      {issues.length} total
-    </span>
-  </div>
-
-  <div class="grid gap-3 overflow-x-auto p-3 lg:grid-cols-4">
-    {#each states as state (state._id)}
-      {@const stateIssues = issuesForState(state._id)}
-      <section
-        aria-label={`${state.name} column`}
-        class="min-h-80 min-w-64 rounded-lg border border-white/[0.06] bg-[#101111] transition {draggingIssueId
-          ? 'border-amber-400/20'
-          : ''}"
-        ondragover={(event) => event.preventDefault()}
-        ondrop={(event) => handleDrop(event, state)}
-      >
-        <div class="flex items-center justify-between border-b border-white/[0.06] px-3 py-2">
-          <div class="flex min-w-0 items-center gap-2">
-            <span
-              class="size-2 rounded-full"
-              style:background-color={state.color}
-            ></span>
-            <h3 class="truncate text-sm font-medium text-zinc-200">
-              {state.name}
-            </h3>
-          </div>
-          <span class="font-mono text-xs text-zinc-600">
-            {stateIssues.length}
-          </span>
-        </div>
-
-        <div class="space-y-2 p-2">
-          <form
-            class="rounded-lg border border-dashed border-white/[0.08] bg-black/10 p-2"
-            onsubmit={(event) => {
-              event.preventDefault();
-              createIssueInState(state);
-            }}
-          >
-            <label class="block">
-              <span class="sr-only">Quick issue title for {state.name}</span>
-              <input
-                aria-label={`Quick issue title for ${state.name}`}
-                class="h-8 w-full rounded-md border border-white/10 bg-[#0f1010] px-2 text-xs text-zinc-100 outline-none transition placeholder:text-zinc-700 focus:border-amber-400/60"
-                oninput={(event) =>
-                  setQuickTitleForState(state._id, event.currentTarget.value)}
-                placeholder={`Add to ${state.name}`}
-                value={quickTitleForState(state._id)}
-              />
-            </label>
-            <button
-              class="mt-2 h-7 w-full rounded-md border border-white/10 text-[11px] text-zinc-400 transition hover:bg-white/[0.04] hover:text-zinc-100 disabled:opacity-40"
-              disabled={
-                creatingStateId === state._id ||
-                !quickTitleForState(state._id).trim()
-              }
-              type="submit"
-            >
-              {creatingStateId === state._id
-                ? "Adding…"
-                : `Add issue to ${state.name}`}
-            </button>
-          </form>
-
-          {#each stateIssues as issue, index (issue._id)}
-            <article
-              class="rounded-lg border border-white/[0.06] bg-white/[0.025] p-3 shadow-lg shadow-black/10 transition hover:-translate-y-0.5 hover:border-white/15 hover:bg-white/[0.04] {selectedIssueId ===
-              issue._id
-                ? 'border-amber-400/40 bg-amber-400/[0.04]'
-                : ''}"
-              draggable="true"
-              ondragend={handleDragEnd}
-              ondragstart={(event) => handleDragStart(event, issue)}
-            >
-              <button
-                class="block w-full text-left"
-                onclick={() => onSelect(issue)}
-                type="button"
-              >
-                <span class="font-mono text-[11px] text-zinc-500">
-                  {issue.identifier}
-                </span>
-                <span class="mt-1 block text-sm font-medium leading-5 text-zinc-100">
-                  {issue.title}
-                </span>
-                {#if issue.description}
-                  <span class="mt-1 line-clamp-2 block text-xs leading-5 text-zinc-600">
-                    {issue.description}
-                  </span>
-                {/if}
-                {#if issue.labels.length > 0}
-                  <span class="mt-3 flex flex-wrap gap-1">
-                    {#each issue.labels as label (label._id)}
-                      <span
-                        class="rounded-full border px-1.5 py-0.5 text-[10px]"
-                        style:background-color={`${label.color}18`}
-                        style:border-color={`${label.color}44`}
-                        style:color={label.color}
-                      >
-                        {label.name}
-                      </span>
-                    {/each}
-                  </span>
-                {/if}
-              </button>
-
-              <div class="mt-3 flex flex-wrap items-center gap-2">
-                <div class="flex min-w-0 flex-1 flex-wrap items-center gap-2">
-                  <span
-                    class="rounded-full border border-amber-400/15 bg-amber-400/5 px-2 py-0.5 text-[11px] text-amber-300"
-                  >
-                    {priorityLabel[issue.priority]}
-                  </span>
-                  <span
-                    aria-label={commentLabel(issue.commentCount)}
-                    class="rounded-full border border-white/10 px-2 py-0.5 text-[11px] text-zinc-500"
-                  >
-                    💬 {issue.commentCount}
-                  </span>
-                  <span
-                    aria-label={`Assignee ${assigneeInitials(issue)}`}
-                    class="grid size-6 place-items-center rounded-full border border-white/10 bg-white/[0.04] font-mono text-[10px] text-zinc-400"
-                    title="Assignee placeholder"
-                  >
-                    {assigneeInitials(issue)}
-                  </span>
-                </div>
-                <div class="flex items-center gap-1">
-                  <button
-                    aria-label={`Reorder ${issue.identifier} up`}
-                    class="grid size-7 place-items-center rounded-md border border-white/10 text-xs text-zinc-500 transition hover:bg-white/[0.04] hover:text-zinc-200 disabled:opacity-30"
-                    disabled={index === 0}
-                    onclick={() =>
-                      onReorderIssue(
-                        issue,
-                        state._id,
-                        positionForMoveUp(stateIssues, index)
-                      )}
-                    type="button"
-                  >
-                    ↑
-                  </button>
-                  <button
-                    aria-label={`Reorder ${issue.identifier} down`}
-                    class="grid size-7 place-items-center rounded-md border border-white/10 text-xs text-zinc-500 transition hover:bg-white/[0.04] hover:text-zinc-200 disabled:opacity-30"
-                    disabled={index === stateIssues.length - 1}
-                    onclick={() =>
-                      onReorderIssue(
-                        issue,
-                        state._id,
-                        positionForMoveDown(stateIssues, index)
-                      )}
-                    type="button"
-                  >
-                    ↓
-                  </button>
-                  <label class="sr-only" for={`move-${issue._id}`}>
-                    Move {issue.identifier}
-                  </label>
-                  <select
-                    class="h-7 max-w-28 rounded-md border border-white/10 bg-[#0f1010] px-1 text-[11px] text-zinc-400 outline-none focus:border-amber-400/60"
-                    id={`move-${issue._id}`}
-                    value={issue.stateId}
-                    onchange={(event) => {
-                      const stateId = event.currentTarget
-                        .value as IssueState["_id"];
-                      onMoveIssue(
-                        issue,
-                        stateId,
-                        positionAtStateEnd(stateId, issue._id)
-                      );
-                    }}
-                  >
-                    {#each states as option (option._id)}
-                      <option value={option._id}>{option.name}</option>
-                    {/each}
-                  </select>
-                </div>
-              </div>
-            </article>
-          {:else}
-            <div
-              class="rounded-lg border border-dashed border-white/[0.06] px-3 py-8 text-center text-xs text-zinc-700"
-            >
-              No work items
-            </div>
-          {/each}
-        </div>
-      </section>
-    {/each}
-  </div>
-</section>
+<div class="flex h-full min-h-0 gap-3 overflow-x-auto pb-4">
+  {#each groups as group (group.id)}
+    <KanbanColumn
+      {canReorder}
+      {draggingIssueId}
+      {group}
+      {members}
+      onDragEnd={handleDragEnd}
+      onDragStart={handleDragStart}
+      onDrop={handleDrop}
+      onMoveToState={handleMoveToState}
+      onQuickCreate={group.state ? handleQuickCreate : undefined}
+      onReorder={handleReorder}
+      {onSelect}
+      onUpdate={onUpdateIssueFor}
+      properties={displayOptions.properties}
+      {selectedIssueId}
+      {states}
+    />
+  {/each}
+</div>
