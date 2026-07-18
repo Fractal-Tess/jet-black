@@ -62,6 +62,10 @@ export type WorkspaceMember = FunctionReturnType<
   typeof api.queries.workspaces.membersForWorkspace
 >[number];
 
+export type DashboardOverview = FunctionReturnType<
+  typeof api.queries.dashboard.overviewForWorkspace
+>;
+
 export type AddAttachmentInput = Omit<
   FunctionArgs<typeof api.mutations.attachments.addLink>,
   "issueId"

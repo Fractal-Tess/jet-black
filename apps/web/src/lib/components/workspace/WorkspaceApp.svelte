@@ -27,6 +27,7 @@ import type {
 import AppShell from "$lib/components/shell/AppShell.svelte";
 import { normalizeProjectModule, type ProjectModule } from "$lib/routes";
 import WorkspaceCreateIssueModal from "./WorkspaceCreateIssueModal.svelte";
+import WorkspaceDashboard from "./WorkspaceDashboard.svelte";
 import WorkspaceProjectModuleOutlet from "./WorkspaceProjectModuleOutlet.svelte";
 import WorkspaceStatusPanel from "./WorkspaceStatusPanel.svelte";
 import type { WorkspaceActionDeps } from "./workspace-action-deps";
@@ -78,6 +79,9 @@ const activePlaceholderModule = $derived(
 const routeIssue = $derived(routeIssueId ?? data.issueId);
 const routeProjectId = $derived(projectId ?? data.projectId);
 const routeWorkspaceSlug = $derived(workspaceSlug ?? data.workspaceSlug);
+const isWorkspaceHome = $derived(
+  Boolean(routeWorkspaceSlug) && !routeProjectId && !routeIssue
+);
 const auth = useAuth();
 
 function placeholderProjectModule(
@@ -126,6 +130,17 @@ const membersQuery = useQuery(api.queries.workspaces.membersForWorkspace, () =>
     : "skip"
 );
 const workspaceMembers = $derived(membersQuery.data ?? []);
+const dashboardQuery = useQuery(
+  api.queries.dashboard.overviewForWorkspace,
+  () =>
+    auth.isAuthenticated &&
+    convexTokenReady &&
+    !leavingAuthenticatedSession &&
+    isWorkspaceHome &&
+    viewerData?.activeWorkspace
+      ? { workspaceId: viewerData.activeWorkspace._id }
+      : "skip"
+);
 const activeProject = $derived(
   viewerData?.projects.find((project) => project._id === selectedProjectId) ??
     viewerData?.activeProject ??
@@ -400,7 +415,7 @@ $effect(() => {
     user={viewerData?.user ?? fallbackUser}
     workspaces={viewerData?.workspaces ?? []}
   >
-    {#if activeProject && activeWorkspaceSlug}
+    {#if activeProject && activeWorkspaceSlug && !isWorkspaceHome}
       <IssuesHeader
         {activeProject}
         issueCount={issues.length}
@@ -420,6 +435,15 @@ $effect(() => {
           loading={loadingWorkspaceData}
           {viewerData}
           {activeProject}
+        />
+      {:else if isWorkspaceHome}
+        <WorkspaceDashboard
+          loading={dashboardQuery.isLoading}
+          members={workspaceMembers}
+          overview={dashboardQuery.data ?? null}
+          user={viewerData.user}
+          workspaceName={viewerData.activeWorkspace.name}
+          workspaceSlug={viewerData.activeWorkspace.slug}
         />
       {:else}
         <WorkspaceProjectModuleOutlet
