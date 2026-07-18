@@ -1,4 +1,10 @@
 <script lang="ts">
+import { Badge } from "@workspace/ui/components/badge";
+import { Button } from "@workspace/ui/components/button";
+import { Card } from "@workspace/ui/components/card";
+import { Input } from "@workspace/ui/components/input";
+import { Label } from "@workspace/ui/components/label";
+import { Textarea } from "@workspace/ui/components/textarea";
 import type { IntakeIssue } from "$lib/components/issues/types";
 
 let {
@@ -42,12 +48,12 @@ async function createIntakeIssue() {
 </script>
 
 <section class="space-y-5">
-  <div class="rounded-xl border border-white/10 bg-[#151616]">
-    <div class="border-b border-white/[0.06] px-4 py-3">
-      <p class="text-xs font-medium uppercase tracking-[0.18em] text-zinc-500">
+  <Card>
+    <div class="border-b border-border px-4 py-3">
+      <p class="text-xs font-medium uppercase tracking-[0.18em] text-muted-foreground">
         Intake
       </p>
-      <h2 class="mt-1 text-lg font-semibold text-zinc-100">New intake item</h2>
+      <h2 class="mt-1 text-lg font-semibold text-foreground">New intake item</h2>
     </div>
 
     <form
@@ -57,75 +63,71 @@ async function createIntakeIssue() {
         createIntakeIssue();
       }}
     >
-      <label class="block">
-        <span class="mb-1 block text-xs text-zinc-500">Intake title</span>
-        <input
+      <div>
+        <Label class="mb-1">Intake title</Label>
+        <Input
           bind:value={title}
-          class="h-10 w-full rounded-md border border-white/10 bg-[#0f1010] px-3 text-sm text-zinc-100 outline-none transition placeholder:text-zinc-600 focus:border-amber-400/60"
           placeholder="Describe the incoming request"
         />
-      </label>
-      <label class="block">
-        <span class="mb-1 block text-xs text-zinc-500">Intake source</span>
-        <input
+      </div>
+      <div>
+        <Label class="mb-1">Intake source</Label>
+        <Input
           bind:value={source}
-          class="h-9 w-full rounded-md border border-white/10 bg-[#0f1010] px-3 text-sm text-zinc-100 outline-none transition placeholder:text-zinc-600 focus:border-amber-400/60"
+          class="h-9"
           placeholder="manual, support, sales"
         />
-      </label>
-      <label class="block">
-        <span class="mb-1 block text-xs text-zinc-500">Intake description</span>
-        <textarea
+      </div>
+      <div>
+        <Label class="mb-1">Intake description</Label>
+        <Textarea
           bind:value={description}
-          class="min-h-20 w-full resize-y rounded-md border border-white/10 bg-[#0f1010] px-3 py-2 text-sm text-zinc-100 outline-none transition placeholder:text-zinc-600 focus:border-amber-400/60"
+          class="min-h-20"
           placeholder="Add context before triage"
-        ></textarea>
-      </label>
-      <button
-        class="h-9 rounded-md bg-amber-400 px-4 text-xs font-semibold text-black transition hover:bg-amber-300 disabled:opacity-50"
+        />
+      </div>
+      <Button
         disabled={creating || !title.trim()}
         type="submit"
       >
-        {creating ? "Adding…" : "Add intake item"}
-      </button>
+        {creating ? "Adding\u2026" : "Add intake item"}
+      </Button>
     </form>
-  </div>
+  </Card>
 
-  <div class="rounded-xl border border-white/10 bg-[#151616]">
+  <Card>
     <div
-      class="flex items-center justify-between border-b border-white/[0.06] px-4 py-3"
+      class="flex items-center justify-between border-b border-border px-4 py-3"
     >
       <div>
-        <p class="text-xs font-medium uppercase tracking-[0.18em] text-zinc-500">
+        <p class="text-xs font-medium uppercase tracking-[0.18em] text-muted-foreground">
           Triage
         </p>
-        <h2 class="mt-1 text-lg font-semibold text-zinc-100">Inbox</h2>
+        <h2 class="mt-1 text-lg font-semibold text-foreground">Inbox</h2>
       </div>
-      <span class="rounded-md border border-white/10 px-2 py-1 text-xs text-zinc-500">
+      <Badge variant="outline">
         {intakeIssues.length} total
-      </span>
+      </Badge>
     </div>
 
-    <div class="divide-y divide-white/[0.06]">
+    <div class="divide-y divide-border">
       {#each intakeIssues as intakeIssue (intakeIssue._id)}
         <article class="p-4">
           <div class="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
             <div class="min-w-0">
               <div class="flex flex-wrap items-center gap-2">
-                <span
-                  class="rounded-full border border-amber-400/15 bg-amber-400/5 px-2 py-0.5 text-[11px] text-amber-300"
-                >
+                <Badge variant="secondary">
                   {intakeIssue.status}
-                </span>
-                <span class="font-mono text-[10px] text-zinc-600">
+                </Badge>
+                <span class="font-mono text-[10px] text-muted-foreground">
                   {intakeIssue.source}
                 </span>
               </div>
-              <h3 class="mt-2 text-sm font-medium text-zinc-100">
+              <h3 class="mt-2 text-sm font-medium text-foreground">
                 {intakeIssue.title}
               </h3>
               {#if intakeIssue.description}
-                <p class="mt-1 text-sm text-zinc-500">
+                <p class="mt-1 text-sm text-muted-foreground">
                   {intakeIssue.description}
                 </p>
               {/if}
@@ -133,31 +135,30 @@ async function createIntakeIssue() {
 
             {#if intakeIssue.status === "pending"}
               <div class="flex shrink-0 gap-2">
-                <button
-                  class="h-8 rounded-md border border-white/10 px-3 text-xs text-zinc-300 transition hover:bg-white/[0.04]"
+                <Button
+                  variant="outline"
+                  class="h-8 px-3 text-xs"
                   onclick={() => onDecline(intakeIssue)}
-                  type="button"
                 >
                   Decline
-                </button>
-                <button
-                  class="h-8 rounded-md bg-amber-400 px-3 text-xs font-semibold text-black transition hover:bg-amber-300"
+                </Button>
+                <Button
+                  class="h-8 px-3 text-xs"
                   onclick={() => onAccept(intakeIssue)}
-                  type="button"
                 >
                   Accept
-                </button>
+                </Button>
               </div>
             {:else if intakeIssue.acceptedIssueId}
-              <span class="text-xs text-zinc-600">Accepted as issue</span>
+              <span class="text-xs text-muted-foreground">Accepted as issue</span>
             {/if}
           </div>
         </article>
       {:else}
-        <p class="p-8 text-center text-sm text-zinc-600">
+        <p class="p-8 text-center text-sm text-muted-foreground">
           No intake items yet.
         </p>
       {/each}
     </div>
-  </div>
+  </Card>
 </section>

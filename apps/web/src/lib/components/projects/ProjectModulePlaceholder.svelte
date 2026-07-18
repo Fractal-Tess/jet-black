@@ -1,4 +1,6 @@
 <script lang="ts">
+import { Button } from "@workspace/ui/components/button";
+import { Card } from "@workspace/ui/components/card";
 import type { ProjectModule } from "$lib/routes";
 
 type ModuleCopy = {
@@ -57,28 +59,28 @@ const copy: Record<Exclude<ProjectModule, "issues" | "tickets">, ModuleCopy> = {
 const moduleCopy = $derived(copy[module]);
 </script>
 
-<section
-  class="grid min-h-[420px] place-items-center rounded-xl border border-white/10 bg-[#151616] p-6 text-center"
+<Card
+  class="grid min-h-[420px] place-items-center p-6 text-center"
 >
   <div class="max-w-lg">
-    <p class="text-xs font-medium uppercase tracking-[0.18em] text-amber-400">
+    <p class="text-xs font-medium uppercase tracking-[0.18em] text-primary">
       {moduleCopy.eyebrow}
     </p>
-    <h2 class="mt-3 text-2xl font-semibold tracking-tight text-zinc-100">
+    <h2 class="mt-3 text-2xl font-semibold tracking-tight text-foreground">
       {moduleCopy.title}
     </h2>
-    <p class="mt-3 text-sm leading-6 text-zinc-500">
+    <p class="mt-3 text-sm leading-6 text-muted-foreground">
       {moduleCopy.description}
     </p>
-    <p class="mt-2 text-xs text-zinc-700">
+    <p class="mt-2 text-xs text-muted-foreground">
       Project: {projectName}
     </p>
-    <button
-      class="mt-6 h-9 rounded-md border border-white/10 bg-white/[0.03] px-4 text-xs font-semibold text-zinc-400"
+    <Button
+      variant="outline"
+      class="mt-6"
       disabled
-      type="button"
     >
-      {moduleCopy.cta} · coming soon
-    </button>
+      {moduleCopy.cta} \u00b7 coming soon
+    </Button>
   </div>
-</section>
+</Card>
