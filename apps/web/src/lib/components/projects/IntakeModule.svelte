@@ -50,7 +50,7 @@ async function createIntakeIssue() {
 <section class="space-y-5">
   <Card>
     <div class="border-b border-border px-4 py-3">
-      <p class="text-xs font-medium uppercase tracking-[0.18em] text-muted-foreground">
+      <p class="text-xs font-medium uppercase tracking-wider text-muted-foreground">
         Intake
       </p>
       <h2 class="mt-1 text-lg font-semibold text-foreground">New intake item</h2>
@@ -64,25 +64,28 @@ async function createIntakeIssue() {
       }}
     >
       <div>
-        <Label class="mb-1">Intake title</Label>
+        <Label class="mb-1" for="intake-title">Intake title</Label>
         <Input
           bind:value={title}
+          id="intake-title"
           placeholder="Describe the incoming request"
         />
       </div>
       <div>
-        <Label class="mb-1">Intake source</Label>
+        <Label class="mb-1" for="intake-source">Intake source</Label>
         <Input
           bind:value={source}
           class="h-9"
+          id="intake-source"
           placeholder="manual, support, sales"
         />
       </div>
       <div>
-        <Label class="mb-1">Intake description</Label>
+        <Label class="mb-1" for="intake-description">Intake description</Label>
         <Textarea
           bind:value={description}
           class="min-h-20"
+          id="intake-description"
           placeholder="Add context before triage"
         />
       </div>
@@ -100,7 +103,7 @@ async function createIntakeIssue() {
       class="flex items-center justify-between border-b border-border px-4 py-3"
     >
       <div>
-        <p class="text-xs font-medium uppercase tracking-[0.18em] text-muted-foreground">
+      <p class="text-xs font-medium uppercase tracking-wider text-muted-foreground">
           Triage
         </p>
         <h2 class="mt-1 text-lg font-semibold text-foreground">Inbox</h2>
@@ -119,7 +122,7 @@ async function createIntakeIssue() {
                 <Badge variant="secondary">
                   {intakeIssue.status}
                 </Badge>
-                <span class="font-mono text-[10px] text-muted-foreground">
+          <span class="font-mono text-meta text-muted-foreground">
                   {intakeIssue.source}
                 </span>
               </div>

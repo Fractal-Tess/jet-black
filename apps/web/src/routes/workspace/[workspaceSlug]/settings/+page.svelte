@@ -1,6 +1,7 @@
 <script lang="ts">
 import SettingsContentWrapper from "$lib/components/settings/SettingsContentWrapper.svelte";
 import WorkspaceGeneralTab from "$lib/components/settings/workspace/WorkspaceGeneralTab.svelte";
+import type { WorkspaceRole } from "$lib/settings-nav";
 
 let { data } = $props();
 const workspace = $derived(
@@ -11,7 +12,7 @@ const workspace = $derived(
     updatedAt: number;
   }
 );
-const membership = $derived(data.membership as { role: "owner" | "member" });
+const membership = $derived(data.membership as { role: WorkspaceRole });
 </script>
 
 <SettingsContentWrapper>

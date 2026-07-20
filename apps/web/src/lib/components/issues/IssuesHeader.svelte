@@ -2,6 +2,7 @@
 import Columns3 from "lucide-svelte/icons/columns-3";
 import List from "lucide-svelte/icons/list";
 import Plus from "lucide-svelte/icons/plus";
+import Search from "lucide-svelte/icons/search";
 
 import type { IssueDisplayOptions } from "$lib/components/issues/display-options";
 import IssueDisplayDropdown from "$lib/components/issues/IssueDisplayDropdown.svelte";
@@ -20,6 +21,8 @@ let {
   onAddWorkItem,
   onDisplayOptionsChange,
   onIssueViewChange,
+  onSearchChange,
+  searchQuery,
   workspaceSlug,
 }: {
   activeProject: Project | null;
@@ -29,55 +32,68 @@ let {
   onAddWorkItem: () => void;
   onDisplayOptionsChange: (options: IssueDisplayOptions) => void;
   onIssueViewChange: (view: "board" | "list") => void;
+  onSearchChange: (query: string) => void;
+  searchQuery: string;
   workspaceSlug: string;
 } = $props();
 </script>
 
-<div class="flex items-center justify-between border-b border-white/10 px-5 py-3 sm:px-8">
-  <div class="flex min-w-0 items-center gap-2.5">
-    <div class="flex items-center gap-1.5 text-sm text-zinc-400">
+<div class="flex flex-col gap-3 border-b border-border px-5 py-3 sm:flex-row sm:items-center sm:justify-between sm:px-8">
+  <div class="flex min-w-0 items-center gap-2.5 overflow-hidden">
+    <div class="flex min-w-0 items-center gap-1.5 overflow-hidden whitespace-nowrap text-sm text-muted-foreground">
       <a
         href={workspaceHref(workspaceSlug)}
-        class="transition hover:text-zinc-200"
+        class="transition-colors hover:text-foreground"
       >
         Home
       </a>
-      <span class="text-zinc-700">/</span>
+      <span class="text-muted-foreground">/</span>
       <a
         href={workspaceProjectsHref(workspaceSlug)}
-        class="transition hover:text-zinc-200"
+        class="transition-colors hover:text-foreground"
       >
         Projects
       </a>
       {#if activeProject}
-        <span class="text-zinc-700">/</span>
+      <span class="text-muted-foreground">/</span>
         <a
           href={projectModuleHref({
             module: "tickets",
             projectId: activeProject._id,
             workspaceSlug,
           })}
-          class="transition hover:text-zinc-200"
+        class="transition-colors hover:text-foreground"
         >
-          {activeProject.name}
+          <span class="block max-w-28 truncate sm:max-w-48">{activeProject.name}</span>
         </a>
-        <span class="text-zinc-700">/</span>
-        <span class="font-medium text-zinc-100">Work Items</span>
+      <span class="text-muted-foreground">/</span>
+      <span class="font-medium text-foreground">Work Items</span>
       {/if}
     </div>
 
     {#if issueCount > 0}
       <span
-        class="inline-flex items-center rounded-md border border-white/10 px-2 py-0.5 text-[11px] tabular-nums text-zinc-500"
+        class="inline-flex items-center rounded-md border border-border px-2 py-0.5 text-meta tabular-nums text-muted-foreground"
       >
         {issueCount}
       </span>
     {/if}
   </div>
 
-  <div class="flex items-center gap-2">
+  <div class="flex w-full min-w-0 items-center gap-2 sm:w-auto">
+    <div class="relative min-w-32 flex-1 sm:w-52 sm:flex-none">
+      <Search class="absolute left-2 top-1/2 size-3.5 -translate-y-1/2 text-muted-foreground" />
+      <input
+        aria-label="Search issues"
+        class="h-8 w-full rounded-lg border border-input bg-background pl-7 pr-2 text-xs text-foreground outline-none placeholder:text-muted-foreground focus:border-ring focus:ring-3 focus:ring-ring/50"
+        oninput={(e) => onSearchChange(e.currentTarget.value)}
+        placeholder="Search issues…"
+        value={searchQuery}
+      />
+    </div>
+
     <div
-      class="inline-flex items-center gap-1 rounded-md bg-white/[0.06] p-1"
+      class="inline-flex items-center gap-1 rounded-lg bg-muted p-1"
       role="group"
       aria-label="Layout"
     >
@@ -86,8 +102,8 @@ let {
         aria-pressed={issueView === "list"}
         class="grid h-[22px] w-7 place-items-center rounded-sm transition {issueView ===
         'list'
-          ? 'bg-[#101111] text-zinc-100 shadow-sm'
-          : 'text-zinc-500 hover:text-zinc-200'}"
+          ? 'bg-background text-foreground shadow-sm'
+          : 'text-muted-foreground hover:text-foreground'}"
         onclick={() => onIssueViewChange("list")}
         title="List layout"
         type="button"
@@ -99,8 +115,8 @@ let {
         aria-pressed={issueView === "board"}
         class="grid h-[22px] w-7 place-items-center rounded-sm transition {issueView ===
         'board'
-          ? 'bg-[#101111] text-zinc-100 shadow-sm'
-          : 'text-zinc-500 hover:text-zinc-200'}"
+          ? 'bg-background text-foreground shadow-sm'
+          : 'text-muted-foreground hover:text-foreground'}"
         onclick={() => onIssueViewChange("board")}
         title="Board layout"
         type="button"
@@ -112,12 +128,13 @@ let {
     <IssueDisplayDropdown {displayOptions} onChange={onDisplayOptionsChange} />
 
     <button
-      class="flex h-8 items-center gap-1.5 rounded-md bg-amber-400 px-3 text-xs font-semibold text-black transition hover:bg-amber-300"
+      aria-label="Add work item"
+      class="flex h-8 shrink-0 items-center gap-1.5 rounded-lg bg-primary px-2 text-xs font-semibold text-primary-foreground transition-colors hover:bg-primary/80 sm:px-3"
       onclick={onAddWorkItem}
       type="button"
     >
       <Plus class="size-3.5" />
-      Add work item
+      <span class="hidden sm:inline">Add work item</span>
     </button>
   </div>
 </div>

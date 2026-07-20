@@ -3,7 +3,7 @@ import type { Snippet } from "svelte";
 import SettingsNav from "$lib/components/settings/SettingsNav.svelte";
 import SettingsShell from "$lib/components/settings/SettingsShell.svelte";
 import { projectModuleHref } from "$lib/routes";
-import { projectSettingsGroups } from "$lib/settings-nav";
+import { projectSettingsGroups, type WorkspaceRole } from "$lib/settings-nav";
 import type { LayoutData } from "./$types";
 
 let { data, children }: { data: LayoutData; children: Snippet } = $props();
@@ -12,7 +12,7 @@ const workspace = $derived(data.workspace as { name: string; slug: string });
 const project = $derived(
   data.project as { _id: string; color: string; name: string }
 );
-const membership = $derived(data.membership as { role: "owner" | "member" });
+const membership = $derived(data.membership as { role: WorkspaceRole });
 const groups = $derived(projectSettingsGroups(workspace.slug, project._id));
 </script>
 
@@ -32,7 +32,6 @@ const groups = $derived(projectSettingsGroups(workspace.slug, project._id));
         })}
         title="Project settings"
         entityName={project.name}
-        entityColor={project.color}
         entitySubtitle={membership.role}
         rootKey="general"
         role={membership.role}

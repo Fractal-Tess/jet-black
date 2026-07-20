@@ -6,14 +6,12 @@ let {
   title,
   entityName,
   entitySubtitle,
-  entityColor,
   entityInitials,
 }: {
   backHref: string;
   title: string;
   entityName: string;
   entitySubtitle?: string;
-  entityColor?: string;
   entityInitials?: string;
 } = $props();
 
@@ -31,7 +29,7 @@ const initials = $derived(
 
 <div class="mb-2">
   <a
-    class="group flex items-center gap-1.5 rounded-md px-1 py-1 text-[13px] font-medium text-muted-foreground transition hover:text-foreground"
+    class="group flex items-center gap-1.5 rounded-md px-1 py-1 text-sm font-medium text-muted-foreground transition hover:text-foreground"
     href={backHref}
   >
     <ArrowLeft
@@ -41,18 +39,15 @@ const initials = $derived(
   </a>
 
   <div class="mt-2 flex items-center gap-2.5 px-1">
-    <div
-      class="grid size-8 shrink-0 place-items-center rounded-md border border-border bg-muted text-[11px] font-bold text-sidebar-foreground"
-      style:background-color={entityColor}
-    >
+    <div class="grid size-8 shrink-0 place-items-center rounded-lg border border-primary/30 bg-primary text-meta font-bold text-primary-foreground">
       {initials}
     </div>
     <div class="min-w-0">
-      <p class="truncate text-[13px] font-medium text-sidebar-foreground">
+      <p class="truncate text-sm font-medium text-sidebar-foreground">
         {entityName}
       </p>
       {#if entitySubtitle}
-        <p class="truncate text-[11px] text-sidebar-muted-foreground">
+        <p class="truncate text-meta text-sidebar-muted-foreground">
           {entitySubtitle}
         </p>
       {/if}

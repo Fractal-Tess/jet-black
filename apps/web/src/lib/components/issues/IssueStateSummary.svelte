@@ -1,4 +1,6 @@
 <script lang="ts">
+import { Card } from "@workspace/ui/components/card";
+import StateTypeIcon from "./StateTypeIcon.svelte";
 import type { Issue, IssueState } from "./types";
 
 let {
@@ -16,22 +18,19 @@ function countForState(stateId: string) {
 
 <section class="grid gap-3 md:grid-cols-4">
   {#each states as state (state._id)}
-    <article class="rounded-xl border border-white/10 bg-[#151616] p-4">
+    <Card class="p-4">
       <div class="flex items-center justify-between">
         <span
-          class="inline-flex items-center gap-2 text-xs font-medium text-zinc-400"
+          class="inline-flex items-center gap-2 text-xs font-medium text-muted-foreground"
         >
-          <span
-            class="size-2 rounded-full"
-            style:background-color={state.color}
-          ></span>
+          <StateTypeIcon class="size-3.5" type={state.type} />
           {state.name}
         </span>
-        <span class="font-mono text-xs text-zinc-600">{state.type}</span>
+        <span class="font-mono text-xs text-muted-foreground">{state.type}</span>
       </div>
-      <p class="mt-5 text-3xl font-semibold tracking-tight text-zinc-100">
+      <p class="mt-5 text-3xl font-semibold tracking-tight text-card-foreground">
         {countForState(state._id)}
       </p>
-    </article>
+    </Card>
   {/each}
 </section>

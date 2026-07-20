@@ -1,4 +1,5 @@
 <script lang="ts">
+import type { EstimateSystem } from "$lib/estimates";
 import IssueCoreProperties from "./IssueCoreProperties.svelte";
 import IssueLabelProperty from "./IssueLabelProperty.svelte";
 import IssueScheduleProperties from "./IssueScheduleProperties.svelte";
@@ -7,6 +8,7 @@ import type {
   Issue,
   IssueLabel,
   IssueState,
+  ProjectModuleRecord,
   UpdateIssueInput,
   WorkspaceMember,
 } from "./types";
@@ -15,16 +17,22 @@ let {
   issue,
   labels,
   members,
+  modules = [],
   states,
+  estimateSystem,
   onCreateLabel,
+  onCreateModuleForIssue,
   onToggleLabel,
   onUpdateIssue,
 }: {
   issue: Issue;
   labels: IssueLabel[];
   members: WorkspaceMember[];
+  modules?: ProjectModuleRecord[];
   states: IssueState[];
+  estimateSystem?: EstimateSystem;
   onCreateLabel: (input: CreateLabelInput) => Promise<void>;
+  onCreateModuleForIssue: (name: string) => Promise<void>;
   onToggleLabel: (labelId: IssueLabel["_id"]) => Promise<void>;
   onUpdateIssue: (input: UpdateIssueInput) => Promise<void>;
 } = $props();
@@ -49,11 +57,12 @@ function closeDropdowns(event: MouseEvent) {
 <svelte:window onclick={closeDropdowns} />
 
 <div class="px-5 py-4">
-	<h3 class="mb-3 text-sm font-medium text-zinc-300">Properties</h3>
+  <h3 class="mb-3 text-sm font-medium text-foreground">Properties</h3>
 	<div class="space-y-0">
 		<IssueCoreProperties
 			{issue}
 			{members}
+			{modules}
 			{states}
 			{openDropdown}
 			onToggleDropdown={toggleDropdown}
@@ -61,8 +70,9 @@ function closeDropdowns(event: MouseEvent) {
 				openDropdown = null;
 			}}
 			{onUpdateIssue}
+			{onCreateModuleForIssue}
 		/>
-		<IssueScheduleProperties {issue} {onUpdateIssue} />
+		<IssueScheduleProperties {estimateSystem} {issue} {onUpdateIssue} />
 		<IssueLabelProperty
 			{issue}
 			{labels}

@@ -40,7 +40,7 @@ let mobileOpen = $state(false);
         {/if}
       </button>
       {#if activePath}
-        <span class="text-[13px] font-medium text-muted-foreground">
+      <span class="text-sm font-medium text-muted-foreground">
           {activePath}
         </span>
       {/if}

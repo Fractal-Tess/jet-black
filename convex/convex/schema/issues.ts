@@ -29,7 +29,9 @@ export const issueTables = {
   issueComments: defineTable({
     authorUserId: v.string(),
     body: v.string(),
+    editedAt: v.optional(v.number()),
     issueId: v.id("issues"),
+    parentCommentId: v.optional(v.id("issueComments")),
     updatedAt: v.number(),
     workspaceId: v.id("workspaces"),
   })
@@ -88,6 +90,7 @@ export const issueTables = {
     updatedAt: v.number(),
     workspaceId: v.id("workspaces"),
   })
+    .index("by_moduleId", ["moduleId"])
     .index("by_projectId", ["projectId"])
     .index("by_projectId_sequenceId", ["projectId", "sequenceId"])
     .index("by_projectId_stateId_position", [

@@ -8,7 +8,6 @@ export type IssueOrderBy = "manual" | "priority" | "created" | "updated";
 
 export type IssueDisplayProperty =
   | "key"
-  | "state"
   | "priority"
   | "assignee"
   | "labels"
@@ -26,7 +25,6 @@ export const DISPLAY_PROPERTY_LABELS: Record<IssueDisplayProperty, string> = {
   key: "ID",
   labels: "Labels",
   priority: "Priority",
-  state: "State",
 };
 
 export const GROUP_BY_OPTIONS: { label: string; value: IssueGroupBy }[] = [
@@ -67,7 +65,6 @@ export function defaultDisplayOptions(): IssueDisplayOptions {
       key: true,
       labels: true,
       priority: true,
-      state: true,
     },
   };
 }

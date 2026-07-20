@@ -33,10 +33,10 @@ async function addAttachment() {
 }
 </script>
 
-<div class="mt-5 border-t border-white/[0.06] pt-4 px-4 pb-0">
+<div class="mt-5 border-t border-border pt-4 px-4 pb-0">
   <div class="flex items-center justify-between gap-3">
-    <h3 class="text-sm font-medium text-zinc-300">Attachments</h3>
-    <span class="font-mono text-[10px] text-zinc-700">
+    <h3 class="text-sm font-medium text-foreground">Attachments</h3>
+    <span class="font-mono text-meta text-muted-foreground">
       {attachments.length} linked
     </span>
   </div>
@@ -44,19 +44,19 @@ async function addAttachment() {
   <div class="mt-3 space-y-2">
     {#each attachments as attachment (attachment._id)}
       <a
-        class="block rounded-md border border-white/[0.06] p-3 text-sm text-zinc-300 transition hover:border-white/15 hover:bg-white/[0.03]"
+        class="block rounded-lg border border-border p-3 text-sm text-foreground transition-colors hover:border-input hover:bg-muted"
         href={attachment.url}
         rel="noreferrer"
         target="_blank"
       >
         <span class="block font-medium">{attachment.name}</span>
-        <span class="mt-1 block truncate text-xs text-zinc-600">
+        <span class="mt-1 block truncate text-xs text-muted-foreground">
           {attachment.url}
         </span>
       </a>
     {:else}
       <p
-        class="rounded-md border border-dashed border-white/10 p-3 text-xs text-zinc-600"
+      class="rounded-lg border border-dashed border-border p-3 text-xs text-muted-foreground"
       >
         Attach links to specs, mockups, or code references.
       </p>
@@ -68,7 +68,7 @@ async function addAttachment() {
       <span class="sr-only">Attachment name</span>
       <input
         bind:value={attachmentName}
-        class="h-9 w-full rounded-md border border-white/10 bg-[#0f1010] px-3 text-sm text-zinc-100 outline-none transition placeholder:text-zinc-600 focus:border-amber-400/60"
+        class="h-9 w-full rounded-lg border border-input bg-background px-3 text-sm text-foreground outline-none transition-colors placeholder:text-muted-foreground focus:border-ring focus:ring-3 focus:ring-ring/50"
         placeholder="Attachment name"
       />
     </label>
@@ -76,13 +76,13 @@ async function addAttachment() {
       <span class="sr-only">Attachment URL</span>
       <input
         bind:value={attachmentUrl}
-        class="h-9 w-full rounded-md border border-white/10 bg-[#0f1010] px-3 text-sm text-zinc-100 outline-none transition placeholder:text-zinc-600 focus:border-amber-400/60"
+        class="h-9 w-full rounded-lg border border-input bg-background px-3 text-sm text-foreground outline-none transition-colors placeholder:text-muted-foreground focus:border-ring focus:ring-3 focus:ring-ring/50"
         placeholder="https://example.com/spec"
         type="url"
       />
     </label>
     <button
-      class="h-8 rounded-md border border-white/10 px-3 text-xs text-zinc-300 transition hover:bg-white/[0.04] disabled:opacity-50"
+      class="h-8 rounded-lg border border-border px-3 text-xs text-foreground transition-colors hover:bg-muted disabled:opacity-50"
       disabled={addingAttachment || !(attachmentName.trim() && attachmentUrl.trim())}
       onclick={addAttachment}
       type="button"

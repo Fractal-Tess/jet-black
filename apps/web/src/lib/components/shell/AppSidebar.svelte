@@ -1,10 +1,12 @@
 <script lang="ts">
 import type { Project } from "$lib/components/issues/types";
 import CreateProjectModal from "$lib/components/projects/CreateProjectModal.svelte";
+import type { ProjectModule, WorkspacePage } from "$lib/routes";
 import SidebarNavigation from "./SidebarNavigation.svelte";
 
 let {
   activeModule = "tickets",
+  activeWorkspacePage,
   activeWorkspaceSlug,
   creatingProject = false,
   onCreateProject,
@@ -14,7 +16,8 @@ let {
   selectedProjectId,
   sidebarOpen = false,
 }: {
-  activeModule?: import("$lib/routes").ProjectModule;
+  activeModule?: ProjectModule;
+  activeWorkspacePage?: WorkspacePage | null;
   activeWorkspaceSlug?: string;
   creatingProject?: boolean;
   onCreateProject: (input: {
@@ -47,7 +50,7 @@ let createProjectOpen = $state(false);
     : '-translate-x-full'}"
 >
   <div class="flex items-center justify-between px-4 py-3.5">
-    <span class="text-[15px] font-semibold text-foreground">Projects</span>
+        <span class="text-base font-semibold text-foreground">Projects</span>
     <button
       aria-label="Close navigation"
       class="text-muted-foreground lg:hidden"
@@ -60,6 +63,7 @@ let createProjectOpen = $state(false);
 
   <SidebarNavigation
     {activeModule}
+    {activeWorkspacePage}
     {activeWorkspaceSlug}
     onOpenCreateProject={() => (createProjectOpen = true)}
     {onSelectProject}

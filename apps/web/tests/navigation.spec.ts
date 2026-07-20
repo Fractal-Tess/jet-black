@@ -58,7 +58,7 @@ test.describe("workspace navigation", () => {
       await page.getByRole("link", { exact: true, name: "Modules" }).click();
       await expect(page).toHaveURL(MODULES_URL_PATTERN);
       await expect(
-        page.getByRole("heading", { name: "New module" })
+        page.getByRole("button", { name: "New module" })
       ).toBeVisible();
 
       await page.getByRole("link", { exact: true, name: "Pages" }).click();

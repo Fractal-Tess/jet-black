@@ -166,7 +166,7 @@ function portal(node: HTMLElement) {
             <!-- Inline quick actions -->
             <div class="mt-2 flex gap-1.5">
               <a
-                class="flex h-6 items-center gap-1 rounded border border-border bg-card/80 px-1.5 text-[10px] text-muted-foreground transition hover:text-foreground"
+        class="flex h-6 items-center gap-1 rounded border border-border bg-card/80 px-1.5 text-meta text-muted-foreground transition hover:text-foreground"
                 href={workspaceSettingsHref(activeWorkspace.slug)}
                 onclick={(e) => {
                   e.stopPropagation();
@@ -177,7 +177,7 @@ function portal(node: HTMLElement) {
                 Settings
               </a>
               <a
-                class="flex h-6 items-center gap-1 rounded border border-border bg-card/80 px-1.5 text-[10px] text-muted-foreground transition hover:text-foreground"
+        class="flex h-6 items-center gap-1 rounded border border-border bg-card/80 px-1.5 text-meta text-muted-foreground transition hover:text-foreground"
                 href={workspaceSettingsHref(activeWorkspace.slug, "members")}
                 onclick={(e) => {
                   e.stopPropagation();
@@ -195,7 +195,7 @@ function portal(node: HTMLElement) {
       <!-- Other workspaces -->
       {#if otherWorkspaces.length > 0}
         <div class="border-t border-border px-2 py-1.5">
-          <p class="px-2 py-1 text-[10px] font-medium uppercase tracking-wider text-muted-foreground">
+        <p class="px-2 py-1 text-meta font-medium uppercase tracking-wider text-muted-foreground">
             Switch to
           </p>
           {#each otherWorkspaces as workspace (workspace._id)}
@@ -213,7 +213,7 @@ function portal(node: HTMLElement) {
                 <p class="truncate text-sm text-secondary-foreground">
                   {workspace.name}
                 </p>
-                <p class="text-[11px] capitalize text-muted-foreground">
+              <p class="text-meta capitalize text-muted-foreground">
                   {getRole(workspace._id)}
                 </p>
               </div>
@@ -225,7 +225,7 @@ function portal(node: HTMLElement) {
       <!-- Actions -->
       <div class="border-t border-border p-1.5">
         <a
-          class="flex items-center gap-2 rounded-md px-2.5 py-1.5 text-[13px] text-secondary-foreground transition hover:bg-accent"
+          class="flex items-center gap-2 rounded-md px-2.5 py-1.5 text-sm text-secondary-foreground transition hover:bg-accent"
           href="/onboarding?step=workspace"
           onclick={close}
         >
@@ -233,7 +233,7 @@ function portal(node: HTMLElement) {
           Create workspace
         </a>
         <button
-          class="flex w-full items-center gap-2 rounded-md px-2.5 py-1.5 text-left text-[13px] text-muted-foreground transition hover:bg-accent hover:text-foreground"
+          class="flex w-full items-center gap-2 rounded-md px-2.5 py-1.5 text-left text-sm text-muted-foreground transition hover:bg-accent hover:text-foreground"
           disabled={signingOut}
           onclick={handleSignOut}
           type="button"
@@ -245,7 +245,7 @@ function portal(node: HTMLElement) {
 
       <!-- Email footer -->
       <div class="border-t border-border px-3 py-2">
-        <p class="truncate text-[11px] text-muted-foreground">{userEmail}</p>
+        <p class="truncate text-meta text-muted-foreground">{userEmail}</p>
       </div>
     </div>
   </div>

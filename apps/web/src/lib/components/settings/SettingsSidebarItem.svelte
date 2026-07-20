@@ -15,7 +15,7 @@ let {
 </script>
 
 <a
-  class="flex h-8 items-center gap-2 rounded-md px-2 text-[13px] font-medium transition-colors
+  class="flex h-8 items-center gap-2 rounded-md px-2 text-sm font-medium transition-colors
     {active
     ? 'bg-sidebar-accent text-sidebar-accent-foreground'
     : 'text-muted-foreground hover:bg-sidebar-accent hover:text-sidebar-foreground'}"

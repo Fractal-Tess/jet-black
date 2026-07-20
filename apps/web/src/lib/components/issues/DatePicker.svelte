@@ -12,6 +12,7 @@ let {
   minDate,
   maxDate,
   disabled = false,
+  disabledHint,
 }: {
   value?: string | null;
   placeholder?: string;
@@ -20,6 +21,8 @@ let {
   minDate?: string | null;
   maxDate?: string | null;
   disabled?: boolean;
+  /** Hover hint shown on dates disabled by minDate/maxDate. */
+  disabledHint?: string;
 } = $props();
 
 let open = $state(false);
@@ -45,11 +48,22 @@ function portal(node: HTMLElement) {
 }
 
 $effect(() => {
-  if (open && value) {
-    const [y, m] = value.split("-").map(Number);
-    viewYear = y;
-    viewMonth = m - 1;
+  if (!open) {
+    return;
   }
+  // Open on the selected month, otherwise on a month that has selectable
+  // days (today clamped into the min/max range).
+  const now = new Date();
+  let iso = value ?? toIso(now.getFullYear(), now.getMonth(), now.getDate());
+  if (maxDate && iso > maxDate) {
+    iso = maxDate;
+  }
+  if (minDate && iso < minDate) {
+    iso = minDate;
+  }
+  const [y, m] = iso.split("-").map(Number);
+  viewYear = y;
+  viewMonth = m - 1;
 });
 
 const WEEKDAYS = ["Su", "Mo", "Tu", "We", "Th", "Fr", "Sa"];
@@ -88,6 +102,11 @@ function isToday(y: number, m: number, d: number): boolean {
 
 function isSelected(y: number, m: number, d: number): boolean {
   return !!value && value === toIso(y, m, d);
+}
+
+function isPast(y: number, m: number, d: number): boolean {
+  const n = new Date();
+  return toIso(y, m, d) < toIso(n.getFullYear(), n.getMonth(), n.getDate());
 }
 
 function isDisabled(y: number, m: number, d: number): boolean {
@@ -155,8 +174,14 @@ function toggle(e: MouseEvent) {
   }
   const el = e.currentTarget as HTMLElement;
   const rect = el.getBoundingClientRect();
-  panelTop = rect.bottom + 4;
-  panelLeft = rect.left;
+  // Clamp so the fixed panel stays fully inside the viewport.
+  const PANEL_HEIGHT = 340;
+  const PANEL_WIDTH = 270;
+  panelTop = Math.max(
+    8,
+    Math.min(rect.bottom + 4, window.innerHeight - PANEL_HEIGHT)
+  );
+  panelLeft = Math.max(8, Math.min(rect.left, window.innerWidth - PANEL_WIDTH));
   open = true;
 }
 
@@ -171,16 +196,16 @@ function close() {
   <!-- svelte-ignore a11y_click_events_have_key_events -->
   <!-- svelte-ignore a11y_no_static_element_interactions -->
   <span
-    class="flex cursor-pointer items-center gap-2 rounded-md px-2 py-1 text-sm transition hover:bg-white/[0.06] {disabled
+    class="flex cursor-pointer items-center gap-2 rounded-lg px-2 py-1 text-sm transition-colors hover:bg-muted {disabled
       ? 'pointer-events-none opacity-50'
-      : ''} {displayText ? 'text-zinc-300' : 'text-zinc-500'}"
+      : ''} {displayText ? 'text-foreground' : 'text-muted-foreground'}"
     onclick={toggle}
   >
     {displayText ?? placeholder}
     {#if clearable && displayText && !disabled}
       <!-- svelte-ignore a11y_no_static_element_interactions -->
       <span
-        class="grid size-4 place-items-center rounded text-zinc-600 transition hover:text-zinc-300"
+        class="grid size-4 place-items-center rounded text-muted-foreground transition-colors hover:text-foreground"
         onclick={(e) => { e.stopPropagation(); onChange(null); }}
       >
         <X class="size-3" />
@@ -199,22 +224,24 @@ function close() {
       type="button"
     ></button>
     <div
-      class="fixed w-[260px] rounded-lg border border-white/10 bg-[#1a1b1b] p-3 shadow-xl"
+      class="fixed w-[260px] rounded-xl border border-border bg-popover p-3 text-popover-foreground shadow-md"
       style="z-index: 9999; top: {panelTop}px; left: {panelLeft}px;"
     >
       <div class="flex items-center justify-between">
         <button
-          class="grid size-7 place-items-center rounded-md text-zinc-400 transition hover:bg-white/[0.08] hover:text-zinc-200"
+          aria-label="Previous month"
+          class="grid size-7 place-items-center rounded-lg text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
           onclick={() => { if (viewMonth === 0) { viewMonth = 11; viewYear--; } else { viewMonth--; } }}
           type="button"
         >
           <ChevronLeft class="size-4" />
         </button>
-        <span class="text-sm font-medium text-zinc-200">
+        <span class="text-sm font-medium text-foreground">
           {MONTH_NAMES[viewMonth]} {viewYear}
         </span>
         <button
-          class="grid size-7 place-items-center rounded-md text-zinc-400 transition hover:bg-white/[0.08] hover:text-zinc-200"
+          aria-label="Next month"
+          class="grid size-7 place-items-center rounded-lg text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
           onclick={() => { if (viewMonth === 11) { viewMonth = 0; viewYear++; } else { viewMonth++; } }}
           type="button"
         >
@@ -224,7 +251,7 @@ function close() {
 
       <div class="mt-3 grid grid-cols-7">
         {#each WEEKDAYS as wd}
-          <div class="text-center text-[11px] font-medium text-zinc-500">{wd}</div>
+          <div class="text-center text-meta font-medium text-muted-foreground">{wd}</div>
         {/each}
       </div>
 
@@ -234,18 +261,30 @@ function close() {
             {@const sel = isSelected(d.year, d.month, d.day)}
             {@const tod = isToday(d.year, d.month, d.day)}
             {@const dis = isDisabled(d.year, d.month, d.day)}
+            {@const past = isPast(d.year, d.month, d.day)}
             <button
+              aria-disabled={dis}
               class="grid size-[34px] place-items-center rounded-md text-sm transition
                 {sel
-                  ? 'bg-amber-400 font-semibold text-black hover:bg-amber-300'
+                  ? 'bg-primary font-semibold text-primary-foreground hover:bg-primary/80'
                   : tod
-                    ? 'font-semibold text-amber-400 hover:bg-white/[0.08]'
+                    ? 'font-semibold text-primary hover:bg-muted'
                     : d.isCurrentMonth
-                      ? 'text-zinc-300 hover:bg-white/[0.08]'
-                      : 'text-zinc-700'}
+                      ? past
+                        ? 'text-muted-foreground/70 hover:bg-muted'
+                        : 'text-foreground hover:bg-muted'
+                      : past
+                        ? 'text-muted-foreground/40'
+                        : 'text-muted-foreground/50'}
                 {dis ? 'cursor-not-allowed opacity-40 hover:bg-transparent' : ''}"
-              disabled={dis}
-              onclick={() => { onChange(toIso(d.year, d.month, d.day)); open = false; }}
+              onclick={() => {
+                if (dis) {
+                  return;
+                }
+                onChange(toIso(d.year, d.month, d.day));
+                open = false;
+              }}
+              title={dis ? disabledHint : undefined}
               type="button"
             >
               {d.day}

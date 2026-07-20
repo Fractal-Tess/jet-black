@@ -1,21 +1,96 @@
 <script lang="ts">
-import type { Issue, IssueComment } from "./types";
+import DescriptionEditor from "./DescriptionEditor.svelte";
+import { useDescriptionUploader } from "./description-upload";
+import IssueActivityRow from "./IssueActivityRow.svelte";
+import IssueCommentBlock from "./IssueCommentBlock.svelte";
+import type { Issue, IssueActivity, IssueComment } from "./types";
 
 let {
-  issue,
+  activities = [],
   comments,
+  issue,
   onAddComment,
+  onDeleteComment,
+  onUpdateComment,
 }: {
-  issue: Issue;
+  activities?: IssueActivity[];
   comments: IssueComment[];
-  onAddComment: (body: string) => Promise<void>;
+  issue: Issue;
+  onAddComment: (
+    body: string,
+    parentCommentId?: IssueComment["_id"]
+  ) => Promise<void>;
+  onDeleteComment: (commentId: IssueComment["_id"]) => Promise<void>;
+  onUpdateComment: (
+    commentId: IssueComment["_id"],
+    body: string
+  ) => Promise<void>;
 } = $props();
 
-let commentBody = $state("");
+type TimelineFilter = "comments" | "updates";
+
+type TimelineEntry =
+  | { kind: "comment"; ts: number; comment: IssueComment }
+  | { kind: "activity"; ts: number; activity: IssueActivity };
+
+const FILTERS: { label: string; value: TimelineFilter }[] = [
+  { label: "Comments", value: "comments" },
+  { label: "Updates", value: "updates" },
+];
+
+let filter = $state<TimelineFilter>("comments");
 let adding = $state(false);
+let commentDraft = $state("");
+let composer = $state<DescriptionEditor | null>(null);
+
+const uploadCommentFile = useDescriptionUploader(() => issue.workspaceId);
+
+const repliesByParent = $derived.by(() => {
+  const map = new Map<IssueComment["_id"], IssueComment[]>();
+
+  for (const comment of comments) {
+    if (!comment.parentCommentId) {
+      continue;
+    }
+    const existing = map.get(comment.parentCommentId);
+
+    if (existing) {
+      existing.push(comment);
+    } else {
+      map.set(comment.parentCommentId, [comment]);
+    }
+  }
+
+  return map;
+});
+
+const timeline = $derived.by(() => {
+  const entries: TimelineEntry[] = [
+    ...comments
+      .filter((comment) => !comment.parentCommentId)
+      .map((comment) => ({
+        comment,
+        kind: "comment" as const,
+        ts: comment._creationTime,
+      })),
+    ...activities
+      .filter((activity) => activity.message !== "commented")
+      .map((activity) => ({
+        activity,
+        kind: "activity" as const,
+        ts: activity._creationTime,
+      })),
+  ];
+
+  const filtered = entries.filter((entry) =>
+    filter === "comments" ? entry.kind === "comment" : entry.kind === "activity"
+  );
+
+  return filtered.toSorted((a, b) => a.ts - b.ts);
+});
 
 async function addComment() {
-  const body = commentBody.trim();
+  const body = composer?.getMarkdown().trim() ?? "";
 
   if (!body) {
     return;
@@ -24,7 +99,8 @@ async function addComment() {
   adding = true;
   try {
     await onAddComment(body);
-    commentBody = "";
+    composer?.setMarkdown("");
+    commentDraft = "";
   } finally {
     adding = false;
   }
@@ -32,44 +108,78 @@ async function addComment() {
 </script>
 
 <div class="px-5 py-4">
-  <h3 class="text-sm font-medium text-zinc-300">Activity</h3>
+  <div class="flex items-center justify-between gap-2">
+    <h3 class="text-sm font-medium text-foreground">Activity</h3>
 
-  <div class="mt-4 space-y-4">
-    {#each comments as comment (comment._id)}
-      <div class="flex gap-3">
-        <span class="mt-0.5 grid size-6 shrink-0 place-items-center rounded-full bg-zinc-700 text-[10px] font-medium text-zinc-300">
-          {comment.authorUserId.slice(0, 2).toUpperCase()}
-        </span>
-        <div class="min-w-0 flex-1">
-          <p class="text-sm text-zinc-300">{comment.body}</p>
-          <p class="mt-1 text-[11px] text-zinc-600">
-            {comment.authorUserId.slice(0, 8)}
-          </p>
-        </div>
-      </div>
-    {:else}
-      <p class="text-sm text-zinc-600">
-        No activity yet.
-      </p>
-    {/each}
+    <div class="flex items-center rounded-lg bg-muted p-0.5">
+      {#each FILTERS as option (option.value)}
+        <button
+          class="h-6 cursor-pointer rounded-md px-2.5 text-xs transition-colors {filter ===
+          option.value
+            ? 'bg-background font-medium text-foreground shadow-sm'
+            : 'text-muted-foreground hover:text-foreground'}"
+          onclick={() => {
+            filter = option.value;
+          }}
+          type="button"
+        >
+          {option.label}
+        </button>
+      {/each}
+    </div>
+  </div>
+
+  <div class="relative mt-4">
+    {#if timeline.length > 1}
+      <div
+        aria-hidden="true"
+        class="absolute top-2 bottom-2 left-[13px] w-px bg-border"
+      ></div>
+    {/if}
+
+    <div class="relative space-y-4">
+      {#each timeline as entry (entry.kind === "comment" ? entry.comment._id : entry.activity._id)}
+        {#if entry.kind === "comment"}
+          <IssueCommentBlock
+            comment={entry.comment}
+            {onDeleteComment}
+            onReply={(body) => onAddComment(body, entry.comment._id)}
+            {onUpdateComment}
+            replies={repliesByParent.get(entry.comment._id) ?? []}
+          />
+        {:else}
+          <IssueActivityRow activity={entry.activity} />
+        {/if}
+      {:else}
+        <p class="text-sm text-muted-foreground">
+          {filter === "comments" ? "No comments yet." : "No updates yet."}
+        </p>
+      {/each}
+    </div>
   </div>
 
   <div class="mt-4">
-    <label class="block">
-      <span class="sr-only">New comment</span>
-      <textarea
-        bind:value={commentBody}
-        class="min-h-[72px] w-full resize-y rounded-md border border-white/10 bg-[#0f1010] px-3 py-2 text-sm text-zinc-100 outline-none transition placeholder:text-zinc-600 focus:border-amber-400/60"
+    <div
+      class="rounded-lg border border-input bg-background px-3 py-2 transition-colors focus-within:border-ring focus-within:ring-3 focus-within:ring-ring/50"
+    >
+      <DescriptionEditor
+        ariaLabel="New comment"
+        bind:this={composer}
+        class="min-h-[56px] cursor-text"
+        onUpdate={(markdown) => {
+          commentDraft = markdown;
+        }}
         placeholder="Leave a comment..."
-      ></textarea>
-    </label>
+        uploadFile={uploadCommentFile}
+      />
+    </div>
     <button
-      class="mt-2 h-8 rounded-md bg-amber-400 px-3 text-xs font-medium text-black transition hover:bg-amber-300 disabled:opacity-50"
-      disabled={adding || !commentBody.trim()}
+      class="mt-2 h-8 rounded-lg bg-primary px-3 text-xs font-medium text-primary-foreground transition-colors hover:bg-primary/80 disabled:opacity-50"
+      disabled={adding || !commentDraft.trim()}
       onclick={addComment}
       type="button"
     >
-      {adding ? "Posting\u2026" : "Comment"}
+      {adding ? "Posting…" : "Comment"}
     </button>
   </div>
 </div>

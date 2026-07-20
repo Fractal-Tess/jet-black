@@ -1,4 +1,7 @@
 <script lang="ts">
+import { Button } from "@workspace/ui/components/button";
+import { Card } from "@workspace/ui/components/card";
+import { Input } from "@workspace/ui/components/input";
 import { onMount } from "svelte";
 import { goto } from "$app/navigation";
 import { authClient } from "$lib/auth-client";
@@ -67,12 +70,12 @@ function switchMode(nextMode: "sign-in" | "sign-up") {
 </svelte:head>
 
 <main
-  class="relative flex min-h-screen flex-col overflow-hidden bg-[#0d0e0e] text-[#f0f0ef]"
+  class="relative flex min-h-screen flex-col overflow-hidden bg-background text-foreground"
   data-hydrated={hydrated}
 >
   <div
     aria-hidden="true"
-    class="pointer-events-none absolute inset-0 bg-[radial-gradient(circle_at_50%_38%,rgba(255,184,0,0.045),transparent_28%)]"
+    class="pointer-events-none absolute inset-0 bg-radial from-primary/5 via-transparent to-transparent"
   ></div>
 
   <header class="relative flex h-14 shrink-0 items-center justify-between px-5 sm:px-8">
@@ -81,7 +84,7 @@ function switchMode(nextMode: "sign-in" | "sign-up") {
       href="/"
     >
       <span
-        class="grid size-7 place-items-center rounded-md border border-amber-400/30 bg-amber-400/5 transition group-hover:border-amber-400/60"
+        class="grid size-7 place-items-center rounded-md border border-primary/30 bg-primary/5 transition-colors group-hover:border-primary/60"
       >
         <img
           alt=""
@@ -94,43 +97,44 @@ function switchMode(nextMode: "sign-in" | "sign-up") {
       Jet Black
     </a>
 
-    <p class="hidden text-sm text-zinc-500 sm:block">
+    <p class="hidden text-sm text-muted-foreground sm:block">
       {mode === "sign-in" ? "New to Jet Black?" : "Already have an account?"}
-      <button
-        class="ml-1 text-amber-400 transition hover:text-amber-300"
+      <Button
+        class="ml-1 h-auto p-0 text-sm"
         onclick={() =>
           switchMode(mode === "sign-in" ? "sign-up" : "sign-in")}
-        type="button"
+        variant="link"
       >
         {mode === "sign-in" ? "Create an account" : "Sign in"}
-      </button>
+      </Button>
     </p>
   </header>
 
   <section class="relative flex flex-1 items-center justify-center px-5 py-12">
-    <div class="w-full max-w-[360px]">
+    <div class="w-full max-w-sm">
       <div class="mb-7">
-        <h1 class="text-xl font-semibold tracking-[-0.02em]">
+        <h1 class="text-xl font-semibold tracking-tight">
           {mode === "sign-in"
             ? "Work without the refresh button."
             : "Build your real-time workspace."}
         </h1>
-        <p class="mt-1 text-xl font-semibold tracking-[-0.02em] text-zinc-500">
+        <p class="mt-1 text-xl font-semibold tracking-tight text-muted-foreground">
           {mode === "sign-in"
             ? "Welcome back to Jet Black."
             : "Create your Jet Black account."}
         </p>
       </div>
 
+      <Card class="p-6">
       <form class="space-y-4" onsubmit={submit}>
         {#if mode === "sign-up"}
           <label class="block" for="name">
-            <span class="mb-1.5 block text-sm text-zinc-300">Name</span>
-            <input
+            <span class="mb-1.5 block text-sm text-foreground">Name</span>
+            <Input
               autocomplete="name"
-              class="h-11 w-full rounded-md border border-zinc-700 bg-[#181919] px-3 text-sm outline-none transition placeholder:text-zinc-600 hover:border-zinc-600 focus:border-amber-400/70 focus:ring-2 focus:ring-amber-400/10"
+              class="h-10"
               id="name"
-              minlength="2"
+              minlength={2}
               bind:value={name}
               placeholder="Your name"
               required
@@ -139,10 +143,10 @@ function switchMode(nextMode: "sign-in" | "sign-up") {
         {/if}
 
         <label class="block" for="email">
-          <span class="mb-1.5 block text-sm text-zinc-300">Email</span>
-          <input
+          <span class="mb-1.5 block text-sm text-foreground">Email</span>
+          <Input
             autocomplete="email"
-            class="h-11 w-full rounded-md border border-zinc-700 bg-[#181919] px-3 text-sm outline-none transition placeholder:text-zinc-600 hover:border-zinc-600 focus:border-amber-400/70 focus:ring-2 focus:ring-amber-400/10"
+            class="h-10"
             id="email"
             bind:value={email}
             placeholder="name@company.com"
@@ -152,14 +156,14 @@ function switchMode(nextMode: "sign-in" | "sign-up") {
         </label>
 
         <label class="block" for="password">
-          <span class="mb-1.5 block text-sm text-zinc-300">Password</span>
-          <input
+          <span class="mb-1.5 block text-sm text-foreground">Password</span>
+          <Input
             autocomplete={mode === "sign-in"
               ? "current-password"
               : "new-password"}
-            class="h-11 w-full rounded-md border border-zinc-700 bg-[#181919] px-3 text-sm outline-none transition placeholder:text-zinc-600 hover:border-zinc-600 focus:border-amber-400/70 focus:ring-2 focus:ring-amber-400/10"
+            class="h-10"
             id="password"
-            minlength="8"
+            minlength={8}
             bind:value={password}
             placeholder="At least 8 characters"
             required
@@ -169,12 +173,12 @@ function switchMode(nextMode: "sign-in" | "sign-up") {
 
         <div aria-live="polite" class="min-h-5">
           {#if error}
-            <p class="text-sm text-red-400" role="alert">{error}</p>
+            <p class="text-sm text-destructive" role="alert">{error}</p>
           {/if}
         </div>
 
-        <button
-          class="flex h-11 w-full items-center justify-center gap-2 rounded-md bg-amber-400 text-sm font-semibold text-black transition hover:bg-amber-300 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-amber-400 disabled:cursor-not-allowed disabled:bg-zinc-700 disabled:text-zinc-500"
+        <Button
+          class="h-10 w-full"
           disabled={submitting}
           type="submit"
         >
@@ -189,28 +193,29 @@ function switchMode(nextMode: "sign-in" | "sign-up") {
             : mode === "sign-in"
               ? "Sign in"
               : "Create account"}
-        </button>
+        </Button>
       </form>
+      </Card>
 
-      <p class="mt-5 text-center text-sm text-zinc-500 sm:hidden">
+      <p class="mt-5 text-center text-sm text-muted-foreground sm:hidden">
         {mode === "sign-in" ? "New to Jet Black?" : "Already registered?"}
-        <button
-          class="ml-1 text-amber-400"
+        <Button
+          class="ml-1 h-auto p-0 text-sm"
           onclick={() =>
             switchMode(mode === "sign-in" ? "sign-up" : "sign-in")}
-          type="button"
+          variant="link"
         >
           {mode === "sign-in" ? "Create an account" : "Sign in"}
-        </button>
+        </Button>
       </p>
 
-      <p class="mt-7 text-center text-xs leading-5 text-zinc-600">
+      <p class="mt-7 text-center text-xs leading-5 text-muted-foreground">
         By continuing, you agree to our
-        <a class="text-zinc-400 underline hover:text-zinc-300" href="/terms">
+        <a class="text-foreground underline hover:text-primary" href="/terms">
           Terms of Service
         </a>
         and
-        <a class="text-zinc-400 underline hover:text-zinc-300" href="/privacy">
+        <a class="text-foreground underline hover:text-primary" href="/privacy">
           Privacy Policy
         </a>.
       </p>
@@ -218,9 +223,9 @@ function switchMode(nextMode: "sign-in" | "sign-up") {
   </section>
 
   <footer
-    class="relative flex shrink-0 items-center justify-center px-5 py-6 text-xs text-zinc-600"
+    class="relative flex shrink-0 items-center justify-center px-5 py-6 text-xs text-muted-foreground"
   >
-    <span class="mr-2 inline-block size-1.5 rounded-full bg-emerald-400"></span>
+    <span class="mr-2 inline-block size-1.5 rounded-full bg-success"></span>
     Real-time workspaces powered by Convex
   </footer>
 </main>

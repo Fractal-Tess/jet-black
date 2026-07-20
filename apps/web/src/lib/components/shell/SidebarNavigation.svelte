@@ -1,4 +1,5 @@
 <script lang="ts">
+import ChartNoAxesCombined from "lucide-svelte/icons/chart-no-axes-combined";
 import ChevronRight from "lucide-svelte/icons/chevron-right";
 import Copy from "lucide-svelte/icons/copy";
 import FolderKanban from "lucide-svelte/icons/folder-kanban";
@@ -7,9 +8,12 @@ import MoreHorizontal from "lucide-svelte/icons/more-horizontal";
 import Plus from "lucide-svelte/icons/plus";
 import Settings from "lucide-svelte/icons/settings";
 import type { Project } from "$lib/components/issues/types";
+import { isModuleEnabled } from "$lib/project-features";
 import {
   type ProjectModule,
   projectModuleHref,
+  type WorkspacePage,
+  workspaceAnalyticsHref,
   workspaceHref,
   workspaceProjectsHref,
   workspaceSettingsHref,
@@ -18,6 +22,7 @@ import { moduleIcons, moduleLinks } from "./sidebarConfig";
 
 let {
   activeModule = "tickets",
+  activeWorkspacePage,
   activeWorkspaceSlug,
   onOpenCreateProject,
   onSelectProject,
@@ -25,6 +30,7 @@ let {
   selectedProjectId,
 }: {
   activeModule?: ProjectModule;
+  activeWorkspacePage?: WorkspacePage | null;
   activeWorkspaceSlug?: string;
   onOpenCreateProject: () => void;
   onSelectProject: (projectId: Project["_id"]) => void;
@@ -38,6 +44,12 @@ let projectOverflowId = $state<string | null>(null);
 
 const selectedProject = $derived(
   projects.find((project) => project._id === selectedProjectId) ?? null
+);
+
+const visibleModuleLinks = $derived(
+  moduleLinks.filter((item) =>
+    isModuleEnabled(item.module, selectedProject?.features)
+  )
 );
 
 function copyProjectLink(project: Project) {
@@ -68,8 +80,9 @@ function copyProjectLink(project: Project) {
 
 <nav class="flex flex-1 flex-col gap-0.5 overflow-y-auto px-3 pb-2">
   <a
-    class="flex h-8 items-center gap-2 rounded-md px-3 text-[13px] text-muted-foreground transition hover:bg-accent hover:text-foreground {activeModule ===
-      'tickets' && !selectedProject
+    aria-current={activeWorkspacePage === "home" ? "page" : undefined}
+    class="flex h-8 items-center gap-2 rounded-md px-3 text-sm text-muted-foreground transition hover:bg-accent hover:text-foreground {activeWorkspacePage ===
+    'home'
       ? 'bg-sidebar-accent text-sidebar-accent-foreground'
       : ''}"
     href={activeWorkspaceSlug
@@ -84,7 +97,7 @@ function copyProjectLink(project: Project) {
     <div class="flex items-center">
       <button
         aria-expanded={workspaceMenuOpen}
-        class="flex flex-1 items-center gap-2 rounded-md px-2 py-1.5 text-left text-[13px] font-semibold text-sidebar-muted-foreground transition hover:text-sidebar-foreground"
+        class="flex flex-1 items-center gap-2 rounded-md px-2 py-1.5 text-left text-sm font-semibold text-sidebar-muted-foreground transition hover:text-sidebar-foreground"
         onclick={() => (workspaceMenuOpen = !workspaceMenuOpen)}
         type="button"
       >
@@ -113,7 +126,7 @@ function copyProjectLink(project: Project) {
               class="absolute left-0 top-7 z-50 w-40 overflow-hidden rounded-md border border-border bg-card shadow-lg"
             >
               <a
-                class="flex items-center gap-2 px-3 py-2 text-[13px] text-secondary-foreground transition hover:bg-accent"
+          class="flex items-center gap-2 px-3 py-2 text-sm text-secondary-foreground transition hover:bg-accent"
                 href={workspaceSettingsHref(activeWorkspaceSlug)}
                 onclick={() => (workspaceOverflowOpen = false)}
               >
@@ -129,13 +142,28 @@ function copyProjectLink(project: Project) {
     {#if workspaceMenuOpen}
       <div class="mt-0.5 flex flex-col gap-0.5">
         <a
-          class="flex h-8 items-center gap-2 rounded-md px-3 text-[13px] text-muted-foreground transition hover:bg-accent hover:text-foreground"
+          class="flex h-8 items-center gap-2 rounded-md px-3 text-sm text-muted-foreground transition hover:bg-accent hover:text-foreground"
           href={activeWorkspaceSlug
             ? workspaceProjectsHref(activeWorkspaceSlug)
             : "/dashboard"}
         >
           <FolderKanban class="size-4 text-sidebar-muted-foreground" />
           Projects
+        </a>
+        <a
+          aria-current={activeWorkspacePage === "analytics"
+            ? "page"
+            : undefined}
+          class="flex h-8 items-center gap-2 rounded-md px-3 text-sm text-muted-foreground transition hover:bg-accent hover:text-foreground {activeWorkspacePage ===
+          'analytics'
+            ? 'bg-sidebar-accent text-sidebar-accent-foreground'
+            : ''}"
+          href={activeWorkspaceSlug
+            ? workspaceAnalyticsHref(activeWorkspaceSlug)
+            : "/dashboard"}
+        >
+          <ChartNoAxesCombined class="size-4 text-sidebar-muted-foreground" />
+          Analytics
         </a>
       </div>
     {/if}
@@ -144,7 +172,7 @@ function copyProjectLink(project: Project) {
   <div class="mt-3">
     <div class="mb-1 flex items-center justify-between px-2">
       <p
-        class="text-[11px] font-semibold uppercase tracking-wider text-sidebar-muted-foreground"
+      class="text-meta font-semibold uppercase tracking-wider text-sidebar-muted-foreground"
       >
         Projects
       </p>
@@ -161,7 +189,7 @@ function copyProjectLink(project: Project) {
       {#each projects as project (project._id)}
         <div class="group/project-item relative flex items-center">
           <a
-            class="flex h-8 w-full items-center gap-2 rounded-md px-3 text-left text-[13px] text-muted-foreground transition hover:bg-accent hover:text-foreground {selectedProjectId ===
+              class="flex h-8 w-full items-center gap-2 rounded-md px-3 text-left text-sm text-muted-foreground transition hover:bg-accent hover:text-foreground {selectedProjectId ===
             project._id
               ? 'bg-sidebar-accent text-sidebar-accent-foreground'
               : ''}"
@@ -176,7 +204,6 @@ function copyProjectLink(project: Project) {
           >
             <span
               class="size-2 shrink-0 rounded-sm bg-primary"
-              style:background-color={project.color}
             ></span>
             <span class="truncate">{project.name}</span>
           </a>
@@ -203,7 +230,7 @@ function copyProjectLink(project: Project) {
                 class="absolute right-0 top-7 z-50 w-40 overflow-hidden rounded-md border border-border bg-card shadow-lg"
               >
                 <button
-                  class="flex w-full items-center gap-2 px-3 py-2 text-left text-[13px] text-secondary-foreground transition hover:bg-accent"
+              class="flex w-full items-center gap-2 px-3 py-2 text-left text-sm text-secondary-foreground transition hover:bg-accent"
                   onclick={() => copyProjectLink(project)}
                   type="button"
                 >
@@ -212,7 +239,7 @@ function copyProjectLink(project: Project) {
                 </button>
                 {#if activeWorkspaceSlug}
                   <a
-                    class="flex items-center gap-2 px-3 py-2 text-[13px] text-secondary-foreground transition hover:bg-accent"
+            class="flex items-center gap-2 px-3 py-2 text-sm text-secondary-foreground transition hover:bg-accent"
                     href={`/workspace/${activeWorkspaceSlug}/settings/projects/${project._id}`}
                     onclick={() => (projectOverflowId = null)}
                   >
@@ -226,7 +253,7 @@ function copyProjectLink(project: Project) {
         </div>
       {:else}
         <div
-          class="rounded-md border border-dashed border-border px-3 py-3 text-[12px] leading-5 text-muted-foreground"
+        class="rounded-md border border-dashed border-border px-3 py-3 text-xs leading-5 text-muted-foreground"
         >
           Your projects will appear here.
         </div>
@@ -237,15 +264,15 @@ function copyProjectLink(project: Project) {
   {#if activeWorkspaceSlug && selectedProject}
     <div class="mt-3">
       <p
-        class="mb-1 px-2 text-[11px] font-semibold uppercase tracking-wider text-sidebar-muted-foreground"
+        class="mb-1 px-2 text-meta font-semibold uppercase tracking-wider text-sidebar-muted-foreground"
       >
         {selectedProject.name}
       </p>
       <div class="flex flex-col gap-0.5">
-        {#each moduleLinks as item}
+        {#each visibleModuleLinks as item (item.module)}
           {@const Icon = moduleIcons[item.module]}
           <a
-            class="flex h-8 items-center gap-2 rounded-md px-3 text-[13px] text-muted-foreground transition hover:bg-accent hover:text-foreground {activeModule ===
+          class="flex h-8 items-center gap-2 rounded-md px-3 text-sm text-muted-foreground transition hover:bg-accent hover:text-foreground {activeModule ===
               item.module ||
             (activeModule === 'issues' && item.module === 'tickets')
               ? 'bg-sidebar-accent text-sidebar-accent-foreground'

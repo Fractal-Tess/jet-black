@@ -47,14 +47,14 @@ async function submit() {
 </script>
 
 <section
-  class="rounded-xl border border-white/10 bg-[#151616] shadow-2xl shadow-black/20"
+  class="rounded-xl border border-border bg-card text-card-foreground shadow-sm"
   id="new-issue"
 >
-  <div class="border-b border-white/[0.06] px-4 py-3">
-    <p class="text-xs font-medium uppercase tracking-[0.18em] text-amber-400">
+  <div class="border-b border-border px-4 py-3">
+    <p class="text-xs font-medium uppercase tracking-wider text-primary">
       New work item
     </p>
-    <h2 class="mt-1 text-lg font-semibold text-zinc-100">{project.name}</h2>
+    <h2 class="mt-1 text-lg font-semibold text-card-foreground">{project.name}</h2>
   </div>
 
   <form class="space-y-3 p-4" onsubmit={(event) => event.preventDefault()}>
@@ -62,7 +62,7 @@ async function submit() {
       <span class="sr-only">Issue title</span>
       <input
         bind:value={title}
-        class="h-10 w-full rounded-md border border-white/10 bg-[#0f1010] px-3 text-sm text-zinc-100 outline-none transition placeholder:text-zinc-600 focus:border-amber-400/60 focus:ring-2 focus:ring-amber-400/10"
+        class="h-10 w-full rounded-lg border border-input bg-background px-3 text-sm text-foreground outline-none transition-colors placeholder:text-muted-foreground focus:border-ring focus:ring-3 focus:ring-ring/50"
         placeholder="Add a title, e.g. Build realtime issue updates"
       />
     </label>
@@ -71,17 +71,17 @@ async function submit() {
       <span class="sr-only">Issue description</span>
       <textarea
         bind:value={description}
-        class="min-h-20 w-full resize-y rounded-md border border-white/10 bg-[#0f1010] px-3 py-2 text-sm text-zinc-100 outline-none transition placeholder:text-zinc-600 focus:border-amber-400/60 focus:ring-2 focus:ring-amber-400/10"
+        class="min-h-20 w-full resize-y rounded-lg border border-input bg-background px-3 py-2 text-sm text-foreground outline-none transition-colors placeholder:text-muted-foreground focus:border-ring focus:ring-3 focus:ring-ring/50"
         placeholder="Add useful context. Keep it short for now."
       ></textarea>
     </label>
 
     <div class="flex flex-col gap-3 sm:flex-row sm:items-center">
-      <label class="flex items-center gap-2 text-xs text-zinc-500">
+      <label class="flex items-center gap-2 text-xs text-muted-foreground">
         Priority
         <select
           bind:value={priority}
-          class="h-9 rounded-md border border-white/10 bg-[#0f1010] px-2 text-xs text-zinc-200 outline-none focus:border-amber-400/60"
+          class="h-9 rounded-lg border border-input bg-background px-2 text-xs text-foreground outline-none focus:border-ring"
         >
           <option value="none">None</option>
           <option value="low">Low</option>
@@ -92,7 +92,7 @@ async function submit() {
       </label>
 
       <button
-        class="ml-auto h-9 rounded-md bg-amber-400 px-4 text-xs font-semibold text-black transition hover:bg-amber-300 disabled:cursor-not-allowed disabled:opacity-50"
+        class="ml-auto h-9 rounded-lg bg-primary px-4 text-xs font-semibold text-primary-foreground transition-colors hover:bg-primary/80 disabled:cursor-not-allowed disabled:opacity-50"
         disabled={creating || !title.trim()}
         onclick={submit}
         type="button"
@@ -102,7 +102,7 @@ async function submit() {
     </div>
 
     {#if error}
-      <p class="text-xs text-red-300">{error}</p>
+      <p class="text-xs text-destructive">{error}</p>
     {/if}
   </form>
 </section>

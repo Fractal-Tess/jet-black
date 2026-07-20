@@ -1,4 +1,6 @@
 <script lang="ts">
+import DescriptionEditor from "./DescriptionEditor.svelte";
+import { useDescriptionUploader } from "./description-upload";
 import type { Issue, UpdateIssueInput } from "./types";
 
 let {
@@ -10,9 +12,9 @@ let {
 } = $props();
 
 let editingTitle = $state(false);
-let editingDescription = $state(false);
 let titleDraft = $state("");
-let descriptionDraft = $state("");
+
+const uploadDescriptionFile = useDescriptionUploader(() => issue.workspaceId);
 
 function startEditTitle() {
   titleDraft = issue.title;
@@ -27,26 +29,21 @@ function saveTitle() {
   editingTitle = false;
 }
 
-function startEditDescription() {
-  descriptionDraft = issue.description ?? "";
-  editingDescription = true;
-}
-
-function saveDescription() {
-  if (descriptionDraft !== (issue.description ?? "")) {
-    onUpdateIssue({ description: descriptionDraft });
+function saveDescription(markdown: string) {
+  if (markdown !== (issue.description ?? "")) {
+    onUpdateIssue({ description: markdown });
   }
-  editingDescription = false;
 }
 </script>
 
-<div class="border-b border-white/[0.06] px-5 pt-5 pb-4">
-  <p class="font-mono text-xs text-zinc-500">{issue.identifier}</p>
+<div class="border-b border-border px-5 pt-5 pb-4">
+  <p class="font-mono text-xs text-muted-foreground">{issue.identifier}</p>
 
   {#if editingTitle}
     <input
+      aria-label="Issue title"
       bind:value={titleDraft}
-      class="mt-2 w-full bg-transparent text-lg font-semibold text-zinc-100 outline-none"
+      class="mt-2 w-full bg-transparent text-lg font-semibold text-foreground outline-none"
       onblur={saveTitle}
       onkeydown={(e) => {
         if (e.key === "Enter") saveTitle();
@@ -56,29 +53,25 @@ function saveDescription() {
       }}
     />
   {:else}
-    <button
-      class="mt-2 block w-full text-left text-lg font-semibold text-zinc-100 transition hover:text-white"
-      onclick={startEditTitle}
-      type="button"
-    >
-      {issue.title}
-    </button>
+    <h2 class="mt-2">
+      <button
+      class="block w-full text-left text-lg font-semibold text-foreground transition-colors hover:text-primary"
+        onclick={startEditTitle}
+        type="button"
+      >
+        {issue.title}
+      </button>
+    </h2>
   {/if}
 
-  {#if editingDescription}
-    <textarea
-      bind:value={descriptionDraft}
-      class="mt-3 min-h-[60px] w-full resize-y bg-transparent text-sm text-zinc-300 outline-none placeholder:text-zinc-600"
-      onblur={saveDescription}
-      placeholder="Add a description..."
-    ></textarea>
-  {:else}
-    <button
-      class="mt-3 block w-full text-left text-sm transition {issue.description ? 'text-zinc-400' : 'text-zinc-600'} hover:text-zinc-300"
-      onclick={startEditDescription}
-      type="button"
-    >
-      {issue.description || "Click to add a description"}
-    </button>
-  {/if}
+  <hr class="mt-3 border-border" />
+
+  <DescriptionEditor
+    ariaLabel="Description"
+    class="mt-3 min-h-[60px] cursor-text"
+    onBlur={saveDescription}
+    placeholder="Click to add description"
+    uploadFile={uploadDescriptionFile}
+    value={issue.description ?? ""}
+  />
 </div>

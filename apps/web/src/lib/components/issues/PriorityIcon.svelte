@@ -15,11 +15,11 @@ let {
 } = $props();
 
 const colorClass: Record<IssuePriority, string> = {
-  high: "text-orange-500",
-  low: "text-blue-500",
-  medium: "text-yellow-500",
-  none: "text-zinc-500",
-  urgent: "text-red-500",
+  high: "text-warning",
+  low: "text-info",
+  medium: "text-primary",
+  none: "text-muted-foreground",
+  urgent: "text-destructive",
 };
 </script>
 

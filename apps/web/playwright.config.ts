@@ -1,6 +1,6 @@
 import { defineConfig, devices } from "@playwright/test";
 
-const port = 5173;
+const port = Number(process.env.PLAYWRIGHT_WEB_PORT ?? 5173);
 const chromiumExecutablePath = process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH;
 const appOrigin = `http://127.0.0.1:${port}`;
 

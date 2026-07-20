@@ -2,8 +2,9 @@
 import Search from "lucide-svelte/icons/search";
 import type { Snippet } from "svelte";
 import type { Project, WorkspaceUser } from "$lib/components/issues/types";
-import type { ProjectModule } from "$lib/routes";
+import type { ProjectModule, WorkspacePage } from "$lib/routes";
 import AppSidebar from "./AppSidebar.svelte";
+import ThemeToggle from "./ThemeToggle.svelte";
 import UserMenu from "./UserMenu.svelte";
 import WorkspaceSwitcher from "./WorkspaceSwitcher.svelte";
 
@@ -20,6 +21,7 @@ type Membership = {
 
 let {
   activeModule = "tickets",
+  activeWorkspacePage,
   activeWorkspace,
   activeWorkspaceSlug,
   children,
@@ -35,6 +37,7 @@ let {
   workspaces = [],
 }: {
   activeModule?: ProjectModule;
+  activeWorkspacePage?: WorkspacePage | null;
   activeWorkspace?: Workspace | null;
   activeWorkspaceSlug?: string;
   children: Snippet;
@@ -89,7 +92,7 @@ let sidebarOpen = $state(false);
         <span aria-hidden="true"><Search class="size-3.5" /></span>
         <span class="truncate">Search commands…</span>
         <kbd
-          class="ml-auto hidden font-mono text-[10px] text-sidebar-muted-foreground sm:block"
+        class="ml-auto hidden font-mono text-meta text-sidebar-muted-foreground sm:block"
         >
           ⌘ K
         </kbd>
@@ -98,7 +101,7 @@ let sidebarOpen = $state(false);
 
     <div class="flex items-center gap-2 px-3">
       <span
-        class="hidden items-center gap-1.5 rounded-md border border-border px-2 py-1 text-[11px] text-muted-foreground sm:flex"
+        class="hidden items-center gap-1.5 rounded-md border border-border px-2 py-1 text-meta text-muted-foreground sm:flex"
       >
         <span
           class="size-1.5 rounded-full {connected
@@ -107,12 +110,14 @@ let sidebarOpen = $state(false);
         ></span>
         {connected ? "Live" : "Connecting"}
       </span>
+      <ThemeToggle />
       <UserMenu {user} {onBeforeAuthExit} />
     </div>
   </header>
 
   <AppSidebar
     {activeModule}
+    {activeWorkspacePage}
     {activeWorkspaceSlug}
     {creatingProject}
     {onCreateProject}

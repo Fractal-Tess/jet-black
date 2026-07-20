@@ -6,6 +6,7 @@ import { requireAuthUser } from "../lib/auth";
 import {
   requireProjectAccess,
   requireWorkspaceMembership,
+  requireWorkspaceRole,
 } from "../lib/workspaceAccess";
 
 export const viewer = query({
@@ -38,12 +39,14 @@ export const viewer = query({
       : (resolved[0] ?? null);
 
     const projects = active
-      ? await ctx.db
-          .query("projects")
-          .withIndex("by_workspaceId", (q) =>
-            q.eq("workspaceId", active.workspace._id)
-          )
-          .collect()
+      ? (
+          await ctx.db
+            .query("projects")
+            .withIndex("by_workspaceId", (q) =>
+              q.eq("workspaceId", active.workspace._id)
+            )
+            .collect()
+        ).filter((project) => !project.archivedAt)
       : [];
 
     const allWorkspaces = resolved.map((item) => item.workspace);
@@ -101,6 +104,38 @@ export const membersForWorkspace = query({
   },
 });
 
+export const invitesForWorkspace = query({
+  args: {
+    workspaceId: v.id("workspaces"),
+  },
+  handler: async (ctx, args) => {
+    const user = await requireAuthUser(ctx);
+    await requireWorkspaceRole(ctx, user._id, args.workspaceId, "admin");
+
+    const invites = await ctx.db
+      .query("workspaceInvites")
+      .withIndex("by_workspaceId", (q) => q.eq("workspaceId", args.workspaceId))
+      .collect();
+
+    return await Promise.all(
+      invites.map(async (invite) => {
+        const inviter = await authComponent.getAnyUserById(
+          ctx,
+          invite.invitedByUserId
+        );
+
+        return {
+          _creationTime: invite._creationTime,
+          _id: invite._id,
+          email: invite.email,
+          invitedBy: inviter?.name ?? inviter?.email ?? "Former member",
+          role: invite.role,
+        };
+      })
+    );
+  },
+});
+
 export const workspaceBySlug = query({
   args: { slug: v.string() },
   handler: async (ctx, args) => {
@@ -126,10 +161,12 @@ export const workspaceBySlug = query({
       return null;
     }
 
-    const projects = await ctx.db
-      .query("projects")
-      .withIndex("by_workspaceId", (q) => q.eq("workspaceId", workspace._id))
-      .collect();
+    const projects = (
+      await ctx.db
+        .query("projects")
+        .withIndex("by_workspaceId", (q) => q.eq("workspaceId", workspace._id))
+        .collect()
+    ).filter((project) => !project.archivedAt);
 
     return {
       membership,

@@ -27,9 +27,9 @@ async function archiveIssue() {
 }
 </script>
 
-<div class="flex items-center gap-2 border-b border-white/[0.06] px-5 py-3">
+<div class="flex items-center gap-2 border-b border-border px-5 py-3">
   <button
-    class="flex items-center gap-1.5 rounded-md border border-white/10 px-2.5 py-1.5 text-xs text-zinc-400 transition hover:bg-white/[0.04] hover:text-zinc-200"
+    class="flex items-center gap-1.5 rounded-lg border border-border px-2.5 py-1.5 text-xs text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
     onclick={() => (showSubIssueForm = !showSubIssueForm)}
     type="button"
   >
@@ -37,7 +37,7 @@ async function archiveIssue() {
     Add sub-work item
   </button>
   <button
-    class="flex items-center gap-1.5 rounded-md border border-white/10 px-2.5 py-1.5 text-xs text-zinc-400 transition hover:bg-white/[0.04] hover:text-zinc-200"
+    class="flex items-center gap-1.5 rounded-lg border border-border px-2.5 py-1.5 text-xs text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
     onclick={() => (showAttachForm = !showAttachForm)}
     type="button"
   >
@@ -47,7 +47,8 @@ async function archiveIssue() {
 
   <div class="ml-auto relative">
     <button
-      class="grid size-7 place-items-center rounded-md text-zinc-500 transition hover:bg-white/[0.04] hover:text-zinc-300"
+      aria-label="Issue actions"
+      class="grid size-7 place-items-center rounded-lg text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
       onclick={() => (showMenu = !showMenu)}
       type="button"
     >
@@ -55,10 +56,10 @@ async function archiveIssue() {
     </button>
     {#if showMenu}
       <div
-        class="absolute right-0 top-8 z-10 w-36 rounded-lg border border-white/10 bg-[#1a1b1b] py-1 shadow-xl"
+      class="absolute right-0 top-8 z-10 w-36 rounded-lg border border-border bg-popover py-1 text-popover-foreground shadow-md"
       >
         <button
-          class="w-full px-3 py-2 text-left text-xs text-red-400 transition hover:bg-white/[0.04]"
+        class="w-full px-3 py-2 text-left text-xs text-destructive transition-colors hover:bg-muted"
           disabled={archiving}
           onclick={archiveIssue}
           type="button"

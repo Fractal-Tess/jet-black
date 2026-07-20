@@ -17,6 +17,7 @@ import Clock from "lucide-svelte/icons/clock";
 import ListChecks from "lucide-svelte/icons/list-checks";
 import TriangleAlert from "lucide-svelte/icons/triangle-alert";
 import PriorityIcon from "$lib/components/issues/PriorityIcon.svelte";
+import { formatRelativeTime } from "$lib/components/issues/relative-time";
 import StateTypeIcon from "$lib/components/issues/StateTypeIcon.svelte";
 import type {
   DashboardOverview,
@@ -43,7 +44,6 @@ let {
 
 const MORNING_END_HOUR = 12;
 const EVENING_START_HOUR = 18;
-const MINUTE_MS = 60_000;
 const HOUR_MS = 3_600_000;
 const DAY_MS = 86_400_000;
 const WHITESPACE_PATTERN = /\s+/;
@@ -77,26 +77,28 @@ const statCards = $derived(
     ? [
         {
           icon: CircleDot,
-          iconClass: "text-blue-400",
+          iconClass: "text-info",
           label: "Open work items",
           value: overview.stats.openIssues,
         },
         {
           icon: Clock,
-          iconClass: "text-amber-400",
+          iconClass: "text-warning",
           label: "In progress",
           value: overview.stats.startedIssues,
         },
         {
           icon: ListChecks,
-          iconClass: "text-emerald-400",
+          iconClass: "text-success",
           label: "Completed this week",
           value: overview.stats.completedThisWeek,
         },
         {
           icon: TriangleAlert,
           iconClass:
-            overview.stats.overdueIssues > 0 ? "text-red-400" : "text-zinc-500",
+            overview.stats.overdueIssues > 0
+              ? "text-destructive"
+              : "text-muted-foreground",
           label: "Overdue",
           value: overview.stats.overdueIssues,
         },
@@ -110,24 +112,6 @@ function initials(name: string) {
   const last = parts.length > 1 ? parts.at(-1)?.[0] : "";
 
   return `${first}${last ?? ""}`.toUpperCase();
-}
-
-function relativeTime(timestamp: number) {
-  const elapsed = Date.now() - timestamp;
-
-  if (elapsed < MINUTE_MS) {
-    return "just now";
-  }
-
-  if (elapsed < HOUR_MS) {
-    return `${Math.floor(elapsed / MINUTE_MS)}m ago`;
-  }
-
-  if (elapsed < DAY_MS) {
-    return `${Math.floor(elapsed / HOUR_MS)}h ago`;
-  }
-
-  return `${Math.floor(elapsed / DAY_MS)}d ago`;
 }
 
 function formatDate(date: string) {
@@ -145,8 +129,8 @@ function progressPercent(project: DashboardOverview["projects"][number]) {
   return Math.round((project.completedIssues / project.totalIssues) * 100);
 }
 
-const CREATED_COLOR = "#60a5fa";
-const COMPLETED_COLOR = "#34d399";
+const CREATED_COLOR = "var(--info)";
+const COMPLETED_COLOR = "var(--success)";
 
 const chartConfig = {
   completed: { color: COMPLETED_COLOR, label: "Completed" },
@@ -221,21 +205,20 @@ const velocityCards = $derived(
     {#if issue.state}
       <StateTypeIcon
         class="size-3.5 shrink-0"
-        color={issue.state.color}
         type={issue.state.type}
       />
     {/if}
-    <span class="w-16 shrink-0 font-mono text-[11px] text-muted-foreground">
+    <span class="w-16 shrink-0 font-mono text-meta text-muted-foreground">
       {issue.identifier}
     </span>
-    <span class="min-w-0 flex-1 truncate text-[13px] text-foreground">
+    <span class="min-w-0 flex-1 truncate text-sm text-foreground">
       {issue.title}
     </span>
     <PriorityIcon class="size-3.5 shrink-0" priority={issue.priority} />
     {#if issue.targetDate}
       <span
-        class="flex shrink-0 items-center gap-1 text-[11px] {issue.overdue
-          ? 'text-red-400'
+        class="flex shrink-0 items-center gap-1 text-meta {issue.overdue
+          ? 'text-destructive'
           : 'text-muted-foreground'}"
       >
         <CalendarDays class="size-3" />
@@ -350,7 +333,7 @@ const velocityCards = $derived(
                 >
                   {card.value}
                 </p>
-                <p class="mt-1 text-[11px] text-muted-foreground/70">
+            <p class="mt-1 text-meta text-muted-foreground/70">
                   {card.hint}
                 </p>
               </div>
@@ -411,7 +394,7 @@ const velocityCards = $derived(
             {#each overview.recentActivity as activity (activity._id)}
               <li class="flex items-start gap-2.5 rounded-md px-1 py-1.5">
                 <span
-                  class="mt-0.5 grid size-5 shrink-0 place-items-center rounded-full bg-amber-400/90 text-[9px] font-semibold text-black"
+        class="mt-0.5 grid size-5 shrink-0 place-items-center rounded-full bg-primary text-meta font-semibold text-primary-foreground"
                 >
                   {initials(activity.actorName)}
                 </span>
@@ -423,7 +406,7 @@ const velocityCards = $derived(
                     {activity.message}
                     {#if activity.issueIdentifier && activity.projectId}
                       <a
-                        class="font-mono text-[11px] text-primary hover:underline"
+                  class="font-mono text-meta text-primary hover:underline"
                         href={issueHref({
                           issueId: activity.issueId,
                           projectId: activity.projectId,
@@ -434,8 +417,8 @@ const velocityCards = $derived(
                       </a>
                     {/if}
                   </p>
-                  <p class="text-[11px] text-muted-foreground/70">
-                    {relativeTime(activity.createdAt)}
+              <p class="text-meta text-muted-foreground/70">
+                    {formatRelativeTime(activity.createdAt)}
                   </p>
                 </div>
               </li>
@@ -471,23 +454,22 @@ const velocityCards = $derived(
                     <span class="flex min-w-0 items-center gap-2">
                       <span
                         class="size-2 shrink-0 rounded-sm bg-primary"
-                        style:background-color={project.color}
                       ></span>
-                      <span class="truncate text-[13px] text-foreground">
+                      <span class="truncate text-sm text-foreground">
                         {project.name}
                       </span>
                     </span>
                     <span
-                      class="shrink-0 text-[11px] tabular-nums text-muted-foreground"
+                      class="shrink-0 text-meta tabular-nums text-muted-foreground"
                     >
                       {project.completedIssues}/{project.totalIssues}
                     </span>
                   </div>
                   <div
-                    class="mt-1.5 h-1 overflow-hidden rounded-full bg-white/[0.06]"
+      class="mt-1.5 h-1 overflow-hidden rounded-full bg-muted"
                   >
                     <div
-                      class="h-full rounded-full bg-emerald-400/80"
+        class="h-full rounded-full bg-success/80"
                       style:width={`${progressPercent(project)}%`}
                     ></div>
                   </div>
@@ -513,14 +495,14 @@ const velocityCards = $derived(
             {#each members as member (member.id)}
               <li class="flex items-center gap-2.5 rounded-md px-1 py-1.5">
                 <span
-                  class="grid size-6 shrink-0 place-items-center rounded-full bg-amber-400/90 text-[10px] font-semibold text-black"
+      class="grid size-6 shrink-0 place-items-center rounded-full bg-primary text-meta font-semibold text-primary-foreground"
                 >
                   {initials(member.name)}
                 </span>
-                <span class="min-w-0 flex-1 truncate text-[13px] text-foreground">
+            <span class="min-w-0 flex-1 truncate text-sm text-foreground">
                   {member.name}
                 </span>
-                <span class="shrink-0 text-[11px] capitalize text-muted-foreground">
+            <span class="shrink-0 text-meta capitalize text-muted-foreground">
                   {member.role}
                 </span>
               </li>

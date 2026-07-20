@@ -8,6 +8,9 @@ const CASCADE_TABLES = [
   "issueComments",
   "issueAttachments",
   "intakeIssues",
+  "projectModuleIssueAssignments",
+  "projectModuleLinks",
+  "projectModuleMembers",
   "projectModules",
   "projectPages",
   "sprints",
@@ -19,6 +22,35 @@ const CASCADE_TABLES = [
   "projects",
   "workspaceMembers",
 ] as const;
+
+async function removeUserFromWorkspaceModules(
+  ctx: MutationCtx,
+  workspaceId: Id<"workspaces">,
+  userId: string
+) {
+  const moduleMembers = await ctx.db
+    .query("projectModuleMembers")
+    .withIndex("by_workspaceId_and_userId", (q) =>
+      q.eq("workspaceId", workspaceId).eq("userId", userId)
+    )
+    .collect();
+  for (const moduleMember of moduleMembers) {
+    await ctx.db.delete(moduleMember._id);
+  }
+
+  const projectModules = await ctx.db
+    .query("projectModules")
+    .withIndex("by_workspaceId", (q) => q.eq("workspaceId", workspaceId))
+    .collect();
+  for (const projectModule of projectModules) {
+    if (projectModule.leadUserId === userId) {
+      await ctx.db.patch(projectModule._id, {
+        leadUserId: undefined,
+        updatedAt: Date.now(),
+      });
+    }
+  }
+}
 
 async function deleteWorkspaceData(
   ctx: MutationCtx,
@@ -68,6 +100,11 @@ export const deleteForUser = internalMutation({
       if (isOwner) {
         await deleteWorkspaceData(ctx, membership.workspaceId);
       } else {
+        await removeUserFromWorkspaceModules(
+          ctx,
+          membership.workspaceId,
+          args.userId
+        );
         await ctx.db.delete(membership._id);
       }
     }

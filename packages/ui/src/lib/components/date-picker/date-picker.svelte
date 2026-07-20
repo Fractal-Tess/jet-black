@@ -95,19 +95,19 @@ function handleKeydown(e: KeyboardEvent) {
   <button
     bind:this={triggerEl}
     class={cn(
-      "flex items-center gap-2 rounded-md px-2 py-1 text-sm transition hover:bg-white/[0.06]",
+      "flex items-center gap-2 rounded-lg px-2 py-1 text-sm transition-colors hover:bg-muted",
       disabled && "pointer-events-none opacity-50",
-      displayText ? "text-zinc-300" : "text-zinc-500"
+      displayText ? "text-foreground" : "text-muted-foreground"
     )}
     {disabled}
     onclick={() => (open = !open)}
     type="button"
   >
-    <CalendarDays class="size-3.5 text-zinc-500" />
+    <CalendarDays class="size-3.5 text-muted-foreground" />
     <span>{displayText ?? placeholder}</span>
     {#if clearable && displayText && !disabled}
       <span
-        class="grid size-4 place-items-center rounded text-zinc-600 transition hover:text-zinc-300"
+        class="grid size-4 place-items-center rounded text-muted-foreground transition-colors hover:text-foreground"
         onclick={handleClear}
         onkeydown={(e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); handleClear(e); } }}
         role="button"
@@ -121,7 +121,7 @@ function handleKeydown(e: KeyboardEvent) {
   {#if open}
     <div
       bind:this={panelEl}
-      class="absolute left-0 top-9 z-50 rounded-lg border border-white/10 bg-[#1a1b1b] shadow-xl"
+      class="absolute left-0 top-9 z-50 rounded-xl border border-border bg-popover text-popover-foreground shadow-md"
     >
       <Calendar
         type="single"

@@ -9,38 +9,9 @@ let {
   onSelect: (url: string) => void;
 } = $props();
 
-const PALETTE = [
-  "#ef4444",
-  "#f97316",
-  "#f59e0b",
-  "#84cc16",
-  "#22c55e",
-  "#14b8a6",
-  "#06b6d4",
-  "#3b82f6",
-  "#6366f1",
-  "#8b5cf6",
-  "#a855f7",
-  "#d946ef",
-  "#f43f5e",
-];
-
-function hashString(str: string): number {
-  let hash = 0;
-  for (const ch of str) {
-    hash = ch.charCodeAt(0) + hash * 31;
-  }
-  return Math.abs(hash);
-}
-
-function getColor(text: string): string {
-  return PALETTE[hashString(text) % PALETTE.length];
-}
-
 function generateInitialLogo(text: string): string {
   const letter = text.trim().charAt(0).toUpperCase();
-  const color = getColor(text);
-  const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="128" height="128"><rect width="128" height="128" fill="${color}"/><text x="64" y="84" font-family="system-ui, sans-serif" font-size="72" font-weight="600" fill="white" text-anchor="middle">${letter}</text></svg>`;
+  const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="128" height="128"><rect width="128" height="128" fill="black"/><text x="64" y="84" font-family="system-ui, sans-serif" font-size="72" font-weight="600" fill="white" text-anchor="middle">${letter}</text></svg>`;
   return `data:image/svg+xml;utf8,${encodeURIComponent(svg)}`;
 }
 

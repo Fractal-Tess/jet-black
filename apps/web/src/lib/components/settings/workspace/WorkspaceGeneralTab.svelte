@@ -1,26 +1,86 @@
 <script lang="ts">
+import { api } from "@workspace/convex/api";
+import type { Id } from "@workspace/convex/dataModel";
+import { useMutation } from "convex-svelte";
 import { untrack } from "svelte";
+import { goto } from "$app/navigation";
 import SettingsBoxedControl from "$lib/components/settings/SettingsBoxedControl.svelte";
 import SettingsDangerZone from "$lib/components/settings/SettingsDangerZone.svelte";
 import SettingsHeading from "$lib/components/settings/SettingsHeading.svelte";
+import type { WorkspaceRole } from "$lib/settings-nav";
 
 let {
   workspace,
   role,
 }: {
   workspace: { _id: string; name: string; slug: string; updatedAt: number };
-  role: "owner" | "member";
+  role: WorkspaceRole;
 } = $props();
 
+const isAdmin = $derived(role === "owner" || role === "admin");
 const isOwner = $derived(role === "owner");
 
+const renameWorkspace = useMutation(api.mutations.workspaces.rename);
+const removeWorkspace = useMutation(api.mutations.workspaces.remove);
+
 let name = $state(untrack(() => workspace.name));
+let saving = $state(false);
+let saved = $state(false);
+let error = $state("");
 let deleteOpen = $state(false);
 let deleteConfirmName = $state("");
+let deleting = $state(false);
 
 $effect(() => {
   name = workspace.name;
 });
+
+async function save() {
+  const trimmed = name.trim();
+
+  if (!trimmed || trimmed === workspace.name) {
+    return;
+  }
+
+  saving = true;
+  saved = false;
+  error = "";
+
+  try {
+    await renameWorkspace({
+      name: trimmed,
+      workspaceId: workspace._id as Id<"workspaces">,
+    });
+    saved = true;
+  } catch (cause) {
+    error =
+      cause instanceof Error
+        ? cause.message
+        : "Could not update the workspace.";
+  } finally {
+    saving = false;
+  }
+}
+
+async function destroy() {
+  if (deleteConfirmName !== workspace.name) {
+    return;
+  }
+
+  deleting = true;
+  error = "";
+
+  try {
+    await removeWorkspace({ workspaceId: workspace._id as Id<"workspaces"> });
+    await goto("/dashboard");
+  } catch (cause) {
+    error =
+      cause instanceof Error
+        ? cause.message
+        : "Could not delete the workspace.";
+    deleting = false;
+  }
+}
 </script>
 
 <SettingsHeading
@@ -29,7 +89,7 @@ $effect(() => {
 />
 
 <div
-  class="mt-8 flex flex-col gap-6 {isOwner ? '' : 'opacity-60'}"
+  class="mt-8 flex flex-col gap-6 {isAdmin ? '' : 'opacity-60'}"
 >
   <!-- Workspace logo -->
   <div class="flex items-center gap-4">
@@ -58,7 +118,7 @@ $effect(() => {
     <input
       bind:value={name}
       class="h-9 w-full max-w-sm rounded-md border border-border bg-card px-3 text-sm text-foreground placeholder:text-muted-foreground focus:border-ring focus:outline-none"
-      disabled={!isOwner}
+      disabled={!isAdmin}
       id="ws-name"
       placeholder="Workspace name"
       type="text"
@@ -81,18 +141,23 @@ $effect(() => {
     />
   </div>
 
-  <!-- Save (disabled until workspace update mutation is implemented) -->
-  {#if isOwner}
+  {#if error}
+    <p class="text-sm text-destructive" role="alert">{error}</p>
+  {/if}
+
+  {#if isAdmin}
     <div class="flex items-center gap-3">
       <button
         class="h-9 rounded-md bg-primary px-4 text-sm font-medium text-primary-foreground transition hover:opacity-90 disabled:opacity-50"
-        disabled={true}
-        title="Workspace updates coming soon"
+        disabled={saving || !name.trim() || name.trim() === workspace.name}
+        onclick={save}
         type="button"
       >
-        Update workspace
+        {saving ? "Saving…" : "Update workspace"}
       </button>
-      <span class="text-xs text-muted-foreground">Coming soon</span>
+      {#if saved}
+        <span class="text-xs text-muted-foreground">Saved.</span>
+      {/if}
     </div>
   {/if}
 </div>
@@ -102,7 +167,7 @@ $effect(() => {
     <SettingsBoxedControl
       danger
       title="Delete workspace"
-      description="This will permanently delete the workspace and all its data. Deletion is not yet available."
+      description="This will permanently delete the workspace and all its data."
     >
       {#snippet control()}
         {#if deleteOpen}
@@ -120,11 +185,11 @@ $effect(() => {
             <div class="flex gap-2">
               <button
                 class="h-8 rounded-md bg-destructive px-3 text-xs font-semibold text-destructive-foreground transition hover:opacity-90 disabled:opacity-50"
-                disabled={true}
-                title="Workspace deletion coming soon"
+                disabled={deleting || deleteConfirmName !== workspace.name}
+                onclick={destroy}
                 type="button"
               >
-                Delete workspace
+                {deleting ? "Deleting…" : "Delete workspace"}
               </button>
               <button
                 class="h-8 rounded-md border border-border px-3 text-xs text-muted-foreground transition hover:bg-accent hover:text-foreground"

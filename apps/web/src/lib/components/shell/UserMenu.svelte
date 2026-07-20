@@ -58,7 +58,8 @@ function handleKeydown(e: KeyboardEvent) {
   <button
     aria-expanded={open}
     aria-haspopup="true"
-    class="grid size-7 place-items-center overflow-hidden rounded-full bg-primary text-[10px] font-bold text-primary-foreground transition hover:opacity-90"
+    aria-label="User menu"
+    class="grid size-7 place-items-center overflow-hidden rounded-full bg-primary text-meta font-bold text-primary-foreground transition hover:opacity-90"
     onclick={() => (open = !open)}
     title={user.email}
     type="button"
@@ -113,7 +114,7 @@ function handleKeydown(e: KeyboardEvent) {
       <!-- Menu items -->
       <div class="flex flex-col p-1.5">
         <button
-          class="flex items-center gap-2.5 rounded-md px-3 py-2 text-[13px] text-secondary-foreground transition hover:bg-accent"
+        class="flex items-center gap-2.5 rounded-md px-3 py-2 text-sm text-secondary-foreground transition hover:bg-accent"
           onclick={() => handleNav(profileSettingsHref("general"))}
           type="button"
         >
@@ -122,7 +123,7 @@ function handleKeydown(e: KeyboardEvent) {
         </button>
 
         <button
-          class="flex items-center gap-2.5 rounded-md px-3 py-2 text-[13px] text-secondary-foreground transition hover:bg-accent"
+        class="flex items-center gap-2.5 rounded-md px-3 py-2 text-sm text-secondary-foreground transition hover:bg-accent"
           onclick={() => handleNav(profileSettingsHref("preferences"))}
           type="button"
         >
@@ -133,7 +134,7 @@ function handleKeydown(e: KeyboardEvent) {
         <div class="my-1 border-t border-border"></div>
 
         <button
-          class="flex items-center gap-2.5 rounded-md px-3 py-2 text-[13px] text-destructive transition hover:bg-destructive/10"
+        class="flex items-center gap-2.5 rounded-md px-3 py-2 text-sm text-destructive transition hover:bg-destructive/10"
           disabled={signingOut}
           onclick={signOut}
           type="button"

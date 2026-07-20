@@ -1,18 +1,18 @@
 <script lang="ts">
+import ProjectMembersTab from "$lib/components/settings/project/ProjectMembersTab.svelte";
 import SettingsContentWrapper from "$lib/components/settings/SettingsContentWrapper.svelte";
-import SettingsHeading from "$lib/components/settings/SettingsHeading.svelte";
+import type { WorkspaceRole } from "$lib/settings-nav";
+
+let { data } = $props();
+const project = $derived(data.project as { _id: string; name: string });
+const workspace = $derived(data.workspace as { _id: string });
+const membership = $derived(data.membership as { role: WorkspaceRole });
 </script>
 
 <SettingsContentWrapper>
-  <SettingsHeading
-    title="Members"
-    description="Manage project members and their roles."
+  <ProjectMembersTab
+    {project}
+    role={membership.role}
+    workspaceId={workspace._id}
   />
-  <div
-    class="mt-8 rounded-lg border border-border bg-card px-6 py-10 text-center"
-  >
-    <p class="text-sm text-muted-foreground">
-      Project member management is coming soon.
-    </p>
-  </div>
 </SettingsContentWrapper>

@@ -12,7 +12,7 @@ let {
 
 <div class="mt-4 first:mt-2">
   <p
-    class="mb-1 px-2 text-[11px] font-semibold uppercase tracking-wider text-sidebar-muted-foreground"
+    class="mb-1 px-2 text-meta font-semibold uppercase tracking-wider text-sidebar-muted-foreground"
   >
     {label}
   </p>

@@ -1,4 +1,6 @@
 <script lang="ts">
+import { Button } from "@workspace/ui/components/button";
+import { Input } from "@workspace/ui/components/input";
 import Plus from "lucide-svelte/icons/plus";
 import { flip } from "svelte/animate";
 import { receiveCard, sendCard } from "./card-transition";
@@ -6,12 +8,7 @@ import type { IssueDisplayProperty, IssueGroup } from "./display-options";
 import KanbanCard from "./KanbanCard.svelte";
 import PriorityIcon from "./PriorityIcon.svelte";
 import StateTypeIcon from "./StateTypeIcon.svelte";
-import type {
-  Issue,
-  IssueState,
-  UpdateIssueInput,
-  WorkspaceMember,
-} from "./types";
+import type { Issue, UpdateIssueInput, WorkspaceMember } from "./types";
 
 let {
   canReorder,
@@ -21,14 +18,13 @@ let {
   onDragEnd,
   onDragStart,
   onDrop,
-  onMoveToState,
+  onDropOnCard,
+  onOpenCreateIssue,
   onQuickCreate,
-  onReorder,
   onSelect,
   onUpdate,
   properties,
   selectedIssueId,
-  states,
 }: {
   canReorder: boolean;
   draggingIssueId: Issue["_id"] | null;
@@ -37,24 +33,88 @@ let {
   onDragEnd: () => void;
   onDragStart: (event: DragEvent, issue: Issue) => void;
   onDrop: (event: DragEvent, group: IssueGroup) => Promise<void>;
-  onMoveToState: (issue: Issue, stateId: IssueState["_id"]) => Promise<void>;
-  onQuickCreate?: (group: IssueGroup, title: string) => Promise<void>;
-  onReorder: (
-    issue: Issue,
+  onDropOnCard: (
     group: IssueGroup,
-    direction: "down" | "up",
-    index: number
+    index: number,
+    edge: "after" | "before"
   ) => Promise<void>;
+  onOpenCreateIssue?: (group: IssueGroup) => void;
+  onQuickCreate?: (group: IssueGroup, title: string) => Promise<void>;
   onSelect: (issue: Issue) => void;
   onUpdate: (issue: Issue, input: UpdateIssueInput) => Promise<void>;
   properties: Record<IssueDisplayProperty, boolean>;
   selectedIssueId?: string;
-  states: IssueState[];
 } = $props();
 
 let creating = $state(false);
 let quickTitle = $state("");
 let dragOver = $state(false);
+let dropIndicator = $state<{
+  edge: "after" | "before";
+  issueId: Issue["_id"];
+} | null>(null);
+
+function handleCardDragOver(event: DragEvent, issue: Issue) {
+  if (!(canReorder && draggingIssueId)) {
+    return;
+  }
+
+  event.preventDefault();
+
+  // Hovering the dragged card itself: no indicator, dropping is a no-op.
+  if (draggingIssueId === issue._id) {
+    dropIndicator = null;
+    return;
+  }
+
+  const target = event.currentTarget as HTMLElement;
+  const rect = target.getBoundingClientRect();
+  const edge = event.clientY < rect.top + rect.height / 2 ? "before" : "after";
+
+  dropIndicator = { edge, issueId: issue._id };
+}
+
+function handleCardDragLeave(event: DragEvent, issue: Issue) {
+  const related = event.relatedTarget as Node | null;
+  const wrapper = event.currentTarget as HTMLElement;
+
+  // Moving between children of the same card also fires dragleave; only
+  // clear the indicator when the pointer actually leaves the card.
+  if (related && wrapper.contains(related)) {
+    return;
+  }
+
+  if (dropIndicator?.issueId === issue._id) {
+    dropIndicator = null;
+  }
+}
+
+async function handleCardDrop(event: DragEvent, issue: Issue, index: number) {
+  if (!canReorder) {
+    return;
+  }
+
+  // Dropping the card back onto itself keeps its position instead of
+  // falling through to the column-level drop-at-end handler.
+  if (draggingIssueId === issue._id) {
+    event.preventDefault();
+    event.stopPropagation();
+    dragOver = false;
+    return;
+  }
+
+  if (!dropIndicator || dropIndicator.issueId !== issue._id) {
+    return;
+  }
+
+  const { edge } = dropIndicator;
+
+  event.preventDefault();
+  event.stopPropagation();
+  dropIndicator = null;
+  dragOver = false;
+  await onDropOnCard(group, index, edge);
+}
 
 async function submitQuickCreate() {
   const title = quickTitle.trim();
@@ -78,7 +138,7 @@ async function submitQuickCreate() {
   aria-label={`${group.name} column`}
   class="flex w-[324px] shrink-0 flex-col rounded-lg transition {dragOver &&
   draggingIssueId
-    ? 'bg-white/[0.04] ring-1 ring-amber-400/20'
+    ? 'bg-accent/50 ring-1 ring-primary/20'
     : ''}"
   ondragleave={() => (dragOver = false)}
   ondragover={(event) => {
@@ -97,97 +157,111 @@ async function submitQuickCreate() {
       {#if group.state}
         <StateTypeIcon
           class="size-3.5"
-          color={group.state.color}
           type={group.state.type}
         />
       {:else if group.priority}
         <PriorityIcon class="size-3.5" priority={group.priority} />
       {/if}
-      <h3 class="truncate text-sm font-medium text-zinc-200">
+      <h3 class="truncate text-sm font-medium text-foreground">
         {group.name}
       </h3>
-      <span class="text-sm tabular-nums text-zinc-500">
+      <span class="text-sm tabular-nums text-muted-foreground">
         {group.issues.length}
       </span>
     </div>
-    {#if onQuickCreate}
-      <button
+    {#if onOpenCreateIssue || onQuickCreate}
+      <Button
         aria-label={`New work item in ${group.name}`}
-        class="grid size-5 place-items-center rounded text-zinc-500 transition hover:bg-white/[0.06] hover:text-zinc-200"
-        onclick={() =>
-          document
-            .getElementById(`quick-add-${group.id}`)
-            ?.focus()}
-        type="button"
+        class="size-5"
+        onclick={() => {
+          if (onOpenCreateIssue) {
+            onOpenCreateIssue(group);
+            return;
+          }
+          document.getElementById(`quick-add-${group.id}`)?.focus();
+        }}
+        size="icon-xs"
+        variant="ghost"
       >
         <Plus class="size-3.5" />
-      </button>
+      </Button>
     {/if}
   </div>
 
-  <div class="flex flex-1 flex-col gap-2 overflow-x-hidden overflow-y-auto px-2 pb-2">
+  {#if onQuickCreate}
+    <form
+      class="mx-2 mb-2 flex shrink-0 items-center gap-2 rounded-xl border border-border/60 bg-card/60 px-3 py-2 transition-colors hover:bg-card focus-within:border-border focus-within:bg-card"
+      onsubmit={(event) => {
+        event.preventDefault();
+        submitQuickCreate();
+      }}
+    >
+      <Plus class="size-3.5 shrink-0 text-muted-foreground" />
+      <Input
+        aria-label={`Quick issue title for ${group.name}`}
+        bind:value={quickTitle}
+        class="h-6 min-w-0 flex-1 border-0 bg-transparent px-1 text-sm shadow-none focus-visible:ring-0"
+        id={`quick-add-${group.id}`}
+        placeholder="New work item"
+      />
+      {#if quickTitle.trim()}
+        <Button
+          aria-label={`Add issue to ${group.name}`}
+          disabled={creating}
+          size="xs"
+          type="submit"
+        >
+          {creating ? "Adding…" : "Add"}
+        </Button>
+      {/if}
+    </form>
+  {/if}
+
+  <!-- pt-1.5 keeps the drop indicator of the first card (offset -5px) inside
+       the overflow clip so it stays visible when dropping at the very top. -->
+  <div
+    class="flex flex-1 flex-col gap-2 overflow-x-hidden overflow-y-auto px-2 pt-1.5 pb-2"
+  >
     {#each group.issues as issue, index (issue._id)}
+      <!-- svelte-ignore a11y_no_static_element_interactions -->
       <div
         animate:flip={{ duration: 250 }}
+        class="relative"
         in:receiveCard={{ key: issue._id }}
+        ondragleave={(event) => handleCardDragLeave(event, issue)}
+        ondragover={(event) => handleCardDragOver(event, issue)}
+        ondrop={(event) => handleCardDrop(event, issue, index)}
         out:sendCard={{ key: issue._id }}
       >
+        {#if dropIndicator?.issueId === issue._id}
+          <div
+            aria-hidden="true"
+            class="pointer-events-none absolute inset-x-1 z-10 h-0.5 rounded-full bg-primary {dropIndicator.edge ===
+            'before'
+              ? '-top-[5px]'
+              : '-bottom-[5px]'}"
+          ></div>
+        {/if}
         <KanbanCard
-          {canReorder}
           dragging={draggingIssueId === issue._id}
-          {index}
           {issue}
           {members}
           {onDragEnd}
           {onDragStart}
-          onMoveDown={() => onReorder(issue, group, "down", index)}
-          onMoveToState={(stateId) => onMoveToState(issue, stateId)}
-          onMoveUp={() => onReorder(issue, group, "up", index)}
           {onSelect}
           onUpdate={(input) => onUpdate(issue, input)}
           {properties}
           selected={selectedIssueId === issue._id}
-          {states}
-          totalInGroup={group.issues.length}
         />
       </div>
     {:else}
       {#if !onQuickCreate}
         <div
-          class="rounded-lg border border-dashed border-white/[0.06] px-3 py-8 text-center text-xs text-zinc-700"
+          class="rounded-xl border border-dashed border-border px-3 py-8 text-center text-xs text-muted-foreground"
         >
           No work items
         </div>
       {/if}
     {/each}
-
-    {#if onQuickCreate}
-      <form
-        class="flex items-center gap-2 rounded-lg border border-transparent px-3 py-2 transition focus-within:border-white/10 focus-within:bg-[#141515]"
-        onsubmit={(event) => {
-          event.preventDefault();
-          submitQuickCreate();
-        }}
-      >
-        <Plus class="size-3.5 shrink-0 text-zinc-600" />
-        <input
-          aria-label={`Quick issue title for ${group.name}`}
-          bind:value={quickTitle}
-          class="min-w-0 flex-1 bg-transparent text-[13px] text-zinc-100 outline-none placeholder:text-zinc-600"
-          id={`quick-add-${group.id}`}
-          placeholder="New work item"
-        />
-        {#if quickTitle.trim()}
-          <button
-            aria-label={`Add issue to ${group.name}`}
-            class="h-6 shrink-0 rounded bg-amber-400 px-2 text-[11px] font-semibold text-black transition hover:bg-amber-300 disabled:opacity-50"
-            disabled={creating}
-            type="submit"
-          >
-            {creating ? "Adding…" : "Add"}
-          </button>
-        {/if}
-      </form>
-    {/if}
   </div>
 </section>

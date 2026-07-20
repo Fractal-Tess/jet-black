@@ -48,7 +48,7 @@ async function saveSelectedPage() {
     class="flex items-center justify-between border-b border-border px-4 py-3"
   >
     <div>
-      <p class="text-xs font-medium uppercase tracking-[0.18em] text-muted-foreground">
+    <p class="text-xs font-medium uppercase tracking-wider text-muted-foreground">
         Editor
       </p>
       <h2 class="mt-1 text-lg font-semibold text-foreground">
@@ -65,19 +65,20 @@ async function saveSelectedPage() {
   <div class="grid gap-4 p-4">
     <div class="grid gap-3 sm:grid-cols-[72px_minmax(0,1fr)]">
       <div>
-        <Label class="mb-1">Icon</Label>
-        <Input bind:value={draftIcon} />
+        <Label class="mb-1" for="page-editor-icon">Icon</Label>
+        <Input bind:value={draftIcon} id="page-editor-icon" />
       </div>
       <div>
-        <Label class="mb-1">Title</Label>
-        <Input bind:value={draftTitle} />
+        <Label class="mb-1" for="page-editor-title">Title</Label>
+        <Input bind:value={draftTitle} id="page-editor-title" />
       </div>
     </div>
 
     <div>
-      <Label class="mb-1">Content</Label>
+      <Label class="mb-1" for="page-editor-content">Content</Label>
       <Textarea
         bind:value={draftContent}
+        id="page-editor-content"
         class="min-h-[360px] font-mono leading-6"
       />
     </div>

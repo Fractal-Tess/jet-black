@@ -40,7 +40,7 @@ const selectedPage = $derived(
 
     <Card>
       <div class="border-b border-border px-4 py-3">
-        <p class="text-xs font-medium uppercase tracking-[0.18em] text-muted-foreground">
+      <p class="text-xs font-medium uppercase tracking-wider text-muted-foreground">
           Docs
         </p>
         <h2 class="mt-1 text-lg font-semibold text-foreground">

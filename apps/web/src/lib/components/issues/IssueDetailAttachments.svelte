@@ -36,24 +36,24 @@ async function addAttachment() {
 }
 </script>
 
-<div class="border-b border-white/[0.06] px-5 py-4">
+<div class="border-b border-border px-5 py-4">
   <div class="flex items-center justify-between">
-    <h3 class="text-sm font-medium text-zinc-300">Attachments</h3>
-    <span class="text-xs text-zinc-600">{attachments.length} linked</span>
+    <h3 class="text-sm font-medium text-foreground">Attachments</h3>
+    <span class="text-xs text-muted-foreground">{attachments.length} linked</span>
   </div>
 
   {#if attachments.length > 0}
     <div class="mt-3 space-y-1.5">
       {#each attachments as attachment (attachment._id)}
         <a
-          class="flex items-center gap-2 rounded-md px-2 py-1.5 text-sm text-zinc-300 transition hover:bg-white/[0.03]"
+        class="flex items-center gap-2 rounded-lg px-2 py-1.5 text-sm text-foreground transition-colors hover:bg-muted"
           href={attachment.url}
           rel="noreferrer"
           target="_blank"
         >
-          <Paperclip class="size-3.5 shrink-0 text-zinc-500" />
+        <Paperclip class="size-3.5 shrink-0 text-muted-foreground" />
           <span class="truncate font-medium">{attachment.name}</span>
-          <span class="ml-auto truncate text-xs text-zinc-600"
+        <span class="ml-auto truncate text-xs text-muted-foreground"
             >{attachment.url}</span
           >
         </a>
@@ -71,25 +71,25 @@ async function addAttachment() {
     >
       <input
         bind:value={attachName}
-        class="h-8 w-full rounded-md border border-white/10 bg-[#0f1010] px-3 text-sm text-zinc-100 outline-none placeholder:text-zinc-600 focus:border-amber-400/60"
+        class="h-8 w-full rounded-lg border border-input bg-background px-3 text-sm text-foreground outline-none placeholder:text-muted-foreground focus:border-ring focus:ring-3 focus:ring-ring/50"
         placeholder="Attachment name"
       />
       <input
         bind:value={attachUrl}
-        class="h-8 w-full rounded-md border border-white/10 bg-[#0f1010] px-3 text-sm text-zinc-100 outline-none placeholder:text-zinc-600 focus:border-amber-400/60"
+        class="h-8 w-full rounded-lg border border-input bg-background px-3 text-sm text-foreground outline-none placeholder:text-muted-foreground focus:border-ring focus:ring-3 focus:ring-ring/50"
         placeholder="https://example.com/spec"
         type="url"
       />
       <div class="flex gap-2">
         <button
-          class="h-8 rounded-md bg-amber-400 px-3 text-xs font-medium text-black transition hover:bg-amber-300 disabled:opacity-50"
+        class="h-8 rounded-lg bg-primary px-3 text-xs font-medium text-primary-foreground transition-colors hover:bg-primary/80 disabled:opacity-50"
           disabled={addingAttach || !(attachName.trim() && attachUrl.trim())}
           type="submit"
         >
           {addingAttach ? "Adding\u2026" : "Add attachment"}
         </button>
         <button
-          class="grid size-8 place-items-center rounded-md border border-white/10 text-zinc-500 transition hover:bg-white/[0.04] hover:text-zinc-300"
+        class="grid size-8 place-items-center rounded-lg border border-border text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
           onclick={() => {
             showAttachForm = false;
             attachName = "";
@@ -103,7 +103,7 @@ async function addAttachment() {
     </form>
   {:else if attachments.length === 0}
     <button
-      class="mt-3 flex items-center gap-1.5 text-sm text-zinc-500 transition hover:text-zinc-300"
+      class="mt-3 flex items-center gap-1.5 text-sm text-muted-foreground transition-colors hover:text-foreground"
       onclick={() => (showAttachForm = true)}
       type="button"
     >

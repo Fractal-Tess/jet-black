@@ -2,22 +2,29 @@
 import type { IssueDisplayOptions } from "$lib/components/issues/display-options";
 import type {
   AddAttachmentInput,
+  AddModuleLinkInput,
   CreateIntakeIssueInput,
+  CreateIssueInput,
   CreateLabelInput,
   CreateProjectModuleInput,
   CreateProjectPageInput,
   CreateSprintInput,
   IntakeIssue,
   Issue,
+  IssueActivity,
   IssueAttachment,
   IssueComment,
   IssueLabel,
   IssueState,
+  ModuleDetail,
+  ModuleLink,
   Project,
   ProjectModuleRecord,
   ProjectPage,
   Sprint,
   UpdateIssueInput,
+  UpdateModuleLinkInput,
+  UpdateProjectModuleInput,
   UpdateProjectPageInput,
   WorkspaceMember,
 } from "$lib/components/issues/types";
@@ -42,9 +49,15 @@ let {
   creatingPage,
   intakeIssues,
   filteredIssues,
+  issues,
   sprints,
   modules,
+  archivedModules,
+  moduleDetail,
+  moduleDetailLoading,
+  routeModuleId,
   pages,
+  activities,
   attachments,
   comments,
   displayOptions,
@@ -60,17 +73,31 @@ let {
   onCreateSprint,
   onAssignIssueToSprint,
   onCreateModule,
+  onUpdateModule,
+  onArchiveModule,
+  onRestoreModule,
+  onDeleteModule,
   onAssignIssueToModule,
+  onRemoveIssueFromModule,
+  onCreateModuleIssue,
+  onAddModuleLink,
+  onUpdateModuleLink,
+  onRemoveModuleLink,
   onCreatePage,
   onUpdatePage,
   onAddAttachment,
   onAddComment,
+  onUpdateComment,
+  onDeleteComment,
   onCreateLabel,
+  onCreateModuleForIssue,
   onCreateSubIssue,
   onArchiveIssue,
   onMoveIssue,
+  onOpenCreateIssue,
   onQuickCreateIssue,
   onReorderIssue,
+  onSelectIssue,
   onToggleLabel,
   onUpdateIssue,
   onUpdateIssueFor,
@@ -85,9 +112,15 @@ let {
   creatingPage: boolean;
   intakeIssues: IntakeIssue[];
   filteredIssues: Issue[];
+  issues: Issue[];
   sprints: Sprint[];
   modules: ProjectModuleRecord[];
+  archivedModules: ProjectModuleRecord[];
+  moduleDetail: ModuleDetail | null;
+  moduleDetailLoading: boolean;
+  routeModuleId: string | undefined;
   pages: ProjectPage[];
+  activities: IssueActivity[];
   attachments: IssueAttachment[];
   comments: IssueComment[];
   displayOptions: IssueDisplayOptions;
@@ -106,18 +139,51 @@ let {
     sprintId: Sprint["_id"]
   ) => Promise<void>;
   onCreateModule: (input: CreateProjectModuleInput) => Promise<void>;
+  onUpdateModule: (
+    moduleId: ProjectModuleRecord["_id"],
+    input: UpdateProjectModuleInput
+  ) => Promise<void>;
+  onArchiveModule: (moduleId: ProjectModuleRecord["_id"]) => Promise<void>;
+  onRestoreModule: (moduleId: ProjectModuleRecord["_id"]) => Promise<void>;
+  onDeleteModule: (moduleId: ProjectModuleRecord["_id"]) => Promise<void>;
   onAssignIssueToModule: (
     issueId: Issue["_id"],
     moduleId: ProjectModuleRecord["_id"]
   ) => Promise<void>;
+  onRemoveIssueFromModule: (
+    issueId: Issue["_id"],
+    moduleId: ProjectModuleRecord["_id"]
+  ) => Promise<void>;
+  onCreateModuleIssue: (
+    moduleId: ProjectModuleRecord["_id"],
+    input: CreateIssueInput
+  ) => Promise<void>;
+  onAddModuleLink: (
+    moduleId: ProjectModuleRecord["_id"],
+    input: AddModuleLinkInput
+  ) => Promise<void>;
+  onUpdateModuleLink: (
+    linkId: ModuleLink["_id"],
+    input: UpdateModuleLinkInput
+  ) => Promise<void>;
+  onRemoveModuleLink: (linkId: ModuleLink["_id"]) => Promise<void>;
   onCreatePage: (input: CreateProjectPageInput) => Promise<void>;
   onUpdatePage: (
     pageId: ProjectPage["_id"],
     input: UpdateProjectPageInput
   ) => Promise<void>;
   onAddAttachment: (input: AddAttachmentInput) => Promise<void>;
-  onAddComment: (body: string) => Promise<void>;
+  onAddComment: (
+    body: string,
+    parentCommentId?: IssueComment["_id"]
+  ) => Promise<void>;
+  onUpdateComment: (
+    commentId: IssueComment["_id"],
+    body: string
+  ) => Promise<void>;
+  onDeleteComment: (commentId: IssueComment["_id"]) => Promise<void>;
   onCreateLabel: (input: CreateLabelInput) => Promise<void>;
+  onCreateModuleForIssue: (name: string) => Promise<void>;
   onCreateSubIssue: (title: string) => Promise<void>;
   onArchiveIssue: () => Promise<void>;
   onMoveIssue: (
@@ -125,12 +191,14 @@ let {
     stateId: IssueState["_id"],
     position: number
   ) => Promise<void>;
+  onOpenCreateIssue?: (stateId: IssueState["_id"]) => void;
   onQuickCreateIssue: (state: IssueState, title: string) => Promise<void>;
   onReorderIssue: (
     issue: Issue,
     stateId: IssueState["_id"],
     position: number
   ) => Promise<void>;
+  onSelectIssue: (issueId: Issue["_id"]) => void;
   onToggleLabel: (labelId: IssueLabel["_id"]) => Promise<void>;
   onUpdateIssue: (input: UpdateIssueInput) => Promise<void>;
   onUpdateIssueFor: (issue: Issue, input: UpdateIssueInput) => Promise<void>;
@@ -155,11 +223,48 @@ let {
   />
 {:else if activeModule === "modules"}
   <ModulesModule
+    {activeProject}
     creating={creatingModule}
-    issues={filteredIssues}
+    {issues}
     {modules}
-    onAssignIssue={onAssignIssueToModule}
+    {archivedModules}
+    {moduleDetail}
+    {moduleDetailLoading}
+    routeModuleId={routeModuleId ?? undefined}
+    {workspaceSlug}
+    members={workspaceMembers}
+    {states}
+    {activities}
+    {attachments}
+    comments={comments}
+    {labels}
+    {selectedIssueId}
+    selectedSubIssues={selectedSubIssues}
+    onAddAttachment={onAddAttachment}
+    onAddComment={onAddComment}
+    onUpdateComment={onUpdateComment}
+    onDeleteComment={onDeleteComment}
+    onCreateLabel={onCreateLabel}
+    onCreateModuleForIssue={onCreateModuleForIssue}
+    onCreateSubIssue={onCreateSubIssue}
+    onArchiveIssue={onArchiveIssue}
+    onSelectIssue={onSelectIssue}
+    onToggleLabel={onToggleLabel}
+    onUpdateIssue={onUpdateIssue}
+    onArchive={onArchiveModule}
     onCreate={onCreateModule}
+    onCreateIssue={onCreateModuleIssue}
+    onDelete={onDeleteModule}
+    onAddLink={onAddModuleLink}
+    onUpdateLink={onUpdateModuleLink}
+    onRemoveLink={onRemoveModuleLink}
+    onRemoveIssue={onRemoveIssueFromModule}
+    onRestore={onRestoreModule}
+    onUpdate={onUpdateModule}
+    onAssignIssue={onAssignIssueToModule}
+    onMoveIssue={onMoveIssue}
+    onReorderIssue={onReorderIssue}
+    onUpdateIssueFor={onUpdateIssueFor}
   />
 {:else if activeModule === "pages"}
   <PagesModule
@@ -176,6 +281,7 @@ let {
 {:else}
   <TicketsView
     {activeProject}
+    {activities}
     {attachments}
     comments={comments}
     {displayOptions}
@@ -183,14 +289,20 @@ let {
     {issueView}
     {labels}
     members={workspaceMembers}
+    {modules}
     onAddAttachment={onAddAttachment}
     onAddComment={onAddComment}
+    onUpdateComment={onUpdateComment}
+    onDeleteComment={onDeleteComment}
     onCreateLabel={onCreateLabel}
+    onCreateModuleForIssue={onCreateModuleForIssue}
     onCreateSubIssue={onCreateSubIssue}
     onArchiveIssue={onArchiveIssue}
     onMoveIssue={onMoveIssue}
+    onOpenCreateIssue={onOpenCreateIssue}
     onQuickCreateIssue={onQuickCreateIssue}
     onReorderIssue={onReorderIssue}
+    onSelectIssue={onSelectIssue}
     onToggleLabel={onToggleLabel}
     onUpdateIssue={onUpdateIssue}
     onUpdateIssueFor={onUpdateIssueFor}

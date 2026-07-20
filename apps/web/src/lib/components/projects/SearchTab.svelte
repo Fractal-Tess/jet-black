@@ -111,5 +111,5 @@ function handleConfirmSearch() {
     {/if}
   {/if}
 
-  <p class="text-center text-[10px] text-muted-foreground">Photos by Unsplash</p>
+    <p class="text-center text-meta text-muted-foreground">Photos by Unsplash</p>
 </div>

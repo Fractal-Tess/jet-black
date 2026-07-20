@@ -45,6 +45,96 @@ export const create = mutation({
   },
 });
 
+export const update = mutation({
+  args: {
+    color: v.optional(v.string()),
+    labelId: v.id("issueLabels"),
+    name: v.optional(v.string()),
+  },
+  handler: async (ctx, args) => {
+    const user = await requireAuthUser(ctx);
+    const label = await ctx.db.get(args.labelId);
+
+    if (!label) {
+      throw new ConvexError("Label not found");
+    }
+
+    await requireProjectAccess(ctx, user._id, label.projectId);
+
+    const patch: { color?: string; name?: string } = {};
+
+    if (args.name !== undefined) {
+      const name = args.name.trim();
+
+      if (!name) {
+        throw new ConvexError("Label name is required");
+      }
+
+      const siblings = await ctx.db
+        .query("issueLabels")
+        .withIndex("by_projectId", (q) => q.eq("projectId", label.projectId))
+        .collect();
+
+      const duplicate = siblings.find(
+        (sibling) =>
+          sibling._id !== label._id &&
+          sibling.name.toLowerCase() === name.toLowerCase()
+      );
+
+      if (duplicate) {
+        throw new ConvexError("A label with this name already exists");
+      }
+
+      patch.name = name;
+    }
+
+    if (args.color !== undefined) {
+      patch.color = args.color.trim() || DEFAULT_LABEL_COLOR;
+    }
+
+    await ctx.db.patch(label._id, patch);
+
+    return null;
+  },
+});
+
+const ASSIGNMENT_DELETE_BATCH = 200;
+
+export const remove = mutation({
+  args: {
+    labelId: v.id("issueLabels"),
+  },
+  handler: async (ctx, args) => {
+    const user = await requireAuthUser(ctx);
+    const label = await ctx.db.get(args.labelId);
+
+    if (!label) {
+      throw new ConvexError("Label not found");
+    }
+
+    await requireProjectAccess(ctx, user._id, label.projectId);
+
+    let assignments = await ctx.db
+      .query("issueLabelAssignments")
+      .withIndex("by_labelId", (q) => q.eq("labelId", label._id))
+      .take(ASSIGNMENT_DELETE_BATCH);
+
+    while (assignments.length > 0) {
+      await Promise.all(
+        assignments.map((assignment) => ctx.db.delete(assignment._id))
+      );
+      assignments = await ctx.db
+        .query("issueLabelAssignments")
+        .withIndex("by_labelId", (q) => q.eq("labelId", label._id))
+        .take(ASSIGNMENT_DELETE_BATCH);
+    }
+
+    await ctx.db.delete(label._id);
+
+    return null;
+  },
+});
+
 export const toggleForIssue = mutation({
   args: {
     issueId: v.id("issues"),

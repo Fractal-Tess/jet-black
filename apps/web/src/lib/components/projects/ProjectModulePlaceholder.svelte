@@ -63,7 +63,7 @@ const moduleCopy = $derived(copy[module]);
   class="grid min-h-[420px] place-items-center p-6 text-center"
 >
   <div class="max-w-lg">
-    <p class="text-xs font-medium uppercase tracking-[0.18em] text-primary">
+    <p class="text-xs font-medium uppercase tracking-wider text-primary">
       {moduleCopy.eyebrow}
     </p>
     <h2 class="mt-3 text-2xl font-semibold tracking-tight text-foreground">

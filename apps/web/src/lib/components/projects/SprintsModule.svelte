@@ -35,7 +35,7 @@ const unassignedIssues = $derived(issues.filter((issue) => !issue.sprintId));
     <SprintForm {creating} {onCreate} />
 
     <Card class="p-4">
-      <p class="text-xs font-medium uppercase tracking-[0.18em] text-muted-foreground">
+      <p class="text-xs font-medium uppercase tracking-wider text-muted-foreground">
         Scope pool
       </p>
       <p class="mt-2 text-2xl font-semibold text-foreground">
@@ -50,7 +50,7 @@ const unassignedIssues = $derived(issues.filter((issue) => !issue.sprintId));
       class="flex items-center justify-between border-b border-border px-4 py-3"
     >
       <div>
-        <p class="text-xs font-medium uppercase tracking-[0.18em] text-muted-foreground">
+      <p class="text-xs font-medium uppercase tracking-wider text-muted-foreground">
           Timeline
         </p>
         <h2 class="mt-1 text-lg font-semibold text-foreground">

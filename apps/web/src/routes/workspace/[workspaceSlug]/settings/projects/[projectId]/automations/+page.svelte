@@ -1,13 +1,25 @@
 <script lang="ts">
+import ProjectAutomationsTab from "$lib/components/settings/project/ProjectAutomationsTab.svelte";
 import SettingsContentWrapper from "$lib/components/settings/SettingsContentWrapper.svelte";
-import SettingsHeading from "$lib/components/settings/SettingsHeading.svelte";
+import type { WorkspaceRole } from "$lib/settings-nav";
+
+type Automations = {
+  autoArchiveClosedMonths: number | null;
+  autoCloseInactiveMonths: number | null;
+};
+
+let { data } = $props();
+const project = $derived(
+  data.project as { _id: string; automations?: Automations }
+);
+const workspace = $derived(data.workspace as { _id: string });
+const membership = $derived(data.membership as { role: WorkspaceRole });
 </script>
 
 <SettingsContentWrapper>
-  <SettingsHeading title="Automations" description="Configure automated workflows." />
-  <div class="mt-8 rounded-lg border border-border bg-card px-6 py-10 text-center">
-    <p class="text-sm text-muted-foreground">
-      Automations are coming soon.
-    </p>
-  </div>
+  <ProjectAutomationsTab
+    {project}
+    role={membership.role}
+    workspaceId={workspace._id}
+  />
 </SettingsContentWrapper>

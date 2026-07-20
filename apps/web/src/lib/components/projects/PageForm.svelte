@@ -41,7 +41,7 @@ async function createPage() {
 
 <Card>
   <div class="border-b border-border px-4 py-3">
-    <p class="text-xs font-medium uppercase tracking-[0.18em] text-muted-foreground">
+    <p class="text-xs font-medium uppercase tracking-wider text-muted-foreground">
       Pages
     </p>
     <h2 class="mt-1 text-lg font-semibold text-foreground">New page</h2>
@@ -55,26 +55,29 @@ async function createPage() {
     }}
   >
     <div>
-      <Label class="mb-1">Page title</Label>
+      <Label class="mb-1" for="page-title">Page title</Label>
       <Input
         bind:value={title}
+        id="page-title"
         placeholder="Spec, decision, launch plan"
       />
     </div>
 
     <div>
-      <Label class="mb-1">Page icon</Label>
+      <Label class="mb-1" for="page-icon">Page icon</Label>
       <Input
         bind:value={icon}
         class="h-9"
+        id="page-icon"
         placeholder="\u25a3"
       />
     </div>
 
     <div>
-      <Label class="mb-1">Page content</Label>
+      <Label class="mb-1" for="page-content">Page content</Label>
       <Textarea
         bind:value={content}
+        id="page-content"
         class="min-h-32"
         placeholder="Write notes, specs, decisions, or project context."
       />

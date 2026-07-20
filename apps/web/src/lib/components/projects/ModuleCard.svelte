@@ -1,140 +1,161 @@
 <script lang="ts">
-import type { Id } from "@workspace/convex/dataModel";
-import { Badge } from "@workspace/ui/components/badge";
-import { Label } from "@workspace/ui/components/label";
-import {
-  Content as SelectContent,
-  Item as SelectItem,
-  Root as SelectRoot,
-  Trigger as SelectTrigger,
-} from "@workspace/ui/components/select";
-import type { Issue, ProjectModuleRecord } from "$lib/components/issues/types";
+import CalendarDays from "lucide-svelte/icons/calendar-days";
+import Ellipsis from "lucide-svelte/icons/ellipsis";
+import Info from "lucide-svelte/icons/info";
+import LayersIcon from "lucide-svelte/icons/layers";
+import SquareUser from "lucide-svelte/icons/square-user";
+import type {
+  ProjectModuleRecord,
+  WorkspaceMember,
+} from "$lib/components/issues/types";
+import { projectModuleDetailHref } from "$lib/routes";
+import { moduleStatusBadgeClass, moduleStatusLabel } from "./module-status";
 
 let {
   module: projectModule,
-  issues,
-  onAssignIssue,
+  members = [],
+  workspaceSlug,
+  projectId,
+  onEdit,
 }: {
   module: ProjectModuleRecord;
-  issues: Issue[];
-  onAssignIssue: (
-    issueId: Issue["_id"],
-    moduleId: ProjectModuleRecord["_id"]
-  ) => Promise<void>;
+  members?: WorkspaceMember[];
+  workspaceSlug: string;
+  projectId: string;
+  onEdit?: (moduleId: ProjectModuleRecord["_id"]) => void;
 } = $props();
 
-const unassignedIssues = $derived(issues.filter((issue) => !issue.moduleId));
+const detailHref = $derived(
+  projectModuleDetailHref({
+    moduleId: projectModule._id,
+    projectId,
+    workspaceSlug,
+  })
+);
 
-function moduleIssues(moduleId: Id<"projectModules">) {
-  return issues.filter((issue) => issue.moduleId === moduleId);
-}
+const progress = $derived(projectModule.progress);
 
-function completedCount(moduleIssues: Issue[]) {
-  return moduleIssues.filter(
-    (issue) =>
-      issue.state?.type === "completed" || issue.state?.type === "cancelled"
-  ).length;
-}
+// Mirrors Plane's PROGRESS_STATE_GROUPS_DETAILS (packages/constants/src/state.ts).
+const progressSegments = $derived([
+  { className: "bg-success", count: progress.completed, name: "Completed" },
+  { className: "bg-warning", count: progress.started, name: "Started" },
+  { className: "bg-info", count: progress.unstarted, name: "Unstarted" },
+  {
+    className: "bg-muted-foreground",
+    count: progress.backlog,
+    name: "Backlog",
+  },
+]);
 
-function progressPercent(moduleIssues: Issue[]) {
-  if (moduleIssues.length === 0) {
-    return 0;
+// Mirrors Plane's issueCount computation in module-card-item.tsx.
+const issueCount = $derived.by(() => {
+  if (progress.total === 0) {
+    return "0 Work items";
   }
-
-  return Math.round((completedCount(moduleIssues) / moduleIssues.length) * 100);
-}
-
-function statusLabel(moduleStatus: ProjectModuleRecord["status"]) {
-  return moduleStatus.replace("_", " ");
-}
-
-let selectedIssueId = $state<string | undefined>(undefined);
-
-async function handleAssign(value: string | undefined) {
-  if (!value) {
-    return;
+  if (progress.total === progress.completed) {
+    return `${progress.total} Work item${progress.total > 1 ? "s" : ""}`;
   }
-  await onAssignIssue(value as Issue["_id"], projectModule._id);
-  selectedIssueId = undefined;
-}
+  return `${progress.completed}/${progress.total} Work items`;
+});
 
-const assignedIssues = $derived(moduleIssues(projectModule._id));
-const percent = $derived(progressPercent(assignedIssues));
+const lead = $derived(
+  projectModule.leadUserId
+    ? (members.find((m) => m.id === projectModule.leadUserId) ?? null)
+    : null
+);
+
+function segmentWidth(count: number) {
+  return `${(count / (progress.total || 1)) * 100}%`;
+}
 </script>
 
-<article class="rounded-lg border border-border bg-card p-4">
-  <div class="flex items-start justify-between gap-3">
-    <div class="min-w-0">
-      <div class="flex flex-wrap items-center gap-2">
-        <Badge variant="secondary" class="capitalize">
-          {statusLabel(projectModule.status)}
-        </Badge>
-        {#if projectModule.targetDate}
-          <span class="font-mono text-[10px] text-muted-foreground">
-            due {projectModule.targetDate}
-          </span>
-        {/if}
-      </div>
-      <h3 class="mt-2 text-sm font-semibold text-foreground">
-        {projectModule.name}
-      </h3>
-    </div>
-    <span class="font-mono text-xs text-muted-foreground">{percent}%</span>
-  </div>
+<article
+  class="group relative flex flex-col gap-4 rounded-xl border border-border bg-card p-4 shadow-sm transition-all hover:border-input hover:shadow-md"
+>
+  <a
+    aria-label={`Open ${projectModule.name} module details`}
+    class="absolute inset-0 z-10 rounded-xl focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+    href={detailHref}
+  ></a>
 
-  {#if projectModule.description}
-    <p class="mt-2 text-sm text-muted-foreground">
-      {projectModule.description}
-    </p>
-  {/if}
-
-  <div class="mt-4">
-    <div class="mb-1 flex items-center justify-between text-xs">
-      <span class="text-muted-foreground">
-        {completedCount(assignedIssues)} / {assignedIssues.length}
-        tickets done
-      </span>
-    </div>
-    <div class="h-1.5 overflow-hidden rounded-full bg-muted">
-      <div
-        class="h-full rounded-full bg-primary"
-        style:width={`${percent}%`}
-      ></div>
-    </div>
-  </div>
-
-  <div class="mt-4">
-    <Label class="mb-1 text-xs">Add ticket to module</Label>
-    <SelectRoot
-      type="single"
-      value={selectedIssueId}
-      onValueChange={handleAssign}
+  <div class="relative flex items-center justify-between gap-2">
+    <h3
+      class="min-w-0 truncate text-sm font-medium text-card-foreground"
+      title={projectModule.name}
     >
-      <SelectTrigger class="w-full">
-        {selectedIssueId ? "Selected" : "Select a ticket\u2026"}
-      </SelectTrigger>
-      <SelectContent>
-        {#each unassignedIssues as issue (issue._id)}
-          <SelectItem value={issue._id}>
-            {issue.identifier} \u00b7 {issue.title}
-          </SelectItem>
-        {/each}
-      </SelectContent>
-    </SelectRoot>
+      {projectModule.name}
+    </h3>
+    <div class="flex shrink-0 items-center gap-2">
+      <span
+        class="flex h-6 min-w-20 items-center justify-center rounded px-2 text-center text-meta {moduleStatusBadgeClass(projectModule.status)}"
+      >
+        {moduleStatusLabel(projectModule.status)}
+      </span>
+      <Info class="size-4 text-muted-foreground" />
+    </div>
   </div>
 
-  <div class="mt-4 flex flex-wrap gap-2">
-    {#each assignedIssues as issue (issue._id)}
-      <Badge variant="outline">
-        <span class="font-mono text-muted-foreground">
-          {issue.identifier}
-        </span>
-        {issue.title}
-      </Badge>
-    {:else}
-      <span class="text-xs text-muted-foreground">
-        No tickets in this module yet.
+  <div class="relative flex items-center justify-between">
+    <div class="flex items-center gap-1.5">
+      <LayersIcon class="size-4 text-muted-foreground" />
+      <span class="text-meta text-muted-foreground">{issueCount}</span>
+    </div>
+    {#if lead}
+      <span
+        class="inline-flex size-5 items-center justify-center overflow-hidden rounded-full bg-primary text-meta font-medium text-primary-foreground"
+        title={lead.name ?? lead.email}
+      >
+        {#if lead.image}
+          <img alt="" class="size-full object-cover" src={lead.image} />
+        {:else}
+          {(lead.name ?? lead.email).charAt(0).toUpperCase()}
+        {/if}
       </span>
+    {:else}
+      <span title="No lead">
+        <SquareUser class="size-4 text-muted-foreground" />
+      </span>
+    {/if}
+  </div>
+
+  <div class="relative flex h-2 overflow-hidden rounded bg-muted">
+    {#each progressSegments as segment (segment.name)}
+      {#if segment.count > 0}
+        <div
+          class="h-full {segment.className}"
+          style:width={segmentWidth(segment.count)}
+          title={`${segment.name}: ${segment.count}`}
+        ></div>
+      {/if}
     {/each}
+  </div>
+
+  <div class="relative flex items-center justify-between gap-2">
+    <span
+      class="flex h-7 items-center gap-1.5 rounded-lg border border-border px-2.5 text-xs text-foreground"
+    >
+      <CalendarDays class="size-3.5 text-muted-foreground" />
+      {#if projectModule.startDate || projectModule.targetDate}
+        {projectModule.startDate ?? "Start date"}
+        <span class="text-muted-foreground">→</span>
+        {projectModule.targetDate ?? "End date"}
+      {:else}
+        Start date
+        <span class="text-muted-foreground">→</span>
+        <CalendarDays class="size-3.5 text-muted-foreground" />
+        End date
+      {/if}
+    </span>
+    {#if onEdit && projectModule.archivedAt === undefined}
+      <button
+        aria-label={`Edit ${projectModule.name}`}
+        class="relative z-20 grid size-7 place-items-center rounded-lg text-muted-foreground transition-colors hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+        onclick={() => onEdit(projectModule._id)}
+        title="Edit module"
+        type="button"
+      >
+        <Ellipsis class="size-4" />
+      </button>
+    {/if}
   </div>
 </article>

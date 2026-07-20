@@ -1,13 +1,13 @@
 <script lang="ts">
+import ProjectLabelsTab from "$lib/components/settings/project/ProjectLabelsTab.svelte";
 import SettingsContentWrapper from "$lib/components/settings/SettingsContentWrapper.svelte";
-import SettingsHeading from "$lib/components/settings/SettingsHeading.svelte";
+import type { WorkspaceRole } from "$lib/settings-nav";
+
+let { data } = $props();
+const project = $derived(data.project as { _id: string });
+const membership = $derived(data.membership as { role: WorkspaceRole });
 </script>
 
 <SettingsContentWrapper>
-  <SettingsHeading title="Labels" description="Manage project labels." />
-  <div class="mt-8 rounded-lg border border-border bg-card px-6 py-10 text-center">
-    <p class="text-sm text-muted-foreground">
-      Labels management is coming soon.
-    </p>
-  </div>
+  <ProjectLabelsTab {project} role={membership.role} />
 </SettingsContentWrapper>

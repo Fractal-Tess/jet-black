@@ -85,7 +85,7 @@ async function handleAssign(value: string | undefined) {
           <Badge variant="secondary">
             {sprintStatus(sprint)}
           </Badge>
-          <span class="font-mono text-[10px] text-muted-foreground">
+      <span class="font-mono text-meta text-muted-foreground">
             {sprint.startDate ?? "no start"} \u2192 {sprint.endDate ??
               "no end"}
           </span>

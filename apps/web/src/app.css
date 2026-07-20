@@ -9,3 +9,54 @@ a {
   color: inherit;
   text-decoration: none;
 }
+
+/* Rich description editor (TipTap) typography */
+.tiptap {
+  @apply text-sm text-foreground;
+}
+.tiptap p.is-editor-empty:first-child::before {
+  float: left;
+  height: 0;
+  color: color-mix(in oklab, var(--muted-foreground) 70%, transparent);
+  pointer-events: none;
+  content: attr(data-placeholder);
+}
+.tiptap h1 {
+  @apply mt-4 mb-1 text-lg font-semibold;
+}
+.tiptap h2 {
+  @apply mt-3 mb-1 text-base font-semibold;
+}
+.tiptap h3 {
+  @apply mt-2 mb-1 text-sm font-semibold;
+}
+.tiptap p {
+  @apply my-1;
+}
+.tiptap ul {
+  @apply my-1 list-disc pl-5;
+}
+.tiptap ol {
+  @apply my-1 list-decimal pl-5;
+}
+.tiptap blockquote {
+  @apply my-2 border-l-2 border-border pl-3 text-muted-foreground;
+}
+.tiptap code {
+  @apply rounded bg-muted px-1 py-0.5 font-mono text-xs;
+}
+.tiptap pre {
+  @apply my-2 overflow-x-auto rounded-lg border border-border bg-card p-3 font-mono text-xs;
+}
+.tiptap pre code {
+  @apply bg-transparent p-0;
+}
+.tiptap a {
+  @apply text-primary underline underline-offset-2;
+}
+.tiptap img {
+  @apply my-2 max-w-full rounded-lg border border-border;
+}
+.tiptap hr {
+  @apply my-3 border-border;
+}

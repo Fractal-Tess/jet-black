@@ -1,5 +1,8 @@
 <script lang="ts">
 import { api } from "@workspace/convex/api";
+import { Button } from "@workspace/ui/components/button";
+import { Card } from "@workspace/ui/components/card";
+import { Input } from "@workspace/ui/components/input";
 import { useMutation } from "convex-svelte";
 import { untrack } from "svelte";
 import { goto } from "$app/navigation";
@@ -101,11 +104,11 @@ async function handleWorkspaceSubmit(e: SubmitEvent) {
 </svelte:head>
 
 <main
-  class="relative flex min-h-screen flex-col overflow-hidden bg-[#0d0e0e] text-[#f0f0ef]"
+  class="relative flex min-h-screen flex-col overflow-hidden bg-background text-foreground"
 >
   <div
     aria-hidden="true"
-    class="pointer-events-none absolute inset-0 bg-[radial-gradient(circle_at_50%_38%,rgba(255,184,0,0.045),transparent_28%)]"
+    class="pointer-events-none absolute inset-0 bg-radial from-primary/5 via-transparent to-transparent"
   ></div>
 
   <header class="relative flex h-14 shrink-0 items-center justify-between px-5 sm:px-8">
@@ -114,7 +117,7 @@ async function handleWorkspaceSubmit(e: SubmitEvent) {
       href="/"
     >
       <span
-        class="grid size-7 place-items-center rounded-md border border-amber-400/30 bg-amber-400/5 transition group-hover:border-amber-400/60"
+        class="grid size-7 place-items-center rounded-md border border-primary/30 bg-primary/5 transition-colors group-hover:border-primary/60"
       >
         <img
           alt=""
@@ -127,31 +130,32 @@ async function handleWorkspaceSubmit(e: SubmitEvent) {
       Jet Black
     </a>
 
-    <p class="text-sm text-zinc-500">
+    <p class="text-sm text-muted-foreground">
       {step === "profile" ? "Step 1 of 2" : "Step 2 of 2"}
     </p>
   </header>
 
   <section class="relative flex flex-1 items-center justify-center px-5 py-12">
-    <div class="w-full max-w-[420px]">
+    <div class="w-full max-w-md">
       {#if step === "profile"}
         <div class="mb-7">
-          <h1 class="text-xl font-semibold tracking-[-0.02em]">
+          <h1 class="text-xl font-semibold tracking-tight">
             Welcome to Jet Black
           </h1>
-          <p class="mt-1 text-sm text-zinc-500">
+          <p class="mt-1 text-sm text-muted-foreground">
             Let's get your profile set up first.
           </p>
         </div>
 
+        <Card class="p-6">
         <form class="space-y-4" onsubmit={handleProfileSubmit}>
           <label class="block" for="name">
-            <span class="mb-1.5 block text-sm text-zinc-300">Your name</span>
-            <input
+            <span class="mb-1.5 block text-sm text-foreground">Your name</span>
+            <Input
               autocomplete="name"
-              class="h-11 w-full rounded-md border border-zinc-700 bg-[#181919] px-3 text-sm outline-none transition placeholder:text-zinc-600 hover:border-zinc-600 focus:border-amber-400/70 focus:ring-2 focus:ring-amber-400/10"
+              class="h-10"
               id="name"
-              minlength="2"
+              minlength={2}
               bind:value={name}
               placeholder="Your full name"
               required
@@ -160,12 +164,12 @@ async function handleWorkspaceSubmit(e: SubmitEvent) {
 
           <div aria-live="polite" class="min-h-5">
             {#if error}
-              <p class="text-sm text-red-400" role="alert">{error}</p>
+              <p class="text-sm text-destructive" role="alert">{error}</p>
             {/if}
           </div>
 
-          <button
-            class="flex h-11 w-full items-center justify-center gap-2 rounded-md bg-amber-400 text-sm font-semibold text-black transition hover:bg-amber-300 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-amber-400 disabled:cursor-not-allowed disabled:bg-zinc-700 disabled:text-zinc-500"
+          <Button
+            class="h-10 w-full"
             disabled={submitting}
             type="submit"
           >
@@ -176,27 +180,29 @@ async function handleWorkspaceSubmit(e: SubmitEvent) {
               ></span>
             {/if}
             {submitting ? "Saving…" : "Continue"}
-          </button>
+          </Button>
         </form>
+        </Card>
       {:else}
         <div class="mb-7">
-          <h1 class="text-xl font-semibold tracking-[-0.02em]">
+          <h1 class="text-xl font-semibold tracking-tight">
             Create your workspace
           </h1>
-          <p class="mt-1 text-sm text-zinc-500">
+          <p class="mt-1 text-sm text-muted-foreground">
             A workspace is where your team collaborates on projects.
           </p>
         </div>
 
+        <Card class="p-6">
         <form class="space-y-4" onsubmit={handleWorkspaceSubmit}>
           <label class="block" for="workspace-name">
-            <span class="mb-1.5 block text-sm text-zinc-300">Workspace name</span>
-            <input
+            <span class="mb-1.5 block text-sm text-foreground">Workspace name</span>
+            <Input
               autocomplete="organization"
-              class="h-11 w-full rounded-md border border-zinc-700 bg-[#181919] px-3 text-sm outline-none transition placeholder:text-zinc-600 hover:border-zinc-600 focus:border-amber-400/70 focus:ring-2 focus:ring-amber-400/10"
+              class="h-10"
               id="workspace-name"
-              minlength="2"
-              maxlength="80"
+              minlength={2}
+              maxlength={80}
               value={workspaceName}
               oninput={(e) => handleWorkspaceNameChange(e.currentTarget.value)}
               placeholder="e.g. Acme Corp"
@@ -205,13 +211,13 @@ async function handleWorkspaceSubmit(e: SubmitEvent) {
           </label>
 
           <label class="block" for="workspace-slug">
-            <span class="mb-1.5 block text-sm text-zinc-300">Workspace URL</span>
-            <div class="flex h-11 items-stretch rounded-md border border-zinc-700 bg-[#181919] focus-within:border-amber-400/70 focus-within:ring-2 focus-within:ring-amber-400/10 hover:border-zinc-600">
-              <span class="flex shrink-0 items-center border-r border-zinc-700 bg-zinc-800/50 px-3 text-sm text-zinc-500">
+            <span class="mb-1.5 block text-sm text-foreground">Workspace URL</span>
+            <div class="flex h-10 items-stretch rounded-lg border border-input bg-background transition-colors focus-within:border-ring focus-within:ring-3 focus-within:ring-ring/50">
+              <span class="flex shrink-0 items-center border-r border-border bg-muted px-3 text-sm text-muted-foreground">
                 jet-black.app/
               </span>
               <input
-                class="min-w-0 flex-1 bg-transparent px-3 text-sm outline-none placeholder:text-zinc-600"
+                class="min-w-0 flex-1 bg-transparent px-3 text-sm outline-none placeholder:text-muted-foreground"
                 id="workspace-slug"
                 minlength="2"
                 maxlength="48"
@@ -220,19 +226,19 @@ async function handleWorkspaceSubmit(e: SubmitEvent) {
                 required
               />
             </div>
-            <p class="mt-1 text-xs text-zinc-600">
+            <p class="mt-1 text-xs text-muted-foreground">
               This will be your workspace's unique URL. You can change it later.
             </p>
           </label>
 
           <div aria-live="polite" class="min-h-5">
             {#if error}
-              <p class="text-sm text-red-400" role="alert">{error}</p>
+              <p class="text-sm text-destructive" role="alert">{error}</p>
             {/if}
           </div>
 
-          <button
-            class="flex h-11 w-full items-center justify-center gap-2 rounded-md bg-amber-400 text-sm font-semibold text-black transition hover:bg-amber-300 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-amber-400 disabled:cursor-not-allowed disabled:bg-zinc-700 disabled:text-zinc-500"
+          <Button
+            class="h-10 w-full"
             disabled={submitting || !workspaceName.trim() || !workspaceSlug}
             type="submit"
           >
@@ -243,16 +249,17 @@ async function handleWorkspaceSubmit(e: SubmitEvent) {
               ></span>
             {/if}
             {submitting ? "Creating workspace…" : "Create workspace"}
-          </button>
+          </Button>
         </form>
+        </Card>
       {/if}
     </div>
   </section>
 
   <footer
-    class="relative flex shrink-0 items-center justify-center px-5 py-6 text-xs text-zinc-600"
+    class="relative flex shrink-0 items-center justify-center px-5 py-6 text-xs text-muted-foreground"
   >
-    <span class="mr-2 inline-block size-1.5 rounded-full bg-emerald-400"></span>
+    <span class="mr-2 inline-block size-1.5 rounded-full bg-success"></span>
     Real-time workspaces powered by Convex
   </footer>
 </main>

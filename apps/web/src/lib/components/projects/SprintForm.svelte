@@ -45,7 +45,7 @@ async function createSprint() {
 
 <Card>
   <div class="border-b border-border px-4 py-3">
-    <p class="text-xs font-medium uppercase tracking-[0.18em] text-muted-foreground">
+    <p class="text-xs font-medium uppercase tracking-wider text-muted-foreground">
       Sprints
     </p>
     <h2 class="mt-1 text-lg font-semibold text-foreground">New sprint</h2>
@@ -59,36 +59,40 @@ async function createSprint() {
     }}
   >
     <div>
-      <Label class="mb-1">Sprint name</Label>
+      <Label class="mb-1" for="sprint-name">Sprint name</Label>
       <Input
         bind:value={name}
+        id="sprint-name"
         placeholder="Sprint 01"
       />
     </div>
 
     <div class="grid gap-3 sm:grid-cols-2">
       <div>
-        <Label class="mb-1">Start date</Label>
+        <Label class="mb-1" for="sprint-start-date">Start date</Label>
         <Input
           bind:value={startDate}
           class="h-9"
+          id="sprint-start-date"
           type="date"
         />
       </div>
       <div>
-        <Label class="mb-1">End date</Label>
+        <Label class="mb-1" for="sprint-end-date">End date</Label>
         <Input
           bind:value={endDate}
           class="h-9"
+          id="sprint-end-date"
           type="date"
         />
       </div>
     </div>
 
     <div>
-      <Label class="mb-1">Sprint description</Label>
+      <Label class="mb-1" for="sprint-description">Sprint description</Label>
       <Textarea
         bind:value={description}
+        id="sprint-description"
         class="min-h-20"
         placeholder="Goal, scope, and handoff notes"
       />

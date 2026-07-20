@@ -1,8 +1,9 @@
 <script lang="ts">
+import { Button } from "@workspace/ui/components/button";
+import { Input } from "@workspace/ui/components/input";
 import ChevronRight from "lucide-svelte/icons/chevron-right";
 import Plus from "lucide-svelte/icons/plus";
 import {
-  compareIssues,
   groupIssues,
   type IssueDisplayOptions,
   type IssueGroup,
@@ -21,7 +22,6 @@ let {
   displayOptions,
   issues,
   members,
-  onMoveIssue,
   onQuickCreate,
   onSelect,
   onUpdateIssueFor,
@@ -31,11 +31,6 @@ let {
   displayOptions: IssueDisplayOptions;
   issues: Issue[];
   members: WorkspaceMember[];
-  onMoveIssue: (
-    issue: Issue,
-    stateId: IssueState["_id"],
-    position: number
-  ) => Promise<void>;
   onQuickCreate: (state: IssueState, title: string) => Promise<void>;
   onSelect: (issue: Issue) => void;
   onUpdateIssueFor: (issue: Issue, input: UpdateIssueInput) => Promise<void>;
@@ -59,23 +54,6 @@ function toggleGroup(groupId: string) {
     : [...collapsedGroupIds, groupId];
 }
 
-function positionForIssue(issue: Issue) {
-  return issue.position ?? issue._creationTime;
-}
-
-async function handleMoveToState(issue: Issue, stateId: IssueState["_id"]) {
-  const targetIssues = issues
-    .filter(
-      (candidate) =>
-        candidate.stateId === stateId && candidate._id !== issue._id
-    )
-    .toSorted((left, right) => compareIssues(left, right, "manual"));
-  const lastIssue = targetIssues.at(-1);
-  const position = lastIssue ? positionForIssue(lastIssue) + 1000 : Date.now();
-
-  await onMoveIssue(issue, stateId, position);
-}
-
 async function submitQuickCreate(group: IssueGroup) {
   const title = (quickTitles[group.id] ?? "").trim();
 
@@ -96,44 +74,45 @@ async function submitQuickCreate(group: IssueGroup) {
 
 <div class="flex flex-col">
   {#each groups as group (group.id)}
-    <section aria-label={`${group.name} group`} class="border-b border-white/[0.06]">
+    <section aria-label={`${group.name} group`} class="border-b border-border">
       <div class="flex items-center gap-2 px-3 py-2.5">
-        <button
+        <Button
           aria-expanded={!isCollapsed(group.id)}
           aria-label={`Toggle ${group.name} group`}
-          class="grid size-5 place-items-center rounded text-zinc-600 transition hover:bg-white/[0.06] hover:text-zinc-300"
+          class="size-5"
           onclick={() => toggleGroup(group.id)}
-          type="button"
+          size="icon-xs"
+          variant="ghost"
         >
           <ChevronRight
             class="size-3.5 transition-transform {isCollapsed(group.id)
               ? ''
               : 'rotate-90'}"
           />
-        </button>
+        </Button>
         {#if group.state}
           <StateTypeIcon
             class="size-3.5"
-            color={group.state.color}
             type={group.state.type}
           />
         {:else if group.priority}
           <PriorityIcon class="size-3.5" priority={group.priority} />
         {/if}
-        <h3 class="text-sm font-medium text-zinc-200">{group.name}</h3>
-        <span class="text-sm tabular-nums text-zinc-500">
+        <h3 class="text-sm font-medium text-foreground">{group.name}</h3>
+        <span class="text-sm tabular-nums text-muted-foreground">
           {group.issues.length}
         </span>
         {#if group.state}
-          <button
+          <Button
             aria-label={`New work item in ${group.name}`}
-            class="ml-1 grid size-5 place-items-center rounded text-zinc-600 transition hover:bg-white/[0.06] hover:text-zinc-300"
+            class="ml-1 size-5"
             onclick={() =>
               document.getElementById(`list-quick-add-${group.id}`)?.focus()}
-            type="button"
+            size="icon-xs"
+            variant="ghost"
           >
             <Plus class="size-3.5" />
-          </button>
+          </Button>
         {/if}
       </div>
 
@@ -141,20 +120,20 @@ async function submitQuickCreate(group: IssueGroup) {
         <div>
           {#each group.issues as issue (issue._id)}
             <div
-              class="flex min-h-11 items-center gap-3 border-t border-white/[0.04] py-2 pr-3 pl-10 transition hover:bg-white/[0.03] {selectedIssueId ===
+              class="flex min-h-11 items-center gap-3 border-t border-border py-2 pr-3 pl-10 transition-colors hover:bg-muted/50 {selectedIssueId ===
               issue._id
-                ? 'bg-amber-400/[0.04]'
+                ? 'bg-accent/50'
                 : ''}"
             >
               {#if displayOptions.properties.key}
                 <span
-                  class="w-16 shrink-0 font-mono text-[11px] text-zinc-500"
+                   class="w-16 shrink-0 font-mono text-meta text-muted-foreground"
                 >
                   {issue.identifier}
                 </span>
               {/if}
               <button
-                class="min-w-0 flex-1 cursor-pointer truncate text-left text-[13px] font-medium text-zinc-100 transition hover:text-amber-300"
+                class="min-w-0 flex-1 cursor-pointer truncate text-left text-sm font-medium text-foreground transition-colors hover:text-primary"
                 onclick={() => onSelect(issue)}
                 type="button"
               >
@@ -164,10 +143,8 @@ async function submitQuickCreate(group: IssueGroup) {
                 <IssuePropertyChips
                   {issue}
                   {members}
-                  onMoveToState={(stateId) => handleMoveToState(issue, stateId)}
                   onUpdate={(input) => onUpdateIssueFor(issue, input)}
                   properties={displayOptions.properties}
-                  {states}
                 />
               </div>
             </div>
@@ -175,16 +152,16 @@ async function submitQuickCreate(group: IssueGroup) {
 
           {#if group.state}
             <form
-              class="flex items-center gap-2 border-t border-white/[0.04] py-2 pr-3 pl-10 transition focus-within:bg-white/[0.02]"
+              class="flex items-center gap-2 border-t border-border py-2 pr-3 pl-10 transition-colors focus-within:bg-muted/30"
               onsubmit={(event) => {
                 event.preventDefault();
                 submitQuickCreate(group);
               }}
             >
-              <Plus class="size-3.5 shrink-0 text-zinc-600" />
-              <input
+              <Plus class="size-3.5 shrink-0 text-muted-foreground" />
+              <Input
                 aria-label={`Quick issue title for ${group.name}`}
-                class="min-w-0 flex-1 bg-transparent text-[13px] text-zinc-100 outline-none placeholder:text-zinc-600"
+                class="h-6 min-w-0 flex-1 border-0 bg-transparent px-0 text-sm shadow-none focus-visible:ring-0"
                 id={`list-quick-add-${group.id}`}
                 oninput={(event) =>
                   (quickTitles = {
@@ -195,14 +172,14 @@ async function submitQuickCreate(group: IssueGroup) {
                 value={quickTitles[group.id] ?? ""}
               />
               {#if (quickTitles[group.id] ?? "").trim()}
-                <button
+                <Button
                   aria-label={`Add issue to ${group.name}`}
-                  class="h-6 shrink-0 rounded bg-amber-400 px-2 text-[11px] font-semibold text-black transition hover:bg-amber-300 disabled:opacity-50"
                   disabled={creatingGroupId === group.id}
+                  size="xs"
                   type="submit"
                 >
                   {creatingGroupId === group.id ? "Adding…" : "Add"}
-                </button>
+                </Button>
               {/if}
             </form>
           {/if}

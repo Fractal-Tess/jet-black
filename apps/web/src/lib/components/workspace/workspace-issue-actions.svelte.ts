@@ -6,6 +6,7 @@ import type {
   CreateIssueInput,
   CreateLabelInput,
   Issue,
+  IssueComment,
   IssueLabel,
   IssueState,
   UpdateIssueInput,
@@ -20,12 +21,18 @@ export function createWorkspaceIssueActions(deps: WorkspaceActionDeps) {
   const archiveIssue = useMutation(api.mutations.issues.archive);
   const addAttachment = useMutation(api.mutations.attachments.addLink);
   const createComment = useMutation(api.mutations.comments.create);
+  const updateComment = useMutation(api.mutations.comments.update);
+  const removeComment = useMutation(api.mutations.comments.remove);
   const createLabel = useMutation(api.mutations.labels.create);
   const toggleIssueLabel = useMutation(api.mutations.labels.toggleForIssue);
+  const createProjectModule = useMutation(api.mutations.modules.create);
 
   let creating = $state(false);
 
-  async function onCreateIssue(input: CreateIssueInput) {
+  async function onCreateIssue(
+    input: CreateIssueInput,
+    options?: { navigate?: boolean }
+  ) {
     const activeProject = deps.getActiveProject();
 
     if (!activeProject) {
@@ -39,6 +46,10 @@ export function createWorkspaceIssueActions(deps: WorkspaceActionDeps) {
         ...input,
         projectId: activeProject._id,
       });
+
+      if (options?.navigate === false) {
+        return;
+      }
       deps.setSelectedIssueId(issueId);
 
       const viewerData = deps.getViewerData();
@@ -58,8 +69,17 @@ export function createWorkspaceIssueActions(deps: WorkspaceActionDeps) {
   }
 
   async function onQuickCreateIssue(state: IssueState, title: string) {
-    await onCreateIssue({
+    const activeProject = deps.getActiveProject();
+
+    if (!activeProject) {
+      return;
+    }
+
+    // Quick create stays in place — no selection change or navigation, so the
+    // board doesn't remount mid-typing when adding several issues in a row.
+    await createIssue({
       priority: "medium",
+      projectId: activeProject._id,
       stateId: state._id,
       title,
     });
@@ -101,7 +121,10 @@ export function createWorkspaceIssueActions(deps: WorkspaceActionDeps) {
     });
   }
 
-  async function onAddComment(body: string) {
+  async function onAddComment(
+    body: string,
+    parentCommentId?: IssueComment["_id"]
+  ) {
     const selectedIssue = deps.getSelectedIssue();
 
     if (!selectedIssue) {
@@ -110,7 +133,16 @@ export function createWorkspaceIssueActions(deps: WorkspaceActionDeps) {
     await createComment({
       body,
       issueId: selectedIssue._id,
+      parentCommentId,
     });
+  }
+
+  async function onUpdateComment(commentId: IssueComment["_id"], body: string) {
+    await updateComment({ body, commentId });
+  }
+
+  async function onDeleteComment(commentId: IssueComment["_id"]) {
+    await removeComment({ commentId });
   }
 
   async function onAddAttachment(input: AddAttachmentInput) {
@@ -135,6 +167,22 @@ export function createWorkspaceIssueActions(deps: WorkspaceActionDeps) {
     await createLabel({
       ...input,
       projectId: activeProject._id,
+    });
+  }
+
+  async function onCreateModuleForIssue(name: string) {
+    const selectedIssue = deps.getSelectedIssue();
+
+    if (!selectedIssue) {
+      return;
+    }
+    const moduleId = await createProjectModule({
+      name,
+      projectId: selectedIssue.projectId,
+    });
+    await updateIssue({
+      issueId: selectedIssue._id,
+      moduleId,
     });
   }
 
@@ -200,11 +248,14 @@ export function createWorkspaceIssueActions(deps: WorkspaceActionDeps) {
     onArchiveIssue,
     onCreateIssue,
     onCreateLabel,
+    onCreateModuleForIssue,
     onCreateSubIssue,
+    onDeleteComment,
     onMoveIssue,
     onQuickCreateIssue,
     onReorderIssue: onMoveIssue,
     onToggleLabel,
+    onUpdateComment,
     onUpdateIssue,
     onUpdateIssueFor,
   };

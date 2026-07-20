@@ -17,27 +17,27 @@ let {
 
 {#if error}
   <div
-    class="rounded-xl border border-red-400/20 bg-red-400/5 p-4 text-sm text-red-200"
+      class="rounded-xl border border-destructive/20 bg-destructive/5 p-4 text-sm text-destructive"
   >
     Could not load your workspace: {error.message}
   </div>
 {:else if loading}
   <div
-    class="grid min-h-96 place-items-center rounded-xl border border-white/10 bg-[#151616] text-sm text-zinc-500"
+      class="grid min-h-96 place-items-center rounded-xl border border-border bg-card text-sm text-muted-foreground shadow-sm"
   >
     Loading workspace data…
   </div>
 {:else if !viewerData?.activeWorkspace}
   <div
-    class="grid min-h-96 place-items-center rounded-xl border border-white/10 bg-[#151616] text-center"
+      class="grid min-h-96 place-items-center rounded-xl border border-border bg-card text-center shadow-sm"
   >
     <div>
-      <p class="text-sm text-zinc-400">No workspace found.</p>
-      <p class="mt-1 text-xs text-zinc-600">
+      <p class="text-sm text-muted-foreground">No workspace found.</p>
+      <p class="mt-1 text-xs text-muted-foreground">
         Set up your workspace to start collaborating.
       </p>
       <a
-        class="mt-4 inline-flex h-9 items-center rounded-md bg-amber-400 px-4 text-xs font-semibold text-black transition hover:bg-amber-300"
+        class="mt-4 inline-flex h-9 items-center rounded-lg bg-primary px-4 text-xs font-semibold text-primary-foreground transition-colors hover:bg-primary/80"
         href="/onboarding"
       >
         Set up workspace
@@ -46,18 +46,18 @@ let {
   </div>
 {:else if !activeProject}
   <div
-    class="grid min-h-96 place-items-center rounded-xl border border-white/10 bg-[#151616] text-center"
+      class="grid min-h-96 place-items-center rounded-xl border border-border bg-card text-center shadow-sm"
   >
     <div>
-      <p class="text-sm text-zinc-400">
+      <p class="text-sm text-muted-foreground">
         Welcome to {viewerData?.activeWorkspace?.name ?? "your workspace"}.
       </p>
-      <p class="mt-1 text-xs text-zinc-600">
+      <p class="mt-1 text-xs text-muted-foreground">
         Create your first project to get started.
       </p>
       {#if viewerData?.activeWorkspace}
         <a
-          class="mt-4 inline-flex h-9 items-center rounded-md bg-amber-400 px-4 text-xs font-semibold text-black transition hover:bg-amber-300"
+        class="mt-4 inline-flex h-9 items-center rounded-lg bg-primary px-4 text-xs font-semibold text-primary-foreground transition-colors hover:bg-primary/80"
           href={workspaceProjectsHref(viewerData.activeWorkspace.slug)}
         >
           Create project

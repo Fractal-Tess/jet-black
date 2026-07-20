@@ -17,7 +17,6 @@ let {
   title,
   entityName,
   entitySubtitle,
-  entityColor,
   entityInitials,
   role,
   rootKey,
@@ -27,7 +26,6 @@ let {
   title: string;
   entityName: string;
   entitySubtitle?: string;
-  entityColor?: string;
   entityInitials?: string;
   role?: WorkspaceRole;
   rootKey?: string;
@@ -44,7 +42,6 @@ const currentPath = $derived(page.url.pathname);
       {title}
       {entityName}
       {entitySubtitle}
-      {entityColor}
       {entityInitials}
     />
   {/snippet}

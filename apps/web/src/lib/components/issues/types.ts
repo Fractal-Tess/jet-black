@@ -50,6 +50,10 @@ export type IssueComment = FunctionReturnType<
   typeof api.queries.comments.listForIssue
 >[number];
 
+export type IssueActivity = FunctionReturnType<
+  typeof api.queries.activities.listForIssue
+>[number];
+
 export type IssueAttachment = FunctionReturnType<
   typeof api.queries.attachments.listForIssue
 >[number];
@@ -64,6 +68,10 @@ export type WorkspaceMember = FunctionReturnType<
 
 export type DashboardOverview = FunctionReturnType<
   typeof api.queries.dashboard.overviewForWorkspace
+>;
+
+export type WorkspaceAnalyticsData = FunctionReturnType<
+  typeof api.queries.dashboard.analyticsForWorkspace
 >;
 
 export type AddAttachmentInput = Omit<
@@ -114,4 +122,28 @@ export type UpdateProjectPageInput = Omit<
 export type CreateSprintInput = Omit<
   FunctionArgs<typeof api.mutations.sprints.create>,
   "projectId"
+>;
+
+export type ModuleDetail = FunctionReturnType<typeof api.queries.modules.get>;
+
+export type ModuleLink = NonNullable<ModuleDetail>["links"][number];
+
+export type UpdateProjectModuleInput = Omit<
+  FunctionArgs<typeof api.mutations.modules.update>,
+  "moduleId"
+>;
+
+export type AddModuleLinkInput = Omit<
+  FunctionArgs<typeof api.mutations.modules.addLink>,
+  "moduleId"
+>;
+
+export type UpdateModuleLinkInput = Omit<
+  FunctionArgs<typeof api.mutations.modules.updateLink>,
+  "linkId"
+>;
+
+export type ModuleIssueAssignmentInput = Omit<
+  FunctionArgs<typeof api.mutations.modules.addIssueAssignment>,
+  "moduleId"
 >;

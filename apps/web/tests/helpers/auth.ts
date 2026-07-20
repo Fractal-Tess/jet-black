@@ -23,7 +23,9 @@ export async function waitForHydration(page: Page) {
 }
 
 export async function waitForDashboardReady(page: Page) {
-  const sidebarReady = page.getByRole("link", { exact: true, name: "Home" });
+  const sidebarReady = page
+    .locator("aside")
+    .getByRole("link", { exact: true, name: "Home" });
   await expect(sidebarReady).toBeVisible({ timeout: 15_000 });
 
   const dashboardReady = page.getByRole("button", { name: "Add work item" });
@@ -100,7 +102,7 @@ export async function fillMainIssueTitle(page: Page, title: string) {
   await page.getByRole("button", { name: "Add work item" }).click();
 
   // The modal shows a "Title" input; wait for it to be editable
-  const issueTitle = page.getByLabel("Title").first();
+  const issueTitle = page.getByPlaceholder("What needs to be done?");
   await expect(issueTitle).toBeEditable({ timeout: 10_000 });
 
   for (let attempt = 0; attempt < 3; attempt += 1) {
@@ -186,14 +188,23 @@ export async function expectSignInFailure(
 }
 
 export async function signOutWithUi(page: Page) {
+  const userMenuTrigger = page.getByRole("button", { name: "User menu" });
   const signOutButton = page.getByRole("button", { name: "Sign out" });
 
   for (let attempt = 0; attempt < 3; attempt += 1) {
-    await signOutButton.click({ force: true });
-
     try {
+      if (LOGIN_WITHOUT_QUERY_URL_PATTERN.test(page.url())) {
+        return;
+      }
+
+      if (!(await signOutButton.isVisible())) {
+        await userMenuTrigger.click();
+        await expect(signOutButton).toBeVisible({ timeout: 5000 });
+      }
+
+      await signOutButton.click({ force: true });
       await expect(page).toHaveURL(LOGIN_WITHOUT_QUERY_URL_PATTERN, {
-        timeout: 5000,
+        timeout: 10_000,
       });
       return;
     } catch (error) {
@@ -212,6 +223,13 @@ export async function deleteCurrentAccountWithUi(page: Page) {
 
   for (let attempt = 0; attempt < 3; attempt += 1) {
     try {
+      if (!(await deleteAccountBtn.isVisible())) {
+        await page.goto("/settings/profile/danger");
+        await expect(
+          page.getByRole("heading", { name: "Danger zone" })
+        ).toBeVisible({ timeout: 10_000 });
+      }
+
       await expect(deleteAccountBtn).toBeVisible({ timeout: 5000 });
       await deleteAccountBtn.click();
 

@@ -1,5 +1,7 @@
 import type { Project, ViewerData } from "$lib/components/issues/types";
 
+export type WorkspacePage = "analytics" | "home";
+
 export type ProjectModule =
   | "intake"
   | "issues"
@@ -35,6 +37,12 @@ export function workspaceProjectsHref(
   return `${workspaceHref(workspace)}/projects`;
 }
 
+export function workspaceAnalyticsHref(
+  workspace: Pick<WorkspaceForHref, "slug"> | string
+) {
+  return `${workspaceHref(workspace)}/analytics`;
+}
+
 export function projectModuleHref(input: {
   module?: ProjectModule;
   projectId: Project["_id"] | string;
@@ -55,6 +63,14 @@ export function issueHref(input: {
     projectId: input.projectId,
     workspaceSlug: input.workspaceSlug,
   })}/${input.issueId}`;
+}
+
+export function projectModuleDetailHref(input: {
+  moduleId: string;
+  projectId: Project["_id"] | string;
+  workspaceSlug: string;
+}) {
+  return `${workspaceProjectsHref(input.workspaceSlug)}/${input.projectId}/modules/${input.moduleId}`;
 }
 
 export function normalizeProjectModule(value?: string): ProjectModule {

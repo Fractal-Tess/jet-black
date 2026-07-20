@@ -42,15 +42,10 @@ test.describe("project sprints", () => {
         .locator("article")
         .filter({ hasText: sprintName });
       await expect(sprintCard).toBeVisible();
-      const ticketSelect = sprintCard.getByLabel("Add ticket to sprint");
-      const ticketOption = ticketSelect
-        .locator("option")
-        .filter({ hasText: issueTitle })
-        .first();
-      const ticketOptionValue = await ticketOption.getAttribute("value");
-
-      expect(ticketOptionValue).not.toBeNull();
-      await ticketSelect.selectOption(ticketOptionValue ?? "");
+      await sprintCard
+        .getByRole("button", { name: "Select a ticket…" })
+        .click();
+      await page.getByRole("option", { name: issueTitle }).click();
 
       await expect(sprintCard).toContainText(issueTitle);
       await expect(sprintCard).toContainText("0 / 1 tickets done");

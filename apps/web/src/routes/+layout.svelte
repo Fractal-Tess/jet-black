@@ -1,5 +1,6 @@
 <script lang="ts">
 import { setupAuth, setupConvex } from "convex-svelte";
+import { ModeWatcher } from "mode-watcher";
 import { onMount, untrack } from "svelte";
 import "../app.css";
 import { authClient } from "$lib/auth-client";
@@ -61,5 +62,10 @@ onMount(() => {
     content="A real-time workspace for projects, issues, and code review."
   />
 </svelte:head>
+
+<ModeWatcher
+  defaultMode="dark"
+  themeColors={{ dark: "#0a0a0a", light: "#ffffff" }}
+/>
 
 {@render children()}

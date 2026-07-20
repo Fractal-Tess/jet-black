@@ -7,9 +7,9 @@ import {
   signInWithUi,
 } from "./helpers/auth";
 
-const REORDER_UP_LABEL_PATTERN = /Reorder .* up/;
 const PRIORITY_HIGH_LABEL_PATTERN = /Priority High/;
 const INTAKE_URL_PATTERN = /\/intake$/;
+const PROJECT_TICKETS_URL_PATTERN = /\/projects\/[^/]+\/tickets/;
 
 test.describe("issue workspace", () => {
   test("creates, updates, and comments on an issue", async ({ page }) => {
@@ -30,7 +30,8 @@ test.describe("issue workspace", () => {
       await page
         .getByLabel("Issue description")
         .fill("This issue was created by Playwright.");
-      await page.getByLabel("Priority").selectOption("high");
+      await page.getByLabel("Priority", { exact: true }).click();
+      await page.getByRole("option", { name: "High" }).click();
       await page.getByRole("button", { name: "Create work item" }).click();
 
       await expect(page.getByRole("heading", { name: title })).toBeVisible();
@@ -39,34 +40,48 @@ test.describe("issue workspace", () => {
       await expect(
         issueCard.getByLabel(PRIORITY_HIGH_LABEL_PATTERN)
       ).toBeVisible();
-      await issueCard.getByLabel("Move").click();
-      await page.getByRole("menuitem", { name: "Done" }).click();
+      // Move to Done via the detail state dropdown (default state is Backlog)
+      await page.getByRole("button", { exact: true, name: "Backlog" }).click();
+      await page.getByRole("button", { exact: true, name: "Done" }).click();
       await expect(page.getByLabel("Done column")).toContainText(title);
 
-      await page.getByRole("button", { name: "Edit" }).click();
-      await page.getByLabel("Title", { exact: true }).fill(updatedTitle);
-      await page.getByLabel("Estimate", { exact: true }).fill("3");
-      await page.getByLabel("Start date", { exact: true }).fill("2026-07-14");
-      await page.locator("[data-testid='issue-state-select']").selectOption({
-        label: "In progress",
-      });
-      await page.getByLabel("Target date", { exact: true }).fill("2026-07-21");
-      await page.getByRole("button", { name: "Save changes" }).click();
-
+      // Inline title edit in the issue detail header
+      await page.getByRole("button", { exact: true, name: title }).click();
+      const titleInput = page.getByLabel("Issue title", { exact: true });
+      await titleInput.fill(updatedTitle);
+      await titleInput.press("Enter");
       await expect(
         page.getByRole("heading", { name: updatedTitle })
       ).toBeVisible();
-      await expect(page.getByText("3 points")).toBeVisible();
-      await expect(page.getByText("2026-07-14")).toBeVisible();
-      await expect(page.getByText("2026-07-21")).toBeVisible();
+
+      // State via the properties dropdown (current state is Done)
+      await page.getByRole("button", { exact: true, name: "Done" }).click();
+      await page
+        .getByRole("button", { exact: true, name: "In progress" })
+        .click();
       await expect(page.getByLabel("In progress column")).toContainText(
         updatedTitle
       );
 
-      await page.getByLabel("New label name").fill(label);
+      // Estimate is picked from story points
+      const estimateTrigger = page.getByLabel("Estimate", { exact: true });
+      await estimateTrigger.click();
+      await page.getByRole("option", { exact: true, name: "3 points" }).click();
+      await expect(estimateTrigger).toContainText("3 points");
+
+      // Start and due dates via the date pickers
+      await page.getByText("Add start date").click();
+      await page.getByRole("button", { exact: true, name: "14" }).click();
+      await expect(page.getByText("Jul 14, 2026")).toBeVisible();
+      await page.getByText("Add due date").click();
+      await page.getByRole("button", { exact: true, name: "21" }).click();
+      await expect(page.getByText("Jul 21, 2026")).toBeVisible();
+
+      // Create and toggle a label from the labels dropdown
+      await page.getByRole("button", { name: "+ Add labels" }).click();
+      await page.getByPlaceholder("New label").fill(label);
       await page.getByRole("button", { name: "Create label" }).click();
-      await expect(page.getByLabel(`Toggle ${label} label`)).toBeVisible();
-      await page.getByLabel(`Toggle ${label} label`).check();
+      await page.getByRole("button", { exact: true, name: label }).click();
       await expect(
         page
           .locator("article")
@@ -74,18 +89,23 @@ test.describe("issue workspace", () => {
           .getByText(label)
       ).toBeVisible();
 
-      await page.getByLabel("Attachment name").fill(attachmentName);
-      await page.getByLabel("Attachment URL").fill(attachmentUrl);
+      await page.getByRole("button", { name: "Add attachment" }).click();
+      await page.getByPlaceholder("Attachment name").fill(attachmentName);
+      await page
+        .getByPlaceholder("https://example.com/spec")
+        .fill(attachmentUrl);
       await page.getByRole("button", { name: "Add attachment" }).click();
       await expect(
         page.getByRole("link", { name: attachmentName })
       ).toBeVisible();
 
-      await page.getByLabel("Sub-issue title").fill(subIssueTitle);
+      await page.getByRole("button", { name: "Add sub-issue" }).click();
+      await page.getByPlaceholder("Sub-issue title").fill(subIssueTitle);
       await page.getByRole("button", { exact: true, name: "Add" }).click();
       await expect(
         page.locator("article").filter({ hasText: subIssueTitle })
-      ).toHaveCount(2);
+      ).toHaveCount(1);
+      await expect(page.getByText("1 children")).toBeVisible();
 
       await page.getByLabel("New comment").fill(comment);
       await page.getByRole("button", { exact: true, name: "Comment" }).click();
@@ -107,11 +127,13 @@ test.describe("issue workspace", () => {
       name: "Order User",
       prefix: "issues-order",
     });
-    const firstTitle = "Wire realtime issue updates";
+    const firstTitle = `Ordered base issue ${crypto.randomUUID()}`;
     const secondTitle = `Ordered issue ${crypto.randomUUID()}`;
 
     try {
       const todoColumn = page.getByLabel("Todo column");
+      await page.getByLabel("Quick issue title for Todo").fill(firstTitle);
+      await page.getByRole("button", { name: "Add issue to Todo" }).click();
       await expect(todoColumn).toContainText(firstTitle);
 
       await page.getByLabel("Quick issue title for Todo").fill(secondTitle);
@@ -126,11 +148,28 @@ test.describe("issue workspace", () => {
         initialColumnText.indexOf(secondTitle)
       );
 
-      await page
+      // Drag the second card onto the top half of the first card so the
+      // drop-position indicator places it before the first issue.
+      const firstCard = page.locator("article").filter({ hasText: firstTitle });
+      const secondCard = page
         .locator("article")
-        .filter({ hasText: secondTitle })
-        .getByLabel(REORDER_UP_LABEL_PATTERN)
-        .click();
+        .filter({ hasText: secondTitle });
+      const targetBox = await firstCard.boundingBox();
+
+      if (!targetBox) {
+        throw new Error("Expected the first issue card to be visible");
+      }
+
+      const dataTransfer = await page.evaluateHandle(() => new DataTransfer());
+      const topEdge = {
+        clientX: targetBox.x + targetBox.width / 2,
+        clientY: targetBox.y + 2,
+        dataTransfer,
+      };
+      await secondCard.dispatchEvent("dragstart", { dataTransfer });
+      await firstCard.dispatchEvent("dragover", topEdge);
+      await firstCard.dispatchEvent("drop", topEdge);
+      await secondCard.dispatchEvent("dragend", { dataTransfer });
 
       await expect
         .poll(async () => {
@@ -159,6 +198,10 @@ test.describe("issue workspace", () => {
       await page.getByRole("button", { name: "Add issue to Done" }).click();
 
       await expect(page.getByLabel("Done column")).toContainText(title);
+      await page
+        .locator("article")
+        .filter({ hasText: title })
+        .click({ force: true });
       await expect(page.getByRole("heading", { name: title })).toBeVisible();
     } finally {
       await cleanupAccountWithUi(page, account);
@@ -171,7 +214,7 @@ test.describe("issue workspace", () => {
       prefix: "issues-archive",
     });
     const archiveTitle = `Archive issue ${crypto.randomUUID()}`;
-    const seededTitle = "Wire realtime issue updates";
+    const seededTitle = `Keep issue ${crypto.randomUUID()}`;
 
     try {
       const todoColumn = page.getByLabel("Todo column");
@@ -181,6 +224,10 @@ test.describe("issue workspace", () => {
       const seededCard = todoColumn.locator("article").filter({
         hasText: seededTitle,
       });
+
+      await page.getByLabel("Quick issue title for Todo").fill(seededTitle);
+      await page.getByRole("button", { name: "Add issue to Todo" }).click();
+      await expect(seededCard).toBeVisible({ timeout: 10_000 });
 
       await page.getByLabel("Quick issue title for Todo").fill(archiveTitle);
       await page.getByRole("button", { name: "Add issue to Todo" }).click();
@@ -199,8 +246,11 @@ test.describe("issue workspace", () => {
         page.getByRole("heading", { name: archiveTitle })
       ).toBeVisible({ timeout: 10_000 });
       await page
-        .getByRole("button", { exact: true, name: "Archive" })
-        .click({ force: true, timeout: 10_000 });
+        .getByRole("button", { name: "Issue actions" })
+        .click({ timeout: 10_000 });
+      await page
+        .getByRole("button", { exact: true, name: "Archive issue" })
+        .click({ timeout: 10_000 });
 
       await expect(archiveCard).toBeHidden({ timeout: 10_000 });
       await page.getByLabel("Search issues").fill("");
@@ -216,15 +266,23 @@ test.describe("issue workspace", () => {
       name: "List User",
       prefix: "issues-list",
     });
-    const doneTitle = "Sketch pull request review workflow";
-    const todoTitle = "Wire realtime issue updates";
+    const doneTitle = `Done listed issue ${crypto.randomUUID()}`;
+    const todoTitle = `Todo listed issue ${crypto.randomUUID()}`;
     const quickTitle = `Listed issue ${crypto.randomUUID()}`;
 
     try {
+      await page.getByLabel("Quick issue title for Todo").fill(todoTitle);
+      await page.getByRole("button", { name: "Add issue to Todo" }).click();
+      await expect(page.getByLabel("Todo column")).toContainText(todoTitle);
+
+      await page.getByLabel("Quick issue title for Done").fill(doneTitle);
+      await page.getByRole("button", { name: "Add issue to Done" }).click();
+      await expect(page.getByLabel("Done column")).toContainText(doneTitle);
+
       await page.getByRole("button", { exact: true, name: "List" }).click();
 
-      const todoGroup = page.getByLabel("Todo group");
-      const doneGroup = page.getByLabel("Done group");
+      const todoGroup = page.getByLabel("Todo group", { exact: true });
+      const doneGroup = page.getByLabel("Done group", { exact: true });
 
       await expect(todoGroup).toContainText(todoTitle);
       await expect(doneGroup).toContainText(doneTitle);
@@ -320,12 +378,10 @@ test.describe("issue workspace", () => {
       await expect(page.getByLabel("Todo column")).toContainText(title);
       await expect(secondPage.getByLabel("Todo column")).toContainText(title);
 
-      await page
-        .locator("article")
-        .filter({ hasText: title })
-        .getByLabel("Move")
-        .click();
-      await page.getByRole("menuitem", { name: "Done" }).click();
+      // Open the peek panel and move the issue via the state dropdown
+      await page.locator("article").filter({ hasText: title }).click();
+      await page.getByRole("button", { exact: true, name: "Todo" }).click();
+      await page.getByRole("button", { exact: true, name: "Done" }).click();
 
       await expect(secondPage.getByLabel("Done column")).toContainText(title);
     } finally {
@@ -344,19 +400,21 @@ test.describe("issue workspace", () => {
     try {
       await page.getByRole("button", { name: "Create project" }).click();
       await page.getByLabel("Project name").fill(projectName);
-      await page.getByLabel("Project key").fill(projectKey);
+      await page.getByLabel("Identifier").fill(projectKey);
       await page.locator("[data-testid='create-project-submit']").click();
 
-      const projectLink = page.getByRole("link", {
-        exact: true,
-        name: projectName,
-      });
+      const projectLink = page
+        .getByRole("navigation")
+        .getByRole("link", { exact: true, name: projectName });
       await expect(projectLink).toBeVisible({ timeout: 15_000 });
       await projectLink.click();
+      await expect(page).toHaveURL(PROJECT_TICKETS_URL_PATTERN);
       await expect(
-        page.getByRole("heading", { name: projectName }).first()
+        page
+          .getByRole("main")
+          .getByRole("link", { exact: true, name: projectName })
       ).toBeVisible();
-      await expect(page.getByText("0 tickets")).toBeVisible();
+      await expect(page.getByLabel("Todo column")).toBeVisible();
       await expect(
         page.getByText(`${projectKey.toUpperCase()}-1`)
       ).toBeHidden();

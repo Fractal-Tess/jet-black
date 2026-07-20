@@ -7,7 +7,6 @@ import {
   DropdownMenuTrigger,
 } from "@workspace/ui/components/dropdown-menu";
 import CalendarDays from "lucide-svelte/icons/calendar-days";
-import ChevronDown from "lucide-svelte/icons/chevron-down";
 import CircleUserRound from "lucide-svelte/icons/circle-user-round";
 import {
   type IssueDisplayProperty,
@@ -15,39 +14,25 @@ import {
   PRIORITY_ORDER,
 } from "./display-options";
 import PriorityIcon from "./PriorityIcon.svelte";
-import StateTypeIcon from "./StateTypeIcon.svelte";
-import type {
-  Issue,
-  IssueState,
-  UpdateIssueInput,
-  WorkspaceMember,
-} from "./types";
+import type { Issue, UpdateIssueInput, WorkspaceMember } from "./types";
 
 let {
   issue,
   members,
-  onMoveToState,
   onUpdate,
   properties,
-  states,
 }: {
   issue: Issue;
   members: WorkspaceMember[];
-  onMoveToState: (stateId: IssueState["_id"]) => Promise<void>;
   onUpdate: (input: UpdateIssueInput) => Promise<void>;
   properties: Record<IssueDisplayProperty, boolean>;
-  states: IssueState[];
 } = $props();
 
 const MAX_VISIBLE_LABELS = 2;
 const WHITESPACE_PATTERN = /\s+/;
 
 const chipClass =
-  "flex h-5 shrink-0 cursor-pointer items-center gap-1 rounded border border-white/10 px-1.5 text-[11px] text-zinc-400 transition hover:bg-white/[0.06] hover:text-zinc-200";
-
-const currentState = $derived(
-  states.find((state) => state._id === issue.stateId)
-);
+  "flex h-6 shrink-0 cursor-pointer items-center gap-1.5 rounded-md border border-border px-2 text-xs text-muted-foreground transition-colors hover:bg-muted hover:text-foreground";
 
 const assignee = $derived(
   issue.assigneeUserId
@@ -82,44 +67,19 @@ const isOverdue = $derived(
 );
 </script>
 
-<div class="flex flex-wrap items-center gap-1.5">
-  {#if properties.state && currentState}
-    <DropdownMenu>
-      <DropdownMenuTrigger
-        aria-label={`Move ${issue.identifier}`}
-        class={chipClass}
-        onclick={(event: MouseEvent) => event.stopPropagation()}
-        title={`State: ${currentState.name}`}
-      >
-        <StateTypeIcon
-          class="size-3"
-          color={currentState.color}
-          type={currentState.type}
-        />
-        <span class="max-w-24 truncate">{currentState.name}</span>
-        <ChevronDown class="size-2.5 text-zinc-600" />
-      </DropdownMenuTrigger>
-      <DropdownMenuContent
-        align="start"
-        class="w-40 border border-white/10 bg-[#151616]"
-      >
-        {#each states as state (state._id)}
-          <DropdownMenuItem
-            class="gap-2 text-xs text-zinc-300"
-            onclick={() => onMoveToState(state._id)}
-          >
-            <StateTypeIcon
-              class="size-3.5"
-              color={state.color}
-              type={state.type}
-            />
-            {state.name}
-          </DropdownMenuItem>
-        {/each}
-      </DropdownMenuContent>
-    </DropdownMenu>
-  {/if}
+{#snippet memberAvatar(member: WorkspaceMember, sizeClass: string)}
+  <span
+    class="grid {sizeClass} shrink-0 place-items-center overflow-hidden rounded-full bg-primary text-meta font-semibold text-primary-foreground"
+  >
+    {#if member.image}
+      <img alt="" class="size-full object-cover" src={member.image} />
+    {:else}
+      {initials(member.name)}
+    {/if}
+  </span>
+{/snippet}
 
+<div class="flex flex-wrap items-center gap-1.5">
   {#if properties.priority}
     <DropdownMenu>
       <DropdownMenuTrigger
@@ -128,15 +88,15 @@ const isOverdue = $derived(
         onclick={(event: MouseEvent) => event.stopPropagation()}
         title={`Priority: ${PRIORITY_LABELS[issue.priority]}`}
       >
-        <PriorityIcon class="size-3" priority={issue.priority} />
+        <PriorityIcon class="size-3.5" priority={issue.priority} />
       </DropdownMenuTrigger>
       <DropdownMenuContent
         align="start"
-        class="w-36 border border-white/10 bg-[#151616]"
+        class="w-36"
       >
         {#each PRIORITY_ORDER as priority (priority)}
           <DropdownMenuItem
-            class="gap-2 text-xs text-zinc-300"
+            class="gap-2 text-xs"
             onclick={() => onUpdate({ priority })}
           >
             <PriorityIcon class="size-3.5" {priority} />
@@ -156,36 +116,28 @@ const isOverdue = $derived(
         title={assignee ? `Assignee: ${assignee.name}` : "Unassigned"}
       >
         {#if assignee}
-          <span
-            class="grid size-3.5 place-items-center rounded-full bg-amber-400/90 text-[8px] font-semibold text-black"
-          >
-            {initials(assignee.name)}
-          </span>
+          {@render memberAvatar(assignee, "size-4")}
         {:else}
-          <CircleUserRound class="size-3 text-zinc-500" />
+          <CircleUserRound class="size-3.5 text-muted-foreground" />
         {/if}
       </DropdownMenuTrigger>
       <DropdownMenuContent
         align="start"
-        class="w-44 border border-white/10 bg-[#151616]"
+        class="w-44"
       >
         {#each members as member (member.id)}
           <DropdownMenuItem
-            class="gap-2 text-xs text-zinc-300"
+            class="gap-2 text-xs"
             onclick={() => onUpdate({ assigneeUserId: member.id })}
           >
-            <span
-              class="grid size-4 place-items-center rounded-full bg-amber-400/90 text-[8px] font-semibold text-black"
-            >
-              {initials(member.name)}
-            </span>
+            {@render memberAvatar(member, "size-4")}
             <span class="truncate">{member.name}</span>
           </DropdownMenuItem>
         {/each}
         {#if issue.assigneeUserId}
-          <DropdownMenuSeparator class="bg-white/10" />
+          <DropdownMenuSeparator />
           <DropdownMenuItem
-            class="gap-2 text-xs text-zinc-400"
+            class="gap-2 text-xs text-muted-foreground"
             onclick={() => onUpdate({ assigneeUserId: null })}
           >
             <CircleUserRound class="size-3.5" />
@@ -200,8 +152,7 @@ const isOverdue = $derived(
     {#each visibleLabels as label (label._id)}
       <span class={chipClass} title={label.name}>
         <span
-          class="size-1.5 rounded-full"
-          style:background-color={label.color}
+          class="size-2 rounded-full bg-primary"
         ></span>
         <span class="max-w-20 truncate">{label.name}</span>
       </span>
@@ -213,10 +164,10 @@ const isOverdue = $derived(
 
   {#if properties.dueDate && issue.targetDate}
     <span
-      class="{chipClass} {isOverdue ? 'text-red-400 hover:text-red-300' : ''}"
+      class="{chipClass} {isOverdue ? 'text-destructive hover:text-destructive' : ''}"
       title="Due date"
     >
-      <CalendarDays class="size-3" />
+      <CalendarDays class="size-3.5" />
       {formatDate(issue.targetDate)}
     </span>
   {/if}

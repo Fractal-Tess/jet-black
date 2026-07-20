@@ -1,6 +1,5 @@
 <script lang="ts">
 import {
-  compareIssues,
   groupIssues,
   type IssueDisplayOptions,
   type IssueGroup,
@@ -18,6 +17,7 @@ let {
   issues,
   members,
   onMoveIssue,
+  onOpenCreateIssue,
   onQuickCreate,
   onReorderIssue,
   onSelect,
@@ -33,6 +33,7 @@ let {
     stateId: IssueState["_id"],
     position: number
   ) => Promise<void>;
+  onOpenCreateIssue?: (stateId: IssueState["_id"]) => void;
   onQuickCreate: (state: IssueState, title: string) => Promise<void>;
   onReorderIssue: (
     issue: Issue,
@@ -120,33 +121,40 @@ async function handleDrop(event: DragEvent, group: IssueGroup) {
   }
 }
 
-async function handleReorder(
-  issue: Issue,
+async function handleDropOnCard(
   group: IssueGroup,
-  direction: "down" | "up",
-  index: number
+  index: number,
+  edge: "after" | "before"
 ) {
-  if (!group.state) {
+  const issue = issues.find((candidate) => candidate._id === draggingIssueId);
+  const target = group.issues[index];
+
+  draggingIssueId = null;
+
+  if (!(issue && target && group.state) || target._id === issue._id) {
     return;
   }
 
-  const position =
-    direction === "up"
-      ? positionBetween(group.issues[index - 2], group.issues[index - 1])
-      : positionBetween(group.issues[index + 1], group.issues[index + 2]);
+  // Compute neighbours as if the dragged issue was already removed so a
+  // same-column move lands exactly where the indicator was shown.
+  const remaining = group.issues.filter(
+    (candidate) => candidate._id !== issue._id
+  );
+  const targetIndex = remaining.findIndex(
+    (candidate) => candidate._id === target._id
+  );
+  const insertIndex = edge === "before" ? targetIndex : targetIndex + 1;
+  const position = positionBetween(
+    remaining[insertIndex - 1],
+    remaining[insertIndex]
+  );
 
-  await onReorderIssue(issue, group.state._id, position);
-}
+  if (issue.stateId === group.state._id) {
+    await onReorderIssue(issue, group.state._id, position);
+    return;
+  }
 
-async function handleMoveToState(issue: Issue, stateId: IssueState["_id"]) {
-  const targetIssues = issues
-    .filter(
-      (candidate) =>
-        candidate.stateId === stateId && candidate._id !== issue._id
-    )
-    .toSorted((left, right) => compareIssues(left, right, "manual"));
-
-  await onMoveIssue(issue, stateId, positionBetween(targetIssues.at(-1)));
+  await onMoveIssue(issue, group.state._id, position);
 }
 
 async function handleQuickCreate(group: IssueGroup, title: string) {
@@ -155,6 +163,14 @@ async function handleQuickCreate(group: IssueGroup, title: string) {
   }
 
   await onQuickCreate(group.state, title);
+}
+
+function handleOpenCreateIssue(group: IssueGroup) {
+  if (!group.state) {
+    return;
+  }
+
+  onOpenCreateIssue?.(group.state._id);
 }
 </script>
 
@@ -168,14 +184,15 @@ async function handleQuickCreate(group: IssueGroup, title: string) {
       onDragEnd={handleDragEnd}
       onDragStart={handleDragStart}
       onDrop={handleDrop}
-      onMoveToState={handleMoveToState}
+      onDropOnCard={handleDropOnCard}
+      onOpenCreateIssue={group.state && onOpenCreateIssue
+        ? handleOpenCreateIssue
+        : undefined}
       onQuickCreate={group.state ? handleQuickCreate : undefined}
-      onReorder={handleReorder}
       {onSelect}
       onUpdate={onUpdateIssueFor}
       properties={displayOptions.properties}
       {selectedIssueId}
-      {states}
     />
   {/each}
 </div>
