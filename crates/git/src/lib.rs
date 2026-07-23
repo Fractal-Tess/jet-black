@@ -1,18 +1,22 @@
 use domain::{ActionKind, ApprovedAction, Id, RelativePath, Repository, Worktree, limits};
+use fs2::FileExt;
 use sha2::{Digest, Sha256};
 use std::{
     ffi::{CString, OsStr, OsString},
-    fs::{self, File},
+    fs::{self, File, OpenOptions},
     io::{Read, Write},
     os::{
         fd::{AsRawFd, FromRawFd, OwnedFd},
-        unix::{ffi::OsStrExt, fs::MetadataExt},
+        unix::{
+            ffi::OsStrExt,
+            fs::{MetadataExt, OpenOptionsExt},
+        },
     },
     path::{Component, Path, PathBuf},
     process::{Command, ExitStatus, Stdio},
     thread,
 };
-use tempfile::NamedTempFile;
+use tempfile::{NamedTempFile, TempDir, tempdir};
 use thiserror::Error;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -35,6 +39,30 @@ pub struct GitStatusSnapshot {
     pub entries: Vec<GitStatusEntry>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WorktreeMutationManifest {
+    pub head_sha: String,
+    pub sha256: String,
+    pub changed_paths: Vec<RelativePath>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ExactCommitResult {
+    pub resulting_head_sha: String,
+    pub app_ref: String,
+}
+
+struct PreparedMutationIndex {
+    _directory: TempDir,
+    index_path: PathBuf,
+    diff: Vec<u8>,
+    snapshot: GitStatusSnapshot,
+}
+
+struct WorktreeMutationLock {
+    _file: File,
+}
+
 impl GitStatusSnapshot {
     pub fn changed_paths(&self) -> Vec<RelativePath> {
         self.entries
@@ -48,6 +76,7 @@ impl GitStatusSnapshot {
 pub struct GitService {
     repository_roots: Vec<PathBuf>,
     worktree_root: PathBuf,
+    mutation_lock_root: PathBuf,
     git_binary: PathBuf,
 }
 
@@ -55,6 +84,9 @@ impl GitService {
     pub fn new(repository_roots: Vec<PathBuf>, worktree_root: PathBuf) -> Result<Self, GitError> {
         fs::create_dir_all(&worktree_root)?;
         let worktree_root = fs::canonicalize(worktree_root)?;
+        let mutation_lock_root = worktree_root.join(".locks");
+        fs::create_dir_all(&mutation_lock_root)?;
+        let mutation_lock_root = fs::canonicalize(mutation_lock_root)?;
         let repository_roots = repository_roots
             .into_iter()
             .map(fs::canonicalize)
@@ -62,6 +94,7 @@ impl GitService {
         Ok(Self {
             repository_roots,
             worktree_root,
+            mutation_lock_root,
             git_binary: resolve_git_binary()?,
         })
     }
@@ -218,6 +251,7 @@ impl GitService {
         approved: ApprovedAction,
         content: &[u8],
     ) -> Result<(), GitError> {
+        let _lock = self.lock_worktree(worktree, true)?;
         if content.len() > limits::MAX_APPROVED_FILE_BYTES {
             return Err(GitError::ResourceLimit("approved file content"));
         }
@@ -311,25 +345,81 @@ impl GitService {
         worktree: &Worktree,
     ) -> Result<GitStatusSnapshot, GitError> {
         self.validate_worktree_identity(repository, worktree)?;
-        let head_sha = self.git_text(&worktree.path, ["rev-parse", "HEAD"])?;
-        let output = ensure_success(
-            self.git_output(
-                &worktree.path,
-                [
-                    "status",
-                    "--porcelain=v1",
-                    "-z",
-                    "--untracked-files=all",
-                    "--no-renames",
-                ],
-            )?,
-            "read worktree status",
-        )?;
-        let entries = parse_status_entries(&output.stdout)?;
-        if self.git_text(&worktree.path, ["rev-parse", "HEAD"])? != head_sha {
+        self.status_snapshot_validated(worktree)
+    }
+
+    pub fn mutation_manifest(
+        &self,
+        repository: &Repository,
+        worktree: &Worktree,
+    ) -> Result<WorktreeMutationManifest, GitError> {
+        let _lock = self.lock_worktree(worktree, false)?;
+        let (manifest, _) = self.prepare_stable_mutation(repository, worktree)?;
+        Ok(manifest)
+    }
+
+    pub fn commit_exact(
+        &self,
+        repository: &Repository,
+        worktree: &Worktree,
+        expected_head_sha: &str,
+        expected_manifest_sha256: &str,
+    ) -> Result<ExactCommitResult, GitError> {
+        let _lock = self.lock_worktree(worktree, true)?;
+        let (manifest, prepared) = self.prepare_stable_mutation(repository, worktree)?;
+        if manifest.head_sha != expected_head_sha || manifest.sha256 != expected_manifest_sha256 {
+            return Err(GitError::MutationPreviewMismatch);
+        }
+
+        let tree_sha = self.write_prepared_tree(worktree, &prepared)?;
+        if self.status_snapshot_validated(worktree)? != prepared.snapshot {
             return Err(GitError::WorktreeChangedDuringRead);
         }
-        Ok(GitStatusSnapshot { head_sha, entries })
+        let repository_path = self.validate_worktree_identity(repository, worktree)?;
+        let app_ref = format!("refs/jet-black/changesets/{}", worktree.changeset_id());
+        let resulting_head_sha = self.create_changeset_commit(
+            worktree,
+            &tree_sha,
+            expected_head_sha,
+            worktree.changeset_id(),
+        )?;
+        self.persist_changeset_ref(
+            &repository_path,
+            &app_ref,
+            &resulting_head_sha,
+            expected_head_sha.len(),
+        )?;
+        self.verify_changeset_commit(
+            &repository_path,
+            &app_ref,
+            &resulting_head_sha,
+            &tree_sha,
+            expected_head_sha,
+        )?;
+
+        Ok(ExactCommitResult {
+            resulting_head_sha,
+            app_ref,
+        })
+    }
+
+    pub fn discard_exact(
+        &self,
+        repository: &Repository,
+        worktree: &mut Worktree,
+        expected_head_sha: &str,
+        expected_manifest_sha256: &str,
+    ) -> Result<(), GitError> {
+        let _lock = self.lock_worktree(worktree, true)?;
+        let (manifest, prepared) = self.prepare_stable_mutation(repository, worktree)?;
+        if manifest.head_sha != expected_head_sha || manifest.sha256 != expected_manifest_sha256 {
+            return Err(GitError::MutationPreviewMismatch);
+        }
+        if self.status_snapshot_validated(worktree)? != prepared.snapshot {
+            return Err(GitError::WorktreeChangedDuringRead);
+        }
+        self.validate_worktree_identity(repository, worktree)?;
+        self.cleanup_worktree_locked(repository, worktree)
     }
 
     pub fn reconciliation_state(
@@ -348,6 +438,15 @@ impl GitService {
     }
 
     pub fn cleanup_worktree(
+        &self,
+        repository: &Repository,
+        worktree: &mut Worktree,
+    ) -> Result<(), GitError> {
+        let _lock = self.lock_worktree(worktree, true)?;
+        self.cleanup_worktree_locked(repository, worktree)
+    }
+
+    fn cleanup_worktree_locked(
         &self,
         repository: &Repository,
         worktree: &mut Worktree,
@@ -395,6 +494,300 @@ impl GitService {
                 Err(error)
             }
         }
+    }
+
+    fn status_snapshot_validated(
+        &self,
+        worktree: &Worktree,
+    ) -> Result<GitStatusSnapshot, GitError> {
+        let head_sha = self.git_text(&worktree.path, ["rev-parse", "HEAD"])?;
+        let output = ensure_success(
+            self.git_output(
+                &worktree.path,
+                [
+                    "status",
+                    "--porcelain=v1",
+                    "-z",
+                    "--untracked-files=all",
+                    "--ignored=matching",
+                    "--no-renames",
+                ],
+            )?,
+            "read worktree status",
+        )?;
+        let entries = parse_status_entries(&output.stdout)?;
+        if self.git_text(&worktree.path, ["rev-parse", "HEAD"])? != head_sha {
+            return Err(GitError::WorktreeChangedDuringRead);
+        }
+        Ok(GitStatusSnapshot { head_sha, entries })
+    }
+
+    fn prepare_stable_mutation(
+        &self,
+        repository: &Repository,
+        worktree: &Worktree,
+    ) -> Result<(WorktreeMutationManifest, PreparedMutationIndex), GitError> {
+        self.validate_worktree_identity(repository, worktree)?;
+        let before = self.status_snapshot_validated(worktree)?;
+        validate_mutation_status(&before)?;
+        let changed_paths = before.changed_paths();
+        let first = self.prepare_mutation_index(worktree, &before, &changed_paths)?;
+        let manifest_sha256 = mutation_manifest_digest(&before.head_sha, &first.diff);
+        drop(first);
+
+        if self.status_snapshot_validated(worktree)? != before {
+            return Err(GitError::WorktreeChangedDuringRead);
+        }
+        let prepared = self.prepare_mutation_index(worktree, &before, &changed_paths)?;
+        if mutation_manifest_digest(&before.head_sha, &prepared.diff) != manifest_sha256
+            || self.status_snapshot_validated(worktree)? != before
+        {
+            return Err(GitError::WorktreeChangedDuringRead);
+        }
+        self.validate_worktree_identity(repository, worktree)?;
+
+        Ok((
+            WorktreeMutationManifest {
+                head_sha: before.head_sha.clone(),
+                sha256: manifest_sha256,
+                changed_paths,
+            },
+            prepared,
+        ))
+    }
+
+    fn prepare_mutation_index(
+        &self,
+        worktree: &Worktree,
+        snapshot: &GitStatusSnapshot,
+        paths: &[RelativePath],
+    ) -> Result<PreparedMutationIndex, GitError> {
+        let directory = tempdir()?;
+        let index_path = directory.path().join("index");
+        let read_tree = self.git_output_with_index(
+            &worktree.path,
+            [OsStr::new("read-tree"), OsStr::new(&snapshot.head_sha)],
+            &index_path,
+            limits::MAX_CAPTURED_STREAM_BYTES,
+        )?;
+        ensure_success(read_tree, "prepare exact mutation index")?;
+        self.stage_mutation_paths(worktree, paths, &index_path)?;
+        let diff = self.staged_mutation_diff(worktree, &snapshot.head_sha, paths, &index_path)?;
+        Ok(PreparedMutationIndex {
+            _directory: directory,
+            index_path,
+            diff,
+            snapshot: snapshot.clone(),
+        })
+    }
+
+    fn write_prepared_tree(
+        &self,
+        worktree: &Worktree,
+        prepared: &PreparedMutationIndex,
+    ) -> Result<String, GitError> {
+        let tree = ensure_success(
+            self.git_output_with_index(
+                &worktree.path,
+                ["write-tree"],
+                &prepared.index_path,
+                limits::MAX_CAPTURED_STREAM_BYTES,
+            )?,
+            "write exact commit tree",
+        )?;
+        String::from_utf8(tree.stdout)
+            .map_err(|_| GitError::NonUtf8Output)
+            .map(|value| value.trim().to_owned())
+    }
+
+    fn stage_mutation_paths(
+        &self,
+        worktree: &Worktree,
+        paths: &[RelativePath],
+        index_path: &Path,
+    ) -> Result<(), GitError> {
+        let mut arguments = vec![
+            OsString::from("add"),
+            OsString::from("-A"),
+            OsString::from("--"),
+        ];
+        arguments.extend(
+            paths
+                .iter()
+                .map(|path| path.as_path().as_os_str().to_owned()),
+        );
+        let output = self.git_output_with_index(
+            &worktree.path,
+            arguments,
+            index_path,
+            limits::MAX_CAPTURED_STREAM_BYTES,
+        )?;
+        ensure_success(output, "stage exact mutation paths")?;
+        Ok(())
+    }
+
+    fn staged_mutation_diff(
+        &self,
+        worktree: &Worktree,
+        head_sha: &str,
+        paths: &[RelativePath],
+        index_path: &Path,
+    ) -> Result<Vec<u8>, GitError> {
+        let mut arguments = vec![
+            OsString::from("diff"),
+            OsString::from("--cached"),
+            OsString::from("--no-ext-diff"),
+            OsString::from("--no-textconv"),
+            OsString::from("--binary"),
+            OsString::from(head_sha),
+            OsString::from("--"),
+        ];
+        arguments.extend(
+            paths
+                .iter()
+                .map(|path| path.as_path().as_os_str().to_owned()),
+        );
+        let output = self.git_output_with_index(
+            &worktree.path,
+            arguments,
+            index_path,
+            limits::MAX_UNIFIED_DIFF_BYTES,
+        )?;
+        if output.stdout_truncated {
+            return Err(GitError::ResourceLimit("mutation diff"));
+        }
+        Ok(ensure_success(output, "calculate exact mutation diff")?.stdout)
+    }
+
+    fn create_changeset_commit(
+        &self,
+        worktree: &Worktree,
+        tree_sha: &str,
+        parent_sha: &str,
+        changeset_id: Id,
+    ) -> Result<String, GitError> {
+        let mut command = git_command(&self.git_binary, &worktree.path);
+        command
+            .env("GIT_AUTHOR_NAME", "Jet Black")
+            .env("GIT_AUTHOR_EMAIL", "jet-black@localhost")
+            .env("GIT_AUTHOR_DATE", "2000-01-01T00:00:00Z")
+            .env("GIT_COMMITTER_NAME", "Jet Black")
+            .env("GIT_COMMITTER_EMAIL", "jet-black@localhost")
+            .env("GIT_COMMITTER_DATE", "2000-01-01T00:00:00Z")
+            .args([
+                "commit-tree",
+                tree_sha,
+                "-p",
+                parent_sha,
+                "-m",
+                &format!("Jet Black changeset {changeset_id}"),
+            ]);
+        let output = ensure_success(
+            run_bounded_command(&mut command, limits::MAX_CAPTURED_STREAM_BYTES)?,
+            "create exact changeset commit",
+        )?;
+        String::from_utf8(output.stdout)
+            .map_err(|_| GitError::NonUtf8Output)
+            .map(|value| value.trim().to_owned())
+    }
+
+    fn existing_changeset_ref(
+        &self,
+        repository_path: &Path,
+        app_ref: &str,
+    ) -> Result<Option<String>, GitError> {
+        let output = self.git_output(
+            repository_path,
+            ["rev-parse", "--verify", "--quiet", app_ref],
+        )?;
+        if output.stdout_truncated || output.stderr_truncated {
+            return Err(GitError::ResourceLimit("Git process output"));
+        }
+        if !output.status.success() {
+            return Ok(None);
+        }
+        String::from_utf8(output.stdout)
+            .map_err(|_| GitError::NonUtf8Output)
+            .map(|value| Some(value.trim().to_owned()))
+    }
+
+    fn verify_changeset_commit(
+        &self,
+        repository_path: &Path,
+        app_ref: &str,
+        resulting_head_sha: &str,
+        expected_tree_sha: &str,
+        expected_parent_sha: &str,
+    ) -> Result<(), GitError> {
+        let referenced_sha = self.git_text(repository_path, ["rev-parse", "--verify", app_ref])?;
+        let parent_sha = self.git_text(
+            repository_path,
+            ["rev-parse", &format!("{resulting_head_sha}^")],
+        )?;
+        let tree_sha = self.git_text(
+            repository_path,
+            ["rev-parse", &format!("{resulting_head_sha}^{{tree}}")],
+        )?;
+        if referenced_sha != resulting_head_sha
+            || parent_sha != expected_parent_sha
+            || tree_sha != expected_tree_sha
+        {
+            return Err(GitError::CommitVerificationFailed);
+        }
+        Ok(())
+    }
+
+    fn persist_changeset_ref(
+        &self,
+        repository_path: &Path,
+        app_ref: &str,
+        resulting_head_sha: &str,
+        object_id_length: usize,
+    ) -> Result<(), GitError> {
+        let zero_object_id = "0".repeat(object_id_length);
+        let update = self.git_output(
+            repository_path,
+            ["update-ref", app_ref, resulting_head_sha, &zero_object_id],
+        )?;
+        if update.stdout_truncated || update.stderr_truncated {
+            return Err(GitError::ResourceLimit("Git process output"));
+        }
+        if update.status.success() {
+            return Ok(());
+        }
+        if self
+            .existing_changeset_ref(repository_path, app_ref)?
+            .as_deref()
+            == Some(resulting_head_sha)
+        {
+            Ok(())
+        } else {
+            Err(GitError::ChangesetRefConflict)
+        }
+    }
+
+    fn lock_worktree(
+        &self,
+        worktree: &Worktree,
+        exclusive: bool,
+    ) -> Result<WorktreeMutationLock, GitError> {
+        let path = self
+            .mutation_lock_root
+            .join(format!("{}.lock", worktree.changeset_id()));
+        ensure_lexical_child(&self.mutation_lock_root, &path)?;
+        let file = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .mode(0o600)
+            .custom_flags(libc::O_CLOEXEC | libc::O_NOFOLLOW)
+            .open(path)?;
+        if exclusive {
+            FileExt::lock_exclusive(&file)?;
+        } else {
+            FileExt::lock_shared(&file)?;
+        }
+        Ok(WorktreeMutationLock { _file: file })
     }
 
     fn ensure_repository_root(&self, path: &Path) -> Result<(), GitError> {
@@ -536,6 +929,37 @@ impl GitService {
 
 pub fn content_digest(content: &[u8]) -> String {
     format!("{:x}", Sha256::digest(content))
+}
+
+fn mutation_manifest_digest(head_sha: &str, diff: &[u8]) -> String {
+    let mut hash = Sha256::new();
+    hash.update(b"jet-black:worktree-mutation:v1");
+    hash.update((head_sha.len() as u64).to_be_bytes());
+    hash.update(head_sha.as_bytes());
+    hash.update((diff.len() as u64).to_be_bytes());
+    hash.update(diff);
+    format!("{:x}", hash.finalize())
+}
+
+fn validate_mutation_status(snapshot: &GitStatusSnapshot) -> Result<(), GitError> {
+    if snapshot
+        .entries
+        .iter()
+        .any(|entry| entry.index_status == '!' && entry.worktree_status == '!')
+    {
+        return Err(GitError::IgnoredContent);
+    }
+    if snapshot.entries.is_empty() {
+        return Err(GitError::NoChanges);
+    }
+    if snapshot
+        .entries
+        .iter()
+        .any(|entry| !matches!(entry.index_status, ' ' | '?'))
+    {
+        return Err(GitError::UnsupportedIndexState);
+    }
+    Ok(())
 }
 
 fn parse_status_entries(output: &[u8]) -> Result<Vec<GitStatusEntry>, GitError> {
@@ -839,8 +1263,20 @@ pub enum GitError {
     },
     #[error("Git returned malformed status output")]
     InvalidStatusOutput,
-    #[error("worktree HEAD changed while Git state was being read")]
+    #[error("worktree HEAD or content changed while Git state was being read")]
     WorktreeChangedDuringRead,
+    #[error("worktree has no changes to finalize")]
+    NoChanges,
+    #[error("worktree contains ignored content that is not safe to finalize")]
+    IgnoredContent,
+    #[error("worktree index contains unsupported staged changes")]
+    UnsupportedIndexState,
+    #[error("worktree no longer matches the confirmed mutation preview")]
+    MutationPreviewMismatch,
+    #[error("the application-owned changeset reference already points elsewhere")]
+    ChangesetRefConflict,
+    #[error("the resulting changeset commit could not be verified")]
+    CommitVerificationFailed,
     #[error("Git returned non-UTF-8 output")]
     NonUtf8Output,
     #[error("Git executable was not found on PATH")]

@@ -443,6 +443,114 @@ fn status_snapshot_rejects_too_many_changed_files() {
 
 #[test]
 #[serial_test::serial]
+fn exact_commit_and_discard_reject_stale_manifests() {
+    let directory = tempdir().unwrap();
+    let repo = directory.path().join("repo");
+    fs::create_dir(&repo).unwrap();
+    git(&repo, &["init", "-q"]);
+    git(&repo, &["config", "user.email", "test@example.com"]);
+    git(&repo, &["config", "user.name", "Test"]);
+    fs::write(repo.join("README.md"), "fixture\n").unwrap();
+    fs::write(repo.join(".gitignore"), "ignored.txt\n").unwrap();
+    git(&repo, &["add", "."]);
+    git(&repo, &["commit", "-qm", "fixture"]);
+
+    let service = GitService::new(
+        vec![directory.path().to_path_buf()],
+        directory.path().join("worktrees"),
+    )
+    .unwrap();
+    let registered = service.register(&repo).unwrap();
+    let changeset_id = uuid::Uuid::new_v4();
+    let mut worktree = service.create_worktree(&registered, changeset_id).unwrap();
+    fs::write(worktree.path.join("change.txt"), "first\n").unwrap();
+    let stale = service.mutation_manifest(&registered, &worktree).unwrap();
+    fs::write(worktree.path.join("change.txt"), "second\n").unwrap();
+    assert!(matches!(
+        service.commit_exact(&registered, &worktree, &stale.head_sha, &stale.sha256),
+        Err(GitError::MutationPreviewMismatch)
+    ));
+
+    let commit_manifest = service.mutation_manifest(&registered, &worktree).unwrap();
+    let committed = service
+        .commit_exact(
+            &registered,
+            &worktree,
+            &commit_manifest.head_sha,
+            &commit_manifest.sha256,
+        )
+        .unwrap();
+    let parent = Command::new("git")
+        .current_dir(&repo)
+        .args(["rev-parse", &format!("{}^", committed.resulting_head_sha)])
+        .output()
+        .unwrap();
+    assert!(parent.status.success());
+    assert_eq!(
+        String::from_utf8(parent.stdout).unwrap().trim(),
+        registered.base_sha
+    );
+    let app_ref = Command::new("git")
+        .current_dir(&repo)
+        .args(["rev-parse", "--verify", &committed.app_ref])
+        .output()
+        .unwrap();
+    assert!(app_ref.status.success());
+    assert_eq!(
+        String::from_utf8(app_ref.stdout).unwrap().trim(),
+        committed.resulting_head_sha
+    );
+    assert_eq!(
+        service
+            .commit_exact(
+                &registered,
+                &worktree,
+                &commit_manifest.head_sha,
+                &commit_manifest.sha256,
+            )
+            .unwrap(),
+        committed
+    );
+    fs::write(worktree.path.join("ignored.txt"), "ignored\n").unwrap();
+    assert!(matches!(
+        service.mutation_manifest(&registered, &worktree),
+        Err(GitError::IgnoredContent)
+    ));
+    service
+        .cleanup_worktree(&registered, &mut worktree)
+        .unwrap();
+
+    let discard_id = uuid::Uuid::new_v4();
+    let mut discard_worktree = service.create_worktree(&registered, discard_id).unwrap();
+    fs::write(discard_worktree.path.join("discard.txt"), "discard\n").unwrap();
+    let discard_manifest = service
+        .mutation_manifest(&registered, &discard_worktree)
+        .unwrap();
+    fs::write(discard_worktree.path.join("later.txt"), "later\n").unwrap();
+    assert!(matches!(
+        service.discard_exact(
+            &registered,
+            &mut discard_worktree,
+            &discard_manifest.head_sha,
+            &discard_manifest.sha256,
+        ),
+        Err(GitError::MutationPreviewMismatch)
+    ));
+    assert!(discard_worktree.path.exists());
+    fs::remove_file(discard_worktree.path.join("later.txt")).unwrap();
+    service
+        .discard_exact(
+            &registered,
+            &mut discard_worktree,
+            &discard_manifest.head_sha,
+            &discard_manifest.sha256,
+        )
+        .unwrap();
+    assert!(!discard_worktree.path.exists());
+}
+
+#[test]
+#[serial_test::serial]
 fn oversized_diff_is_rejected() {
     let directory = tempdir().unwrap();
     let repo = directory.path().join("repo");

@@ -362,6 +362,7 @@ name = "git"
 version = "0.1.0"
 dependencies = [
  "domain",
+ "fs2",
  "libc",
  "serial_test",
  "sha2",

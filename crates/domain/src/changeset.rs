@@ -89,11 +89,20 @@ impl Changeset {
         Ok(())
     }
 
-    pub fn commit(&mut self) -> Result<(), DomainError> {
-        if self.state == ChangesetState::Committed {
-            return Ok(());
+    pub fn commit(&mut self, resulting_head_sha: String) -> Result<(), DomainError> {
+        if !is_valid_object_id(&resulting_head_sha) {
+            return Err(DomainError::InvalidCommitSha);
         }
-        self.transition(ChangesetState::Committed)
+        if self.state == ChangesetState::Committed {
+            return if self.head_sha == resulting_head_sha {
+                Ok(())
+            } else {
+                Err(DomainError::CommitResultMismatch)
+            };
+        }
+        self.transition(ChangesetState::Committed)?;
+        self.head_sha = resulting_head_sha;
+        Ok(())
     }
 
     pub fn discard(&mut self) -> Result<(), DomainError> {
@@ -152,4 +161,8 @@ impl Changeset {
         self.version = self.version.saturating_add(1);
         Ok(())
     }
+}
+
+fn is_valid_object_id(value: &str) -> bool {
+    matches!(value.len(), 40 | 64) && value.bytes().all(|byte| byte.is_ascii_hexdigit())
 }

@@ -7,7 +7,8 @@ use std::path::PathBuf;
 #[test]
 fn lifecycle_methods_are_the_only_valid_transition_path() {
     let mut changeset = Changeset::new(uuid::Uuid::new_v4(), "base".into());
-    assert!(changeset.commit().is_err());
+    let commit_sha = "a".repeat(40);
+    assert!(changeset.commit(commit_sha.clone()).is_err());
     changeset.activate().unwrap();
     assert_eq!(changeset.state(), ChangesetState::Active);
     let mut failed_changeset = changeset.clone();
@@ -15,6 +16,15 @@ fn lifecycle_methods_are_the_only_valid_transition_path() {
     assert_eq!(failed_changeset.state(), ChangesetState::Failed);
     let mut reviewable_changeset = changeset.clone();
     reviewable_changeset.mark_reviewable("head".into()).unwrap();
+    let mut committed_changeset = reviewable_changeset.clone();
+    committed_changeset.commit(commit_sha.clone()).unwrap();
+    let committed_version = committed_changeset.version();
+    committed_changeset.commit(commit_sha).unwrap();
+    assert_eq!(committed_changeset.version(), committed_version);
+    assert!(matches!(
+        committed_changeset.commit("b".repeat(40)),
+        Err(domain::DomainError::CommitResultMismatch)
+    ));
     reviewable_changeset.fail().unwrap();
     assert_eq!(reviewable_changeset.state(), ChangesetState::Failed);
     let mut run = Run::new(changeset.id);

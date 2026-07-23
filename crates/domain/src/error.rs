@@ -20,4 +20,8 @@ pub enum DomainError {
     ApprovalRunMismatch,
     #[error("invalid relative path: {0}")]
     InvalidRelativePath(String),
+    #[error("invalid resulting commit SHA")]
+    InvalidCommitSha,
+    #[error("changeset is already committed with a different result")]
+    CommitResultMismatch,
 }

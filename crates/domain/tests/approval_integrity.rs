@@ -1,4 +1,7 @@
-use domain::{ActionKind, ActionProposal, Approval, ApprovalScope, RelativePath};
+use domain::{
+    ActionKind, ActionProposal, Approval, ApprovalScope, ChangesetMutationKind,
+    ChangesetMutationScope, RelativePath,
+};
 use uuid::Uuid;
 
 fn scope(expires: i64) -> ApprovalScope {
@@ -60,6 +63,52 @@ fn changed_scope_expiry_and_reuse_are_rejected() {
         approval.consume_for_run(approval.run_id(), &original, 2),
         Err(domain::DomainError::ApprovalReused)
     ));
+}
+
+#[test]
+fn mutation_confirmation_digest_binds_every_field_and_operation() {
+    let original = ChangesetMutationScope {
+        kind: ChangesetMutationKind::Commit,
+        repository_id: Uuid::new_v4(),
+        changeset_id: Uuid::new_v4(),
+        checkpoint_id: Uuid::new_v4(),
+        expected_version: 3,
+        base_sha: "a".repeat(40),
+        expected_head_sha: "b".repeat(40),
+        manifest_sha256: "c".repeat(64),
+    };
+    let original_digest = original.digest();
+    let mut variants = Vec::new();
+    let mut changed = original.clone();
+    changed.kind = ChangesetMutationKind::Discard;
+    variants.push(changed);
+    let mut changed = original.clone();
+    changed.repository_id = Uuid::new_v4();
+    variants.push(changed);
+    let mut changed = original.clone();
+    changed.changeset_id = Uuid::new_v4();
+    variants.push(changed);
+    let mut changed = original.clone();
+    changed.checkpoint_id = Uuid::new_v4();
+    variants.push(changed);
+    let mut changed = original.clone();
+    changed.expected_version += 1;
+    variants.push(changed);
+    let mut changed = original.clone();
+    changed.base_sha = "d".repeat(40);
+    variants.push(changed);
+    let mut changed = original.clone();
+    changed.expected_head_sha = "e".repeat(40);
+    variants.push(changed);
+    let mut changed = original.clone();
+    changed.manifest_sha256 = "f".repeat(64);
+    variants.push(changed);
+
+    assert!(
+        variants
+            .into_iter()
+            .all(|changed| changed.digest() != original_digest)
+    );
 }
 
 #[test]

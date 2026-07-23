@@ -7,6 +7,7 @@ rust-version.workspace = true
 
 [dependencies]
 domain.workspace = true
+fs2.workspace = true
 libc = "0.2"
 sha2.workspace = true
 tempfile.workspace = true
