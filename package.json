@@ -3,9 +3,12 @@
   "version": "0.1.0",
   "private": true,
   "scripts": {
-    "dev": "infisical run -- turbo dev",
+    "dev": "turbo dev --filter=@workspace/web",
     "lint": "bunx turbo run lint",
-    "format": "bunx ultracite fix convex"
+    "format": "bunx ultracite fix convex",
+    "inventory:convex": "bun x tsx scripts/check-convex-inventory.ts --output artifacts/convex/inventory.json",
+    "generate:protocol": "cargo run -p protocol --bin generate-types -- packages/shared/src/protocol.generated.ts",
+    "check:protocol": "bun run generate:protocol && git diff --exit-code -- packages/shared/src/protocol.generated.ts"
   },
   "devDependencies": {
     "@biomejs/biome": "2.4.16",
@@ -16,6 +19,14 @@
     "ultracite": "7.8.1"
   },
   "packageManager": "bun@1.3.14",
+  "overrides": {
+    "brace-expansion": "5.0.7",
+    "drizzle-orm": "0.45.2",
+    "hono": "4.12.25",
+    "next": "16.2.11",
+    "sharp": "0.35.0",
+    "vite": "8.1.5"
+  },
   "engines": {
     "node": ">=20"
   },

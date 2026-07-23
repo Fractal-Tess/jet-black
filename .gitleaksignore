@@ -1,0 +1,6 @@
+# Retired local-only Better Auth fallback; current code requires BETTER_AUTH_SECRET.
+34ae1927f9c0bb7e7bb273640827260707b60292:packages/convex/convex/auth.ts:generic-api-key:13
+# Deterministic example value, replaced with a non-secret placeholder.
+006510c26430fb4c71a1f0e926e2b1c38524afbb:.env.docker.example:generic-api-key:8
+# Acknowledged public Unsplash access key; configuration now comes from the environment.
+3a8079b786d61a96912952724de3c3884ff60630:apps/web/src/lib/components/projects/SearchTab.svelte:generic-api-key:11

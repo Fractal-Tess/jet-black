@@ -73,6 +73,7 @@ services:
       NODE_ENV: production
       PORT: 3000
       PUBLIC_CONVEX_URL: ${CONVEX_CLOUD_ORIGIN:-http://localhost:3210}
+      PUBLIC_UNSPLASH_ACCESS_KEY: ${PUBLIC_UNSPLASH_ACCESS_KEY:-}
     healthcheck:
       test:
         [

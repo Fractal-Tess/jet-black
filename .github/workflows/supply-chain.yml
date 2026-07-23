@@ -1,0 +1,104 @@
+name: Supply-chain baseline
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: supply-chain-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  secrets:
+    name: Secret scan
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+      - uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  dependency-review:
+    name: Dependency review
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/dependency-review-action@v4
+        with:
+          fail-on-severity: high
+          license-check: false
+      - name: Explain license scope
+        run: echo "Dependency Review blocks newly introduced high-severity vulnerabilities; license review remains a separate governance gate."
+
+  rust-dependencies:
+    name: Rust dependency policy
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - name: Detect Rust workspace
+        id: rust
+        shell: bash
+        run: test -f Cargo.toml && echo "present=true" >> "$GITHUB_OUTPUT" || echo "present=false" >> "$GITHUB_OUTPUT"
+      - name: Check Rust advisories, bans, and sources
+        if: steps.rust.outputs.present == 'true'
+        uses: EmbarkStudios/cargo-deny-action@v2
+        with:
+          command: check advisories bans sources
+      - name: Inventory Rust dependency licenses
+        if: steps.rust.outputs.present == 'true'
+        continue-on-error: true
+        uses: EmbarkStudios/cargo-deny-action@v2
+        with:
+          command: check licenses
+      - name: Record license-check scope
+        if: always() && steps.rust.outputs.present == 'true'
+        run: |
+          echo "### Rust dependency licenses" >> "$GITHUB_STEP_SUMMARY"
+          echo "License findings are informational while workspace crates remain intentionally unlicensed. This check does not select a product license or establish distribution readiness." >> "$GITHUB_STEP_SUMMARY"
+      - if: steps.rust.outputs.present != 'true'
+        run: echo "Cargo.toml is absent; Rust dependency policy is not applicable."
+
+  bun-audit:
+    name: Bun vulnerability inventory
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v5
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.3.14
+      - run: bun install --frozen-lockfile
+      - name: Audit high-severity advisories
+        run: bun audit --audit-level=high
+      - name: Record baseline status
+        if: always()
+        run: |
+          echo "### Bun dependency audit" >> "$GITHUB_STEP_SUMMARY"
+          echo "This Phase 0 audit is informational while the dependency baseline is remediated. It is not a distribution-readiness assertion." >> "$GITHUB_STEP_SUMMARY"
+
+  sbom:
+    name: Dependency inventory SBOM (non-release)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: anchore/sbom-action@v0
+        with:
+          path: .
+          format: cyclonedx-json
+          output-file: phase0-dependency-inventory.cdx.json
+          artifact-name: phase0-dependency-inventory-sbom
+      - name: Record SBOM scope
+        run: |
+          echo "### Phase 0 dependency inventory" >> "$GITHUB_STEP_SUMMARY"
+          echo "The generated SBOM is an unaudited CI inventory, not a signed release attestation or evidence of distribution readiness." >> "$GITHUB_STEP_SUMMARY"

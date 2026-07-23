@@ -9,7 +9,8 @@
     "typecheck": "tsc --noEmit"
   },
   "exports": {
-    ".": "./src/index.ts"
+    ".": "./src/index.ts",
+    "./protocol": "./src/protocol.generated.ts"
   },
   "devDependencies": {
     "@types/bun": "latest",

@@ -1,0 +1,13 @@
+title = "Jet Black secret scanning"
+
+[extend]
+useDefault = true
+
+[allowlist]
+description = "Ignore generated and local-only dependency/build material; tracked source remains scanned"
+paths = [
+  '''(^|/)node_modules/''',
+  '''(^|/)target/''',
+  '''(^|/)\.svelte-kit/''',
+  '''(^|/)test-results/''',
+]

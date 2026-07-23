@@ -1,6 +1,6 @@
 # web
 
-This app reads secrets from Infisical path `/web`.
+This app reads local configuration from the repository `.env.local` file.
 
 Expected envs:
 
@@ -18,8 +18,4 @@ bun run --cwd apps/web build
 bun run --cwd apps/web start
 ```
 
-They already run through:
-
-```bash
-infisical run --path=/web -- ...
-```
+Copy the repository `.env.example` to `.env.local` and set the values needed by your local workflow.

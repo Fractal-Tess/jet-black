@@ -45,22 +45,16 @@
 
   scripts = {
     dev.exec = "bun run dev";
-    build.exec = "infisical run -- turbo build";
-    test.exec = "infisical run -- turbo test";
+    build.exec = "bun run --cwd apps/web build";
+    test.exec = "bun run --cwd apps/web test";
     lint.exec = "bun run lint";
     format.exec = "bunx ultracite fix convex";
-    typecheck.exec = "infisical run -- turbo typecheck";
-
-    seed.exec = "bun run --cwd convex seed";
-    convex_dashboard.exec = "bun run --cwd convex dashboard";
+    typecheck.exec = "bun run --cwd apps/web typecheck";
   };
 
   #=============================================================================
   # PROCESSES (start with `devenv up`)
   #=============================================================================
 
-  processes = {
-    web.exec = "bun run --cwd apps/web dev";
-    convex.exec = "bun run --cwd convex dev";
-  };
+  processes.web.exec = "bun run --cwd apps/web dev";
 }

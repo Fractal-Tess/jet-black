@@ -1,4 +1,5 @@
 <script lang="ts">
+import type { TicketRef } from "@workspace/shared/protocol";
 import type { EstimateSystem } from "$lib/estimates";
 import IssueComments from "./IssueComments.svelte";
 import IssueDetailActions from "./IssueDetailActions.svelte";
@@ -6,6 +7,7 @@ import IssueDetailAttachments from "./IssueDetailAttachments.svelte";
 import IssueDetailHeader from "./IssueDetailHeader.svelte";
 import IssueDetailSubIssues from "./IssueDetailSubIssues.svelte";
 import IssueEmptyState from "./IssueEmptyState.svelte";
+import IssueExecutionPanel from "./IssueExecutionPanel.svelte";
 import IssueProperties from "./IssueProperties.svelte";
 import type {
   AddAttachmentInput,
@@ -73,6 +75,19 @@ let {
 
 let showSubIssueForm = $state(false);
 let showAttachForm = $state(false);
+
+const executionTicket = $derived<Readonly<TicketRef> | null>(
+  issue
+    ? Object.freeze({
+        control_plane_id: null,
+        workspace_id: String(issue.workspaceId),
+        project_id: String(issue.projectId),
+        ticket_id: String(issue._id),
+        identifier: issue.identifier,
+        title: issue.title,
+      })
+    : null
+);
 </script>
 
 {#if issue}
@@ -82,6 +97,9 @@ let showAttachForm = $state(false);
     bind:showAttachForm
     {onArchiveIssue}
   />
+  {#if executionTicket}
+    <IssueExecutionPanel ticket={executionTicket} />
+  {/if}
   <IssueDetailAttachments
     {attachments}
     bind:showAttachForm

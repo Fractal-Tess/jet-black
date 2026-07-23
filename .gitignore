@@ -25,6 +25,7 @@ test-results/
 .vercel
 
 # Build Outputs
+/target/
 .next/
 .svelte-kit/
 out/

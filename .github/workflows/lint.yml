@@ -1,14 +1,157 @@
-name: Lint
+name: CI
 
 on:
   pull_request:
   push:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
-  lint:
+  bun:
+    name: Bun checks
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
       - uses: oven-sh/setup-bun@v2
-      - run: bun install --frozen-lockfile
-      - run: bun run lint
+        with:
+          bun-version: 1.3.14
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+      - name: Lint
+        run: bun run lint
+      - name: Typecheck shared package
+        working-directory: packages/shared
+        run: bun x tsc --noEmit
+      - name: Typecheck UI package
+        working-directory: packages/ui
+        run: bun x svelte-kit sync && bun x svelte-check --tsconfig ./tsconfig.json
+      - name: Typecheck web app
+        working-directory: apps/web
+        run: bun x svelte-kit sync && bun x svelte-check --tsconfig ./tsconfig.json
+      - name: Typecheck Convex package
+        working-directory: convex
+        run: bun x tsc --noEmit && bun x tsc -p convex
+      - name: Build Bun workspaces
+        run: bun x turbo run build
+      - name: Check generated inventory when configured
+        shell: bash
+        run: |
+          if bun -e 'const scripts = (await Bun.file("package.json").json()).scripts ?? {}; process.exit("inventory:check" in scripts ? 0 : 1)'; then
+            bun run inventory:check
+          elif bun -e 'const scripts = (await Bun.file("package.json").json()).scripts ?? {}; process.exit("inventory:convex" in scripts ? 0 : 1)'; then
+            bun run inventory:convex
+            git diff --exit-code -- artifacts/convex/inventory.json
+          else
+            echo "No generated inventory script is present; skipping inventory regeneration."
+          fi
+
+  rust:
+    name: Rust checks
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - name: Detect Rust workspace
+        id: rust
+        shell: bash
+        run: test -f Cargo.toml && echo "present=true" >> "$GITHUB_OUTPUT" || echo "present=false" >> "$GITHUB_OUTPUT"
+      - if: steps.rust.outputs.present == 'true'
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: 1.85.0
+          components: clippy, rustfmt
+      - if: steps.rust.outputs.present == 'true'
+        uses: Swatinem/rust-cache@v2
+      - name: Rust formatting
+        if: steps.rust.outputs.present == 'true'
+        run: cargo fmt --all -- --check
+      - name: Rust check
+        if: steps.rust.outputs.present == 'true'
+        run: cargo check --workspace --all-targets --locked
+      - name: Rust tests
+        if: steps.rust.outputs.present == 'true'
+        run: cargo test --workspace --all-targets --locked
+      - name: Check generated protocol types
+        if: steps.rust.outputs.present == 'true'
+        run: cargo run -p protocol --bin generate-types -- packages/shared/src/protocol.generated.ts && git diff --exit-code -- packages/shared/src/protocol.generated.ts
+      - name: Rust clippy
+        if: steps.rust.outputs.present == 'true'
+        run: cargo clippy --workspace --all-targets --locked -- -D warnings
+      - name: No Rust workspace
+        if: steps.rust.outputs.present != 'true'
+        run: echo "Cargo.toml is absent; Rust checks are not applicable."
+
+  governance:
+    name: Generated and provenance checks
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+      - name: Validate provenance register and clean-room rule
+        run: |
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+
+          register_path = Path("governance/provenance.json")
+          rule_path = Path("governance/CLEAN_ROOM.md")
+          register = json.loads(register_path.read_text(encoding="utf-8"))
+          references = register.get("references", [])
+
+          if not references:
+              raise SystemExit("provenance register must contain references")
+
+          names = [entry.get("name") for entry in references]
+          if len(names) != len(set(names)):
+              raise SystemExit("provenance reference names must be unique")
+
+          required = {"name", "repository", "revision", "license", "use"}
+          for entry in references:
+              missing = sorted(required - entry.keys())
+              if missing:
+                  raise SystemExit(f"{entry.get('name', '<unknown>')} is missing: {', '.join(missing)}")
+              if len(entry["revision"]) != 40:
+                  raise SystemExit(f"{entry['name']} revision must be a full Git commit SHA")
+
+          plane = next((entry for entry in references if entry["name"] == "Plane"), None)
+          if plane is None or plane["license"] != "AGPL-3.0-only":
+              raise SystemExit("Plane must remain explicitly registered as AGPL-3.0-only")
+          if plane.get("implementation_rule") != "clean-room-no-copy-or-translation":
+              raise SystemExit("Plane must retain the clean-room no-copy-or-translation rule")
+
+          clean_room = rule_path.read_text(encoding="utf-8").lower()
+          required_phrases = ("plane", "agpl", "not be copied", "not be translated")
+          if any(phrase not in clean_room for phrase in required_phrases):
+              raise SystemExit("clean-room rule is missing a required Plane AGPL prohibition")
+          PY
+      - name: Check generated file markers
+        shell: bash
+        run: |
+          if [[ ! -d convex/convex ]]; then
+            echo "Convex sources are absent; generated marker checks are not applicable."
+            exit 0
+          fi
+
+          status=0
+          while IFS= read -r -d '' file; do
+            if ! grep -Eq 'AUTOMATICALLY GENERATED|auto-generated|generated file' "$file"; then
+              echo "Missing generated marker: $file"
+              status=1
+            fi
+          done < <(find convex/convex -type f -path '*/_generated/*' -print0)
+          exit "$status"
+      - name: Check patch whitespace
+        shell: bash
+        run: |
+          if [[ "${{ github.event_name }}" == "pull_request" ]]; then
+            git diff --check "${{ github.event.pull_request.base.sha }}...${{ github.event.pull_request.head.sha }}"
+          else
+            git diff --check "${{ github.event.before }}" "${{ github.sha }}"
+          fi

@@ -1,6 +1,7 @@
 <script lang="ts">
 import { Button } from "@workspace/ui/components/button";
 import { Input } from "@workspace/ui/components/input";
+import { env } from "$env/dynamic/public";
 
 let {
   onSelect,
@@ -8,7 +9,7 @@ let {
   onSelect: (url: string) => void;
 } = $props();
 
-const UNSPLASH_ACCESS_KEY = "r1GEFQ0hN0ahR6bHfXp5dK7SYAyy2pNwf3jM7oe8vNE";
+const unsplashAccessKey = env.PUBLIC_UNSPLASH_ACCESS_KEY?.trim();
 
 let searchQuery = $state("");
 let debouncedQuery = $state("");
@@ -29,7 +30,7 @@ $effect(() => {
 });
 
 async function searchUnsplash(query: string) {
-  if (!query.trim()) {
+  if (!(query.trim() && unsplashAccessKey)) {
     searchResults = [];
     return;
   }
@@ -37,7 +38,7 @@ async function searchUnsplash(query: string) {
   searchError = "";
   try {
     const response = await fetch(
-      `https://api.unsplash.com/search/photos?query=${encodeURIComponent(query)}&per_page=12&client_id=${UNSPLASH_ACCESS_KEY}`
+      `https://api.unsplash.com/search/photos?query=${encodeURIComponent(query)}&per_page=12&client_id=${unsplashAccessKey}`
     );
     if (!response.ok) {
       throw new Error("Unsplash API error");
@@ -73,12 +74,17 @@ function handleConfirmSearch() {
 
 <div class="space-y-3">
   <Input
+    disabled={!unsplashAccessKey}
     placeholder="Search images\u2026"
     type="search"
     bind:value={searchQuery}
   />
 
-  {#if searchLoading}
+  {#if !unsplashAccessKey}
+    <div class="py-8 text-center text-sm text-muted-foreground">
+      Unsplash image search is not configured.
+    </div>
+  {:else if searchLoading}
     <div class="py-8 text-center text-sm text-muted-foreground">Loading\u2026</div>
   {:else if searchError}
     <div class="py-8 text-center text-sm text-destructive">{searchError}</div>
