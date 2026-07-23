@@ -81,6 +81,41 @@ pub enum LocalCommand {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+pub struct RunStartedResponse {
+    pub run_id: Id,
+    pub changeset_id: Id,
+    pub worktree_id: Id,
+    pub approval_id: Id,
+    pub approval_request: ApprovalRequest,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+pub struct RunCompletedResponse {
+    pub run: Run,
+    pub changeset: Changeset,
+    pub checkpoint: Checkpoint,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(tag = "type", content = "data", rename_all = "snake_case")]
+pub enum LocalCommandResponse {
+    RepositoryRegistered(Repository),
+    ChangesetCreated(Changeset),
+    RunStarted(RunStartedResponse),
+    RunInterrupted(Run),
+    ApprovalRejected(Run),
+    RunCompleted(RunCompletedResponse),
+    Checkpoint(CheckpointResponse),
+    Diff(DiffResponse),
+    Events(crate::EventPage),
+    Snapshot(Box<RunSnapshot>),
+    History(HistoryResponse),
+    Recovery(RecoveryResponse),
+    Findings(FindingsResponse),
+    MutationPreview(MutationPreview),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
 pub struct ApprovalRequest {
     pub run_id: Id,
     pub scope: ApprovalScope,

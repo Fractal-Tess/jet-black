@@ -6,7 +6,8 @@ mod typescript;
 
 pub use commands::{
     ApprovalRequest, ApprovalResponse, CheckpointResponse, DiffResponse, FindingsResponse,
-    HistoryResponse, LocalCommand, MutationPreview, RecoveryAction, RecoveryResponse, RunSnapshot,
+    HistoryResponse, LocalCommand, LocalCommandResponse, MutationPreview, RecoveryAction,
+    RecoveryResponse, RunCompletedResponse, RunSnapshot, RunStartedResponse,
 };
 pub use envelopes::{CommandResult, Envelope, PROTOCOL_VERSION, ResponseEnvelope};
 pub use errors::StructuredError;

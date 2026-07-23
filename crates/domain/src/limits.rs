@@ -4,5 +4,6 @@ pub const MAX_SEMANTIC_TEXT_BYTES: usize = 64 * 1024;
 pub const MAX_UNIFIED_DIFF_BYTES: usize = 5 * 1024 * 1024;
 pub const MAX_CHANGED_FILES: usize = 1_000;
 pub const MAX_EVENT_PAGE_SIZE: usize = 1_000;
+pub const MAX_RECOVERY_ACTIONS: usize = 1_000;
 pub const MAX_CAPTURED_STREAM_BYTES: usize = 10 * 1024 * 1024;
 pub const MAX_LOCAL_ARTIFACT_BYTES: usize = 25 * 1024 * 1024;

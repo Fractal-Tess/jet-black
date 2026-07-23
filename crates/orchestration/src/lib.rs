@@ -10,8 +10,9 @@ use execution::{
 use git::GitService;
 use persistence::{MutationLease, RecoveryReport, SqliteStore};
 use protocol::{
-    ApprovalRequest, CheckpointResponse, DiffResponse, LocalCommand, OrderedRunEvent,
-    RecoveryAction, RecoveryResponse, SemanticEventKind,
+    ApprovalRequest, CheckpointResponse, DiffResponse, EventCursor, EventPage, LocalCommand,
+    OrderedRunEvent, RecoveryAction, RecoveryResponse, RunCompletedResponse, RunStartedResponse,
+    SemanticEventKind,
 };
 use std::{path::Path, sync::Mutex, time::Duration};
 use thiserror::Error;
@@ -402,6 +403,27 @@ impl<P: AgentProvider> LocalOrchestrator<P> {
 
     pub fn events(&self, run_id: Id) -> Result<Vec<OrderedRunEvent>, OrchestrationError> {
         Ok(self.store.events(run_id)?)
+    }
+
+    pub fn run_state(&self, run_id: Id) -> Result<RunState, OrchestrationError> {
+        Ok(self.run(run_id)?.state())
+    }
+
+    pub fn events_after(
+        &self,
+        run_id: Id,
+        after_sequence: u64,
+        limit: usize,
+    ) -> Result<EventPage, OrchestrationError> {
+        let events = self.store.events_after(run_id, after_sequence, limit)?;
+        let next_sequence = events.last().map_or(after_sequence, |event| event.sequence);
+        Ok(EventPage {
+            events,
+            next_cursor: EventCursor {
+                run_id,
+                after_sequence: next_sequence,
+            },
+        })
     }
 
     pub fn recover(&self) -> Result<RecoveryReport, OrchestrationError> {
@@ -1066,21 +1088,8 @@ impl<P: AgentProvider> LocalOrchestrator<P> {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct RunStarted {
-    pub run_id: Id,
-    pub changeset_id: Id,
-    pub worktree_id: Id,
-    pub approval_id: Id,
-    pub approval_request: ApprovalRequest,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct RunCompleted {
-    pub run: Run,
-    pub changeset: Changeset,
-    pub checkpoint: Checkpoint,
-}
+pub type RunStarted = RunStartedResponse;
+pub type RunCompleted = RunCompletedResponse;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CommandOutcome {

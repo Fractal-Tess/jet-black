@@ -3,9 +3,12 @@ use config::{CliOverrides, StandaloneConfig};
 use git::GitService;
 use orchestration::{DEFAULT_APPROVAL_TTL, LocalOrchestrator};
 use persistence::SqliteStore;
-use std::collections::HashMap;
+use server::StandaloneServer;
+use std::{collections::HashMap, sync::Arc};
+use tokio::net::TcpListener;
 
-fn main() -> Result<(), Box<dyn std::error::Error>> {
+#[tokio::main]
+async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let environment = std::env::vars()
         .filter(|(key, _)| key.starts_with("JET_BLACK_"))
         .collect::<HashMap<_, _>>();
@@ -18,13 +21,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         config.repository_roots.clone(),
         config.data_dir.join("worktrees"),
     )?;
-    let runtime = LocalOrchestrator::new(
+    let runtime = Arc::new(LocalOrchestrator::new(
         store,
         git,
         MockProvider::deterministic(),
         DEFAULT_APPROVAL_TTL,
-    );
+    ));
+    let listener = TcpListener::bind(config.bind).await?;
+    let address = listener.local_addr()?;
     let recovery = runtime.recover()?;
+    let server = StandaloneServer::new(address, config.public_bootstrap(), runtime)?;
 
     for action in &recovery.actions {
         println!(
@@ -34,12 +40,17 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
     println!(
         "Jet Black standalone local core ready on {}; recovery: {} recoverable, {} interrupted, {} failed, {} terminal, {} actions",
-        config.bind,
+        address,
         recovery.recoverable.len(),
         recovery.interrupted.len(),
         recovery.failed.len(),
         recovery.terminal.len(),
         recovery.actions.len()
     );
+    println!(
+        "Open http://{address}/#exchange={}",
+        server.launch_token().expose()
+    );
+    server.serve(listener).await?;
     Ok(())
 }

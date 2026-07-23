@@ -1,0 +1,29 @@
+[package]
+name = "server"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+agents.workspace = true
+async-stream.workspace = true
+axum.workspace = true
+base64.workspace = true
+config.workspace = true
+domain.workspace = true
+futures-core.workspace = true
+getrandom.workspace = true
+http.workspace = true
+orchestration.workspace = true
+protocol.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+subtle.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+
+[dev-dependencies]
+futures-util.workspace = true
+tempfile.workspace = true
+tower.workspace = true

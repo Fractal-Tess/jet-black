@@ -11,3 +11,5 @@ config.workspace = true
 git.workspace = true
 orchestration.workspace = true
 persistence.workspace = true
+server.workspace = true
+tokio.workspace = true

@@ -1,8 +1,9 @@
 use crate::{
     ApprovalRequest, ApprovalResponse, CheckpointResponse, CommandResult, DiffResponse, Envelope,
-    EventCursor, EventPage, FindingsResponse, HistoryResponse, LocalCommand, MutationPreview,
-    OrderedRunEvent, PROTOCOL_VERSION, RecoveryAction, RecoveryResponse, ResponseEnvelope,
-    RunSnapshot, SemanticEventKind, StructuredError,
+    EventCursor, EventPage, FindingsResponse, HistoryResponse, LocalCommand, LocalCommandResponse,
+    MutationPreview, OrderedRunEvent, PROTOCOL_VERSION, RecoveryAction, RecoveryResponse,
+    ResponseEnvelope, RunCompletedResponse, RunSnapshot, RunStartedResponse, SemanticEventKind,
+    StructuredError,
 };
 use domain::{
     ActionKind, ActionProposal, ApprovalScope, Changeset, ChangesetState, Checkpoint,
@@ -32,6 +33,9 @@ pub fn declarations() -> String {
         exported_decl::<Checkpoint>(),
         exported_decl::<Finding>(),
         exported_decl::<LocalCommand>(),
+        exported_decl::<RunStartedResponse>(),
+        exported_decl::<RunCompletedResponse>(),
+        exported_decl::<LocalCommandResponse>(),
         exported_decl::<SemanticEventKind>(),
         exported_decl::<OrderedRunEvent>(),
         exported_decl::<EventCursor>(),
@@ -48,8 +52,8 @@ pub fn declarations() -> String {
         exported_decl::<RecoveryResponse>(),
         exported_decl::<MutationPreview>(),
         exported_decl::<Envelope<LocalCommand>>(),
-        exported_decl::<CommandResult<LocalCommand>>(),
-        exported_decl::<ResponseEnvelope<LocalCommand>>(),
+        exported_decl::<CommandResult<LocalCommandResponse>>(),
+        exported_decl::<ResponseEnvelope<LocalCommandResponse>>(),
     ];
 
     format!(

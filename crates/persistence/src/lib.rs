@@ -1126,11 +1126,18 @@ impl SqliteStore {
             let mut statement = connection.prepare(
                 "SELECT id, run_id, changeset_id, status, created_at_unix_ms, body
                  FROM recovery_actions
-                 ORDER BY created_at_unix_ms, rowid",
+                 ORDER BY created_at_unix_ms DESC, rowid DESC
+                 LIMIT ?1",
             )?;
-            let rows = statement.query_map([], recovery_action_row)?;
-            rows.map(|row| validate_recovery_action_record(row?))
-                .collect()
+            let rows = statement.query_map(
+                [domain::limits::MAX_RECOVERY_ACTIONS as i64],
+                recovery_action_row,
+            )?;
+            let mut records = rows
+                .map(|row| validate_recovery_action_record(row?))
+                .collect::<Result<Vec<_>, _>>()?;
+            records.reverse();
+            Ok(records)
         })
     }
 
