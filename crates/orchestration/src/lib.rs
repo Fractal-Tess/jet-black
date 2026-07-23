@@ -761,6 +761,10 @@ impl<P: AgentProvider> LocalOrchestrator<P> {
             run: snapshot.run,
             worktree: snapshot.worktree,
             checkpoint: snapshot.checkpoint,
+            pending_approval: snapshot
+                .pending_approval
+                .as_ref()
+                .map(ApprovalRequest::from),
             findings: snapshot.findings,
             events: snapshot.events,
         })
@@ -1326,12 +1330,8 @@ impl<P: AgentProvider> LocalOrchestrator<P> {
             run_id: run.id,
             changeset_id: changeset.id,
             worktree_id: worktree.id,
-            approval_id: approval.id,
-            approval_request: ApprovalRequest {
-                run_id: run.id,
-                scope,
-                digest: approval_digest,
-            },
+            approval_id: Some(approval.id),
+            approval_request: Some(ApprovalRequest::from(&approval)),
         })
     }
 

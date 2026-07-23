@@ -1,6 +1,7 @@
 use domain::{
-    Changeset, ChangesetMutationKind, ChangesetMutationScope, Checkpoint, Finding, RelativePath,
-    Repository, Run, RunState, Worktree, WorktreeState, limits,
+    ActionKind, ActionProposal, Approval, ApprovalScope, Changeset, ChangesetMutationKind,
+    ChangesetMutationScope, Checkpoint, Finding, RelativePath, Repository, Run, RunState, Worktree,
+    WorktreeState, limits,
 };
 use execution::{
     ExecutableIdentity, ProcessGroupIdentity, ProcessStartIdentity, SupervisionMetadata,
@@ -65,6 +66,70 @@ fn seed_changeset(store: &SqliteStore, changeset_id: uuid::Uuid) {
     let mut changeset = Changeset::new(repository.id, "base".into());
     changeset.id = changeset_id;
     store.save_changeset(&changeset).unwrap();
+}
+
+fn seed_pending_approval(store: &SqliteStore) -> (Run, Approval) {
+    let repository = Repository {
+        id: uuid::Uuid::new_v4(),
+        filesystem_identity: "approval-fixture".into(),
+        git_directory_identity: "approval-git-fixture".into(),
+        canonical_path: "/approval-fixture".into(),
+        identity: "approval-fixture".into(),
+        primary_remote: None,
+        default_branch: "main".into(),
+        base_sha: "base".into(),
+        version: 0,
+    };
+    store.save_repository(&repository).unwrap();
+    let changeset = Changeset::new(repository.id, repository.base_sha.clone());
+    store.save_changeset(&changeset).unwrap();
+
+    let mut run = Run::new(changeset.id);
+    store.save_run(&run).unwrap();
+    run.start().unwrap();
+    store
+        .persist_run_transition(
+            &run,
+            SemanticEventKind::Lifecycle {
+                state: RunState::Starting,
+            },
+        )
+        .unwrap();
+    run.running().unwrap();
+    store
+        .persist_run_transition(
+            &run,
+            SemanticEventKind::Lifecycle {
+                state: RunState::Running,
+            },
+        )
+        .unwrap();
+
+    let scope = ApprovalScope {
+        repository_id: repository.id,
+        changeset_id: changeset.id,
+        base_sha: repository.base_sha,
+        head_sha: "head".into(),
+        proposal: ActionProposal {
+            action: ActionKind::WriteFile,
+            target_path: RelativePath::parse("approved.txt").unwrap(),
+            content_sha256: "content-digest".into(),
+        },
+        expires_at_unix_ms: 10_000,
+    };
+    let approval = Approval::new(run.id, scope);
+    run.await_approval(approval.digest().to_owned()).unwrap();
+    store
+        .request_approval(
+            &run,
+            &approval,
+            SemanticEventKind::ActionProposal {
+                proposal: approval.scope().proposal.clone(),
+                digest: approval.digest().to_owned(),
+            },
+        )
+        .unwrap();
+    (run, approval)
 }
 
 struct FinalizationFixture {
@@ -409,6 +474,64 @@ fn snapshot_events_return_a_bounded_initial_page() {
         snapshot.events.last().unwrap().sequence,
         limits::MAX_SNAPSHOT_EVENT_PAGE_SIZE as u64
     );
+}
+
+#[test]
+fn run_snapshot_exposes_only_the_exact_pending_approval() {
+    let directory = tempdir().unwrap();
+    let store = SqliteStore::open(directory.path().join("snapshot-approval.sqlite3")).unwrap();
+    let (run, approval) = seed_pending_approval(&store);
+
+    let snapshot = store.run_snapshot(run.id).unwrap().unwrap();
+    assert_eq!(snapshot.pending_approval, Some(approval.clone()));
+
+    store.reject_and_interrupt(run.id, approval.id).unwrap();
+    let interrupted = store.run_snapshot(run.id).unwrap().unwrap();
+    assert!(interrupted.pending_approval.is_none());
+}
+
+#[test]
+fn run_snapshot_rejects_corrupt_pending_approval_identity() {
+    let directory = tempdir().unwrap();
+    let path = directory.path().join("snapshot-approval-identity.sqlite3");
+    let store = SqliteStore::open(&path).unwrap();
+    let (run, approval) = seed_pending_approval(&store);
+    let connection = Connection::open(&path).unwrap();
+
+    let mut corrupt_identity = serde_json::to_value(&approval).unwrap();
+    corrupt_identity["run_id"] = serde_json::Value::String(uuid::Uuid::new_v4().to_string());
+    connection
+        .execute(
+            "UPDATE approvals SET body = ?2 WHERE id = ?1",
+            params![approval.id.to_string(), corrupt_identity.to_string()],
+        )
+        .unwrap();
+    assert!(matches!(
+        store.run_snapshot(run.id),
+        Err(PersistenceError::CorruptOwnership("approval"))
+    ));
+}
+
+#[test]
+fn run_snapshot_rejects_corrupt_pending_approval_digest() {
+    let directory = tempdir().unwrap();
+    let path = directory.path().join("snapshot-approval-digest.sqlite3");
+    let store = SqliteStore::open(&path).unwrap();
+    let (run, approval) = seed_pending_approval(&store);
+    let connection = Connection::open(&path).unwrap();
+
+    let mut corrupt_digest = serde_json::to_value(&approval).unwrap();
+    corrupt_digest["digest"] = serde_json::Value::String("tampered".into());
+    connection
+        .execute(
+            "UPDATE approvals SET body = ?2 WHERE id = ?1",
+            params![approval.id.to_string(), corrupt_digest.to_string()],
+        )
+        .unwrap();
+    assert!(matches!(
+        store.run_snapshot(run.id),
+        Err(PersistenceError::ApprovalDoesNotMatchRun)
+    ));
 }
 
 #[test]

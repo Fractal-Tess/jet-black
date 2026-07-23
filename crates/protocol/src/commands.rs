@@ -1,7 +1,7 @@
 use crate::OrderedRunEvent;
 use domain::{
-    ApprovalScope, Changeset, ChangesetMutationKind, Checkpoint, Finding, Id, Repository, Run,
-    TicketRef, Worktree, WorktreeState,
+    Approval, ApprovalScope, Changeset, ChangesetMutationKind, Checkpoint, Finding, Id, Repository,
+    Run, TicketRef, Worktree, WorktreeState,
 };
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
@@ -97,8 +97,8 @@ pub struct RunStartedResponse {
     pub run_id: Id,
     pub changeset_id: Id,
     pub worktree_id: Id,
-    pub approval_id: Id,
-    pub approval_request: ApprovalRequest,
+    pub approval_id: Option<Id>,
+    pub approval_request: Option<ApprovalRequest>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
@@ -138,6 +138,16 @@ pub struct ApprovalRequest {
     pub digest: String,
 }
 
+impl From<&Approval> for ApprovalRequest {
+    fn from(approval: &Approval) -> Self {
+        Self {
+            run_id: approval.run_id(),
+            scope: approval.scope().clone(),
+            digest: approval.digest().to_owned(),
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
 pub struct ApprovalResponse {
     pub run_id: Id,
@@ -163,6 +173,7 @@ pub struct RunSnapshot {
     pub run: Run,
     pub worktree: Option<Worktree>,
     pub checkpoint: Option<Checkpoint>,
+    pub pending_approval: Option<ApprovalRequest>,
     pub findings: Vec<Finding>,
     pub events: Vec<OrderedRunEvent>,
 }

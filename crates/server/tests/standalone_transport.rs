@@ -64,6 +64,7 @@ impl Default for FixtureRuntime {
                 run,
                 worktree: None,
                 checkpoint: None,
+                pending_approval: None,
                 findings: Vec::new(),
                 events: vec![event],
             },

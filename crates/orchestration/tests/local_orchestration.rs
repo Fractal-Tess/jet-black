@@ -1,8 +1,8 @@
 use agents::{AgentProvider, ClaudeCodeProvider, MockProvider, ProposedFileChange, ProviderError};
 use base64::{Engine as _, engine::general_purpose::STANDARD};
 use domain::{
-    ChangesetMutationKind, ChangesetMutationScope, ChangesetState, RelativePath, RunState,
-    WorktreeState, limits,
+    ApprovalScope, ChangesetMutationKind, ChangesetMutationScope, ChangesetState, RelativePath,
+    RunState, WorktreeState, limits,
 };
 use execution::{
     CancellationToken, ProcessResult, ProcessSpec, ProcessStartIdentity, ProcessSupervisor,
@@ -14,7 +14,7 @@ use persistence::{
     ArtifactPolicy, ArtifactState, ArtifactStream, ChangesetFinalizationState, LocalArtifactStore,
     SqliteStore,
 };
-use protocol::{LocalCommand, MutationResult, SemanticEventKind};
+use protocol::{LocalCommand, MutationResult, RunStartedResponse, SemanticEventKind};
 use std::{
     collections::HashMap,
     fs,
@@ -37,6 +37,14 @@ fn run_git(repository: &Path, arguments: &[&str]) {
         "git failed: {}",
         String::from_utf8_lossy(&output.stderr)
     );
+}
+
+fn approval_scope(started: &RunStartedResponse) -> &ApprovalScope {
+    &started
+        .approval_request
+        .as_ref()
+        .expect("blocking start must include an approval")
+        .scope
 }
 
 fn fixture_repository(root: &Path) -> std::path::PathBuf {
@@ -201,7 +209,7 @@ impl ArtifactFailureMode {
     fn command(self) -> &'static str {
         match self {
             Self::ProcessFailure => "printf process-failed; exit 7",
-            Self::OutputTruncation => "printf 0123456789",
+            Self::OutputTruncation => "printf 012g56789",
             Self::ParserFailure => "printf parser-failed",
         }
     }
@@ -216,7 +224,7 @@ impl ArtifactFailureMode {
     fn expected_output(self) -> &'static [u8] {
         match self {
             Self::ProcessFailure => b"process-failed",
-            Self::OutputTruncation => b"0123",
+            Self::OutputTruncation => b"012g",
             Self::ParserFailure => b"parser-failed",
         }
     }
@@ -362,7 +370,7 @@ fn command_boundary_completes_and_recovers_a_digest_approved_run() {
         outcome => panic!("unexpected outcome: {outcome:?}"),
     };
 
-    let mut tampered_scope = started.approval_request.scope.clone();
+    let mut tampered_scope = approval_scope(&started).clone();
     tampered_scope.proposal.target_path = RelativePath::parse("tampered.txt").unwrap();
     assert!(matches!(
         runtime.handle(LocalCommand::RespondToApproval {
@@ -376,7 +384,7 @@ fn command_boundary_completes_and_recovers_a_digest_approved_run() {
     let completed = match runtime
         .handle(LocalCommand::RespondToApproval {
             run_id: started.run_id,
-            scope: started.approval_request.scope,
+            scope: approval_scope(&started).clone(),
             approved: true,
         })
         .unwrap()
@@ -497,10 +505,7 @@ fn commit_and_discard_commands_require_exact_previews_and_replay_terminal_result
         .unwrap();
     let commit_started = runtime.start_run(commit_changeset.id).unwrap();
     let commit_completed = runtime
-        .approve_and_complete(
-            commit_started.run_id,
-            &commit_started.approval_request.scope,
-        )
+        .approve_and_complete(commit_started.run_id, approval_scope(&commit_started))
         .unwrap();
     let commit_version = commit_completed.changeset.version();
     let expected_head_sha = commit_completed.checkpoint.head_sha.clone();
@@ -597,10 +602,7 @@ fn commit_and_discard_commands_require_exact_previews_and_replay_terminal_result
         .unwrap();
     let discard_started = runtime.start_run(discard_changeset.id).unwrap();
     let discard_completed = runtime
-        .approve_and_complete(
-            discard_started.run_id,
-            &discard_started.approval_request.scope,
-        )
+        .approve_and_complete(discard_started.run_id, approval_scope(&discard_started))
         .unwrap();
     let discard_preview = runtime
         .preview_changeset_mutation(
@@ -641,7 +643,7 @@ fn startup_recovery_completes_a_prepared_commit_after_worktree_removal() {
         .unwrap();
     let started = runtime.start_run(changeset.id).unwrap();
     let completed = runtime
-        .approve_and_complete(started.run_id, &started.approval_request.scope)
+        .approve_and_complete(started.run_id, approval_scope(&started))
         .unwrap();
     let preview = runtime
         .preview_changeset_mutation(
@@ -735,7 +737,7 @@ fn startup_recovery_records_the_observed_head_for_divergent_finalization() {
         .unwrap();
     let started = runtime.start_run(changeset.id).unwrap();
     let completed = runtime
-        .approve_and_complete(started.run_id, &started.approval_request.scope)
+        .approve_and_complete(started.run_id, approval_scope(&started))
         .unwrap();
     let preview = runtime
         .preview_changeset_mutation(
@@ -817,7 +819,7 @@ fn rejected_approval_interrupts_without_mutating_and_can_be_cleaned_up() {
     let started = runtime.start_run(changeset.id).unwrap();
 
     let rejected = runtime
-        .reject_approval(started.run_id, &started.approval_request.scope)
+        .reject_approval(started.run_id, approval_scope(&started))
         .unwrap();
     assert_eq!(rejected.state(), RunState::Interrupted);
     assert!(
@@ -856,7 +858,7 @@ fn approval_resume_uses_the_persisted_provider_change() {
         Duration::from_secs(60),
     );
     let completed = restarted
-        .approve_and_complete(started.run_id, &started.approval_request.scope)
+        .approve_and_complete(started.run_id, approval_scope(&started))
         .unwrap();
     assert_eq!(completed.run.state(), RunState::Completed);
     assert!(completed.checkpoint.diff.contains("approved local change"));
@@ -1111,7 +1113,7 @@ fn successful_provider_process_holds_lease_for_exact_approval_then_releases_it()
         RunState::AwaitingApproval
     );
 
-    let mut tampered = started.approval_request.scope.clone();
+    let mut tampered = approval_scope(&started).clone();
     tampered.proposal.target_path = RelativePath::parse("not-approved.txt").unwrap();
     assert!(matches!(
         runtime.approve_and_complete(started.run_id, &tampered),
@@ -1120,7 +1122,7 @@ fn successful_provider_process_holds_lease_for_exact_approval_then_releases_it()
     assert_eq!(store.mutation_lease(changeset.id).unwrap(), Some(lease));
 
     let completed = runtime
-        .approve_and_complete(started.run_id, &started.approval_request.scope)
+        .approve_and_complete(started.run_id, approval_scope(&started))
         .unwrap();
     assert_eq!(completed.run.state(), RunState::Completed);
     assert!(store.mutation_lease(changeset.id).unwrap().is_none());
@@ -1136,10 +1138,7 @@ fn successful_provider_process_holds_lease_for_exact_approval_then_releases_it()
             .is_some()
     );
     let rejected = runtime
-        .reject_approval(
-            rejected_started.run_id,
-            &rejected_started.approval_request.scope,
-        )
+        .reject_approval(rejected_started.run_id, approval_scope(&rejected_started))
         .unwrap();
     assert_eq!(rejected.state(), RunState::Interrupted);
     assert!(
@@ -1287,7 +1286,7 @@ fn provider_artifacts_redact_credentials_and_supervision_identity() {
         Err(OrchestrationError::NotFound("artifact"))
     ));
     runtime
-        .reject_approval(other_started.run_id, &other_started.approval_request.scope)
+        .reject_approval(other_started.run_id, approval_scope(&other_started))
         .unwrap();
     runtime.delete_run_artifacts(other_started.run_id).unwrap();
 
@@ -1300,7 +1299,7 @@ fn provider_artifacts_redact_credentials_and_supervision_identity() {
     assert_eq!(runtime.events(started.run_id).unwrap(), events);
 
     runtime
-        .reject_approval(started.run_id, &started.approval_request.scope)
+        .reject_approval(started.run_id, approval_scope(&started))
         .unwrap();
     let deleted = match runtime
         .handle(LocalCommand::DeleteRunArtifacts {
@@ -1349,7 +1348,7 @@ fn artifact_commands_require_a_configured_store() {
     ));
 
     runtime
-        .reject_approval(started.run_id, &started.approval_request.scope)
+        .reject_approval(started.run_id, approval_scope(&started))
         .unwrap();
 }
 
@@ -1637,7 +1636,7 @@ fn startup_reconciliation_releases_a_terminal_reviewable_changeset_lease() {
         .unwrap();
     let started = runtime.start_run(changeset.id).unwrap();
     let completed = runtime
-        .approve_and_complete(started.run_id, &started.approval_request.scope)
+        .approve_and_complete(started.run_id, approval_scope(&started))
         .unwrap();
     let worktree_path = directory
         .path()
@@ -2090,11 +2089,11 @@ printf '%s' '{"is_error":false,"structured_output":{"content":"generated read-on
 
     let started = runtime.start_run(changeset.id).unwrap();
     assert_eq!(
-        started.approval_request.scope.proposal.target_path.as_str(),
+        approval_scope(&started).proposal.target_path.as_str(),
         "jet-black-claude-approved.txt"
     );
     let completed = runtime
-        .approve_and_complete(started.run_id, &started.approval_request.scope)
+        .approve_and_complete(started.run_id, approval_scope(&started))
         .unwrap();
     assert_eq!(completed.run.state(), RunState::Completed);
     let worktree = store.worktree_for_changeset(changeset.id).unwrap().unwrap();

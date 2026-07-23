@@ -8,7 +8,7 @@ use protocol::{
     MutationResult, OrderedRunEvent, PROTOCOL_VERSION, RecoveryAction, RecoveryResponse,
     ResponseEnvelope, RunArtifactSegmentMetadata, RunArtifactSegmentResponse, RunArtifactStream,
     RunArtifactSummary, RunArtifactsDeletedResponse, RunArtifactsResponse, RunSnapshot,
-    SemanticEventKind, StructuredError,
+    RunStartedResponse, SemanticEventKind, StructuredError,
 };
 use std::path::PathBuf;
 
@@ -172,6 +172,20 @@ fn all_local_message_shapes_round_trip() {
         },
     ];
     let responses = [
+        LocalCommandResponse::RunStarted(RunStartedResponse {
+            run_id: run.id,
+            changeset_id: changeset.id,
+            worktree_id: id,
+            approval_id: Some(id),
+            approval_request: Some(approval_request.clone()),
+        }),
+        LocalCommandResponse::RunStarted(RunStartedResponse {
+            run_id: run.id,
+            changeset_id: changeset.id,
+            worktree_id: id,
+            approval_id: None,
+            approval_request: None,
+        }),
         LocalCommandResponse::RunArtifacts(RunArtifactsResponse {
             run_id: run.id,
             artifacts: vec![artifact.clone()],
@@ -201,6 +215,7 @@ fn all_local_message_shapes_round_trip() {
             run: run.clone(),
             worktree: None,
             checkpoint: Some(checkpoint.clone()),
+            pending_approval: Some(approval_request.clone()),
             findings: Vec::new(),
             events: vec![event.clone()],
         })),

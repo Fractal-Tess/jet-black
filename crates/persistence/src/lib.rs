@@ -38,6 +38,7 @@ pub struct StoredRunSnapshot {
     pub run: Run,
     pub worktree: Option<Worktree>,
     pub checkpoint: Option<Checkpoint>,
+    pub pending_approval: Option<Approval>,
     pub findings: Vec<Finding>,
     pub events: Vec<OrderedRunEvent>,
 }
@@ -370,13 +371,10 @@ impl SqliteStore {
                 run.version(),
                 |state, next| state.allows(next),
             )?;
-            if stored.state() != RunState::Running
-                || run.state() != RunState::AwaitingApproval
-                || run.proposal_digest() != Some(approval.digest())
-                || approval.run_id() != run.id
-            {
+            if stored.state() != RunState::Running {
                 return Err(PersistenceError::ApprovalDoesNotMatchRun);
             }
+            validate_pending_approval(run, approval)?;
             let sequence: u64 = transaction.query_row(
                 "SELECT COALESCE(MAX(sequence), 0) + 1 FROM semantic_events WHERE run_id = ?1",
                 [run.id.to_string()],
@@ -536,6 +534,7 @@ impl SqliteStore {
                 None
             };
             let checkpoint = load_latest_checkpoint(&transaction, run.id)?;
+            let pending_approval = load_pending_approval(&transaction, &run)?;
             let findings = load_findings(&transaction, changeset.id)?;
             let events = query_bounded_events(
                 &transaction,
@@ -550,6 +549,7 @@ impl SqliteStore {
                 run,
                 worktree,
                 checkpoint,
+                pending_approval,
                 findings,
                 events,
             }))
@@ -609,16 +609,7 @@ impl SqliteStore {
     }
 
     pub fn approval_for_run(&self, run_id: Uuid) -> Result<Option<Approval>, PersistenceError> {
-        self.with_connection(|connection| {
-            let body = connection
-                .query_row(
-                    "SELECT body FROM approvals WHERE owner = ?1 ORDER BY rowid DESC LIMIT 1",
-                    [run_id.to_string()],
-                    |row| row.get::<_, String>(0),
-                )
-                .optional()?;
-            body.map(|value| decode(&value)).transpose()
-        })
+        self.with_connection(|connection| load_latest_approval(connection, run_id))
     }
 
     pub fn reject_and_interrupt(
@@ -630,17 +621,8 @@ impl SqliteStore {
             let transaction =
                 connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
             let (mut run, stored_version) = load_run(&transaction, run_id)?;
-            let approval_body: String = transaction.query_row(
-                "SELECT body FROM approvals WHERE id = ?1 AND owner = ?2",
-                params![approval_id.to_string(), run_id.to_string()],
-                |row| row.get(0),
-            )?;
-            let approval: Approval = decode(&approval_body)?;
-            if run.state() != RunState::AwaitingApproval
-                || run.proposal_digest() != Some(approval.digest())
-            {
-                return Err(PersistenceError::ApprovalDoesNotMatchRun);
-            }
+            let approval = load_approval(&transaction, run_id, approval_id)?;
+            validate_pending_approval(&run, &approval)?;
             run.interrupt()?;
             validate_versioned_transition(
                 "run",
@@ -685,16 +667,9 @@ impl SqliteStore {
             let transaction =
                 connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
             let (mut run, stored_version) = load_run(&transaction, run_id)?;
-            let approval_body: String = transaction.query_row(
-                "SELECT body FROM approvals WHERE id = ?1 AND owner = ?2",
-                params![approval_id.to_string(), run_id.to_string()],
-                |row| row.get(0),
-            )?;
-            let mut approval: Approval = decode(&approval_body)?;
-            if run.state() != RunState::AwaitingApproval
-                || run.changeset_id() != presented.changeset_id
-                || run.proposal_digest() != Some(approval.digest())
-            {
+            let mut approval = load_approval(&transaction, run_id, approval_id)?;
+            validate_pending_approval(&run, &approval)?;
+            if run.changeset_id() != presented.changeset_id {
                 return Err(PersistenceError::ApprovalDoesNotMatchRun);
             }
             let approved_action = approval.consume_for_run(run_id, presented, now_unix_ms)?;
@@ -2208,6 +2183,90 @@ fn load_latest_checkpoint(
         Ok(checkpoint)
     })
     .transpose()
+}
+
+fn load_latest_approval(
+    connection: &Connection,
+    run_id: Uuid,
+) -> Result<Option<Approval>, PersistenceError> {
+    connection
+        .query_row(
+            "SELECT id, owner, body FROM approvals WHERE owner = ?1 ORDER BY rowid DESC LIMIT 1",
+            [run_id.to_string()],
+            |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                ))
+            },
+        )
+        .optional()?
+        .map(|row| decode_approval_row(run_id, row))
+        .transpose()
+}
+
+fn load_approval(
+    connection: &Connection,
+    run_id: Uuid,
+    approval_id: Uuid,
+) -> Result<Approval, PersistenceError> {
+    let row = connection.query_row(
+        "SELECT id, owner, body FROM approvals WHERE id = ?1 AND owner = ?2",
+        params![approval_id.to_string(), run_id.to_string()],
+        |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+            ))
+        },
+    )?;
+    let approval = decode_approval_row(run_id, row)?;
+    if approval.id != approval_id {
+        return Err(PersistenceError::CorruptOwnership("approval"));
+    }
+    Ok(approval)
+}
+
+fn decode_approval_row(
+    run_id: Uuid,
+    (scalar_approval_id, scalar_run_id, body): (String, String, String),
+) -> Result<Approval, PersistenceError> {
+    let approval: Approval = decode(&body)?;
+    if scalar_approval_id != approval.id.to_string()
+        || scalar_run_id != run_id.to_string()
+        || approval.run_id() != run_id
+    {
+        return Err(PersistenceError::CorruptOwnership("approval"));
+    }
+    Ok(approval)
+}
+
+fn validate_pending_approval(run: &Run, approval: &Approval) -> Result<(), PersistenceError> {
+    if run.state() != RunState::AwaitingApproval
+        || approval.run_id() != run.id
+        || approval.is_consumed()
+        || approval.scope().changeset_id != run.changeset_id()
+        || approval.digest() != approval.scope().digest()
+        || run.proposal_digest() != Some(approval.digest())
+    {
+        return Err(PersistenceError::ApprovalDoesNotMatchRun);
+    }
+    Ok(())
+}
+
+fn load_pending_approval(
+    connection: &Connection,
+    run: &Run,
+) -> Result<Option<Approval>, PersistenceError> {
+    if run.state() != RunState::AwaitingApproval {
+        return Ok(None);
+    }
+    let approval = load_latest_approval(connection, run.id)?
+        .ok_or(PersistenceError::ApprovalDoesNotMatchRun)?;
+    validate_pending_approval(run, &approval)?;
+    Ok(Some(approval))
 }
 
 fn load_checkpoint_for_changeset(
