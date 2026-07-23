@@ -6,6 +6,8 @@ import type {
   RunState,
 } from "@workspace/shared/protocol";
 import { z } from "zod";
+import type { BrowserCommandSessionOptions } from "./browser-command-session";
+import { createBrowserCommandSession } from "./browser-command-session";
 import {
   ExecutionClientError,
   isStructuredError,
@@ -17,15 +19,8 @@ import {
   hydrateExecutionSnapshot,
   reduceExecutionEvent,
 } from "./event-reducer";
-import { createHttpExecutionClient } from "./http";
-import type {
-  ExecutionClient,
-  FetchTransport,
-  RequestIdFactory,
-} from "./types";
+import type { ExecutionClient } from "./types";
 
-const SESSION_STORAGE_KEY = "jet-black.execution-session";
-const HASH_PREFIX_PATTERN = /^#/u;
 const EVENT_PAGE_SIZE = 1000;
 const MAX_REPLAY_PAGES = 100;
 const TERMINAL_RUN_STATES = new Set<RunState>([
@@ -50,14 +45,6 @@ export type BrowserRunSessionState = {
   status: BrowserRunSessionStatus;
 };
 
-type SessionExchange = {
-  csrf_token: string;
-  expires_at_unix_ms: number;
-};
-
-type BrowserLocation = Pick<Location, "hash" | "pathname" | "search">;
-type BrowserHistory = Pick<History, "replaceState" | "state">;
-type BrowserStorage = Pick<Storage, "getItem" | "removeItem" | "setItem">;
 type EventListener = (event: Event) => void;
 
 export type EventSourceTransport = {
@@ -67,26 +54,13 @@ export type EventSourceTransport = {
 
 export type EventSourceFactory = (url: string) => EventSourceTransport;
 
-export type BrowserRunSessionOptions = {
-  commandEndpoint?: string;
+export type BrowserRunSessionOptions = BrowserCommandSessionOptions & {
   createEventSource?: EventSourceFactory;
-  createRequestId?: RequestIdFactory;
   eventEndpoint?: (runId: string, afterSequence: number) => string;
-  exchangeEndpoint?: string;
-  fetch?: FetchTransport;
-  history?: BrowserHistory;
-  location?: BrowserLocation;
-  now?: () => number;
   runId: string;
-  storage?: BrowserStorage;
 };
 
 type StateListener = (state: BrowserRunSessionState) => void;
-
-const sessionExchangeSchema = z.object({
-  csrf_token: z.string().min(1),
-  expires_at_unix_ms: z.int(),
-});
 
 const runStateSchema = z.enum([
   "queued",
@@ -135,35 +109,6 @@ const orderedRunEventSchema = z.object({
   event: semanticEventSchema,
 });
 
-const parseSessionExchange = (value: unknown): SessionExchange => {
-  const result = sessionExchangeSchema.safeParse(value);
-  if (!result.success) {
-    throw new ExecutionClientError({
-      code: "invalid_response",
-      message: "Execution service returned an invalid session exchange.",
-      retryable: false,
-    });
-  }
-
-  return result.data;
-};
-
-const parseStoredSession = (
-  value: string | null,
-  now: number
-): SessionExchange | null => {
-  if (value === null) {
-    return null;
-  }
-
-  try {
-    const session = parseSessionExchange(JSON.parse(value));
-    return session.expires_at_unix_ms > now ? session : null;
-  } catch {
-    return null;
-  }
-};
-
 const parseOrderedRunEvent = (value: unknown): OrderedRunEvent => {
   const result = orderedRunEventSchema.safeParse(value);
   if (!result.success) {
@@ -186,113 +131,6 @@ const normalizeError = (error: unknown): ExecutionClientError => {
     code: "browser_session_error",
     message:
       error instanceof Error ? error.message : "Browser run session failed.",
-    retryable: false,
-  });
-};
-
-const removeLaunchToken = (
-  location: BrowserLocation,
-  history: BrowserHistory
-): string | null => {
-  const parameters = new URLSearchParams(
-    location.hash.replace(HASH_PREFIX_PATTERN, "")
-  );
-  const launchToken = parameters.get("exchange");
-  if (launchToken === null) {
-    return null;
-  }
-
-  parameters.delete("exchange");
-  const remainingFragment = parameters.toString();
-  const nextUrl = `${location.pathname}${location.search}${
-    remainingFragment.length > 0 ? `#${remainingFragment}` : ""
-  }`;
-  history.replaceState(history.state, "", nextUrl);
-  return launchToken;
-};
-
-const exchangeLaunchToken = async (
-  launchToken: string,
-  endpoint: string,
-  fetchTransport: FetchTransport
-): Promise<SessionExchange> => {
-  let response: Response;
-  try {
-    response = await fetchTransport(endpoint, {
-      body: JSON.stringify({ token: launchToken }),
-      credentials: "same-origin",
-      headers: { "content-type": "application/json" },
-      method: "POST",
-    });
-  } catch {
-    throw new ExecutionClientError({
-      code: "transport_error",
-      message: "Unable to exchange the local launch token.",
-      retryable: true,
-    });
-  }
-
-  let body: unknown;
-  try {
-    body = await response.json();
-  } catch {
-    throw new ExecutionClientError({
-      code: "invalid_response",
-      message: "Execution service returned invalid session JSON.",
-      retryable: false,
-    });
-  }
-
-  if (!response.ok) {
-    throw new ExecutionClientError(
-      isStructuredError(body)
-        ? body
-        : {
-            code: "session_exchange_failed",
-            message: `Session exchange returned HTTP ${response.status}.`,
-            retryable: response.status >= 500,
-          }
-    );
-  }
-
-  return parseSessionExchange(body);
-};
-
-const resolveSession = async ({
-  exchangeEndpoint,
-  fetchTransport,
-  history,
-  location,
-  now,
-  storage,
-}: {
-  exchangeEndpoint: string;
-  fetchTransport: FetchTransport;
-  history: BrowserHistory;
-  location: BrowserLocation;
-  now: number;
-  storage: BrowserStorage;
-}): Promise<SessionExchange> => {
-  const launchToken = removeLaunchToken(location, history);
-  if (launchToken !== null) {
-    const session = await exchangeLaunchToken(
-      launchToken,
-      exchangeEndpoint,
-      fetchTransport
-    );
-    storage.setItem(SESSION_STORAGE_KEY, JSON.stringify(session));
-    return session;
-  }
-
-  const session = parseStoredSession(storage.getItem(SESSION_STORAGE_KEY), now);
-  if (session !== null) {
-    return session;
-  }
-
-  storage.removeItem(SESSION_STORAGE_KEY);
-  throw new ExecutionClientError({
-    code: "session_required",
-    message: "Open the standalone launch URL to start a local session.",
     retryable: false,
   });
 };
@@ -337,24 +175,7 @@ export class BrowserRunSession {
   static async create(
     options: BrowserRunSessionOptions
   ): Promise<BrowserRunSession> {
-    const fetchTransport = options.fetch ?? globalThis.fetch;
-    const location = options.location ?? globalThis.location;
-    const history = options.history ?? globalThis.history;
-    const storage = options.storage ?? globalThis.sessionStorage;
-    const session = await resolveSession({
-      exchangeEndpoint: options.exchangeEndpoint ?? "/api/session/exchange",
-      fetchTransport,
-      history,
-      location,
-      now: (options.now ?? Date.now)(),
-      storage,
-    });
-    const client = createHttpExecutionClient({
-      createRequestId: options.createRequestId,
-      csrfToken: session.csrf_token,
-      endpoint: options.commandEndpoint ?? "/api/commands",
-      fetch: fetchTransport,
-    });
+    const client = await createBrowserCommandSession(options);
     const snapshot = await BrowserRunSession.fetchSnapshot(
       client,
       options.runId
