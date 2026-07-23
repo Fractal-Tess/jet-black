@@ -6,6 +6,7 @@
   "scripts": {
     "dev": "vite dev --host 0.0.0.0",
     "build": "vite build",
+    "build:standalone": "vite build src/standalone --config standalone.config.ts",
     "lint": "bunx ultracite check .",
     "prepare": "svelte-kit sync",
     "preview": "vite preview",

@@ -17,8 +17,9 @@ use protocol::{
     SemanticEventKind, StructuredError,
 };
 use serde::Deserialize;
-use server::{Runtime, StandaloneServer};
+use server::{Runtime, StandaloneServer, StaticAssets};
 use std::{
+    fs,
     net::SocketAddr,
     path::PathBuf,
     sync::{Arc, Condvar, Mutex},
@@ -519,6 +520,82 @@ async fn binds_an_ephemeral_loopback_listener_before_server_creation() {
         Arc::new(FixtureRuntime::default()),
     );
     assert!(server.is_ok());
+}
+
+#[tokio::test]
+async fn serves_static_assets_only_for_the_local_authority() {
+    let directory = tempfile::tempdir().unwrap();
+    fs::write(
+        directory.path().join("index.html"),
+        "<!doctype html><title>Jet Black</title>",
+    )
+    .unwrap();
+    fs::write(
+        directory.path().join("app.js"),
+        "export const ready = true;",
+    )
+    .unwrap();
+    fs::create_dir(directory.path().join("api")).unwrap();
+    fs::write(directory.path().join("api/missing"), "not the API").unwrap();
+    let static_assets = StaticAssets::open(directory.path()).unwrap();
+    let server =
+        test_server(Arc::new(FixtureRuntime::default())).with_static_assets(static_assets);
+    let router = server.router();
+
+    let index = router
+        .clone()
+        .oneshot(
+            Request::get("/")
+                .header(header::HOST, AUTHORITY)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(index.status(), StatusCode::OK);
+    assert_eq!(
+        index.headers().get(header::CONTENT_TYPE).unwrap(),
+        "text/html"
+    );
+
+    let asset = router
+        .clone()
+        .oneshot(
+            Request::get("/app.js")
+                .header(header::HOST, AUTHORITY)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(asset.status(), StatusCode::OK);
+    assert_eq!(
+        asset.headers().get(header::CONTENT_TYPE).unwrap(),
+        "text/javascript"
+    );
+
+    let invalid_host = router
+        .clone()
+        .oneshot(
+            Request::get("/")
+                .header(header::HOST, "example.com")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(invalid_host.status(), StatusCode::FORBIDDEN);
+
+    let missing_api = router
+        .oneshot(
+            Request::get("/api/missing")
+                .header(header::HOST, AUTHORITY)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(missing_api.status(), StatusCode::NOT_FOUND);
 }
 
 #[tokio::test]

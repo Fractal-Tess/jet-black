@@ -70,6 +70,7 @@ pub struct CliOverrides {
     pub data_dir: Option<PathBuf>,
     pub repository_roots: Option<Vec<PathBuf>>,
     pub log_dir: Option<PathBuf>,
+    pub static_assets_dir: Option<PathBuf>,
     pub run_timeout_seconds: Option<u64>,
 }
 
@@ -110,6 +111,9 @@ impl CliOverrides {
                 "--data-dir" => parsed.data_dir = Some(PathBuf::from(value(&mut arguments)?)),
                 "--repository-root" => roots.push(PathBuf::from(value(&mut arguments)?)),
                 "--log-dir" => parsed.log_dir = Some(PathBuf::from(value(&mut arguments)?)),
+                "--static-assets-dir" => {
+                    parsed.static_assets_dir = Some(PathBuf::from(value(&mut arguments)?))
+                }
                 "--run-timeout-seconds" => {
                     parsed.run_timeout_seconds = Some(
                         value(&mut arguments)?
@@ -136,6 +140,7 @@ struct FileConfig {
     data_dir: Option<PathBuf>,
     repository_roots: Option<Vec<PathBuf>>,
     log_dir: Option<PathBuf>,
+    static_assets_dir: Option<PathBuf>,
     run_timeout_seconds: Option<u64>,
 }
 
@@ -148,6 +153,7 @@ pub struct StandaloneConfig {
     pub data_dir: PathBuf,
     pub repository_roots: Vec<PathBuf>,
     pub log_dir: PathBuf,
+    pub static_assets_dir: PathBuf,
     pub run_timeout: Duration,
 }
 
@@ -167,6 +173,7 @@ impl StandaloneConfig {
             return Err(ConfigError::UnsupportedProfile(profile.to_owned()));
         }
         let home = default_data_dir();
+        let static_assets_dir = default_static_assets_dir()?;
         let mut raw = FileConfig {
             provider: Some(ProviderKind::Mock),
             provider_model: None,
@@ -175,6 +182,7 @@ impl StandaloneConfig {
             data_dir: Some(home.clone()),
             repository_roots: Some(Vec::new()),
             log_dir: Some(home.join("logs")),
+            static_assets_dir: Some(static_assets_dir),
             run_timeout_seconds: Some(900),
         };
         merge_file(&mut raw, profile_toml)?;
@@ -189,6 +197,7 @@ impl StandaloneConfig {
             data_dir: raw.data_dir.expect("safe default"),
             repository_roots: raw.repository_roots.expect("safe default"),
             log_dir: raw.log_dir.expect("safe default"),
+            static_assets_dir: raw.static_assets_dir.expect("safe default"),
             run_timeout: Duration::from_secs(raw.run_timeout_seconds.expect("safe default")),
         };
         config.validate()?;
@@ -227,6 +236,12 @@ impl StandaloneConfig {
                 ));
             }
         }
+        if !self.static_assets_dir.is_absolute() {
+            errors.push(format!(
+                "static assets directory must be absolute: {}",
+                self.static_assets_dir.display()
+            ));
+        }
         if errors.is_empty() {
             Ok(())
         } else {
@@ -243,6 +258,10 @@ impl StandaloneConfig {
             provider_availability,
         }
     }
+}
+
+fn default_static_assets_dir() -> Result<PathBuf, ConfigError> {
+    Ok(std::env::current_dir()?.join("apps/web/build-standalone"))
 }
 
 fn default_data_dir() -> PathBuf {
@@ -284,6 +303,7 @@ fn merge_env(raw: &mut FileConfig, env: &HashMap<String, String>) -> Result<(), 
             .get("JET_BLACK_REPOSITORY_ROOTS")
             .map(|v| v.split(':').map(PathBuf::from).collect()),
         log_dir: env.get("JET_BLACK_LOG_DIR").map(PathBuf::from),
+        static_assets_dir: env.get("JET_BLACK_STATIC_ASSETS_DIR").map(PathBuf::from),
         run_timeout_seconds: env
             .get("JET_BLACK_RUN_TIMEOUT_SECONDS")
             .map(|v| v.parse())
@@ -304,6 +324,7 @@ fn merge_cli(raw: &mut FileConfig, cli: CliOverrides) {
             data_dir: cli.data_dir,
             repository_roots: cli.repository_roots,
             log_dir: cli.log_dir,
+            static_assets_dir: cli.static_assets_dir,
             run_timeout_seconds: cli.run_timeout_seconds,
         },
     );
@@ -329,6 +350,9 @@ fn merge(target: &mut FileConfig, source: FileConfig) {
     }
     if source.log_dir.is_some() {
         target.log_dir = source.log_dir;
+    }
+    if source.static_assets_dir.is_some() {
+        target.static_assets_dir = source.static_assets_dir;
     }
     if source.run_timeout_seconds.is_some() {
         target.run_timeout_seconds = source.run_timeout_seconds;

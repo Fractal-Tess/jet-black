@@ -5,10 +5,11 @@ use async_stream::stream;
 use auth::{AuthError, SessionManager, session_cookie};
 use axum::{
     Json, Router,
-    extract::{DefaultBodyLimit, Path, Query, State},
+    extract::{DefaultBodyLimit, Path, Query, Request, State},
     http::{HeaderMap, HeaderValue, StatusCode, header},
+    middleware::{self, Next},
     response::{IntoResponse, Response, Sse, sse::Event},
-    routing::{get, post},
+    routing::{any, get, post},
 };
 use config::{PublicBootstrap, Secret};
 use domain::{Id, RunState, limits::MAX_COMMAND_BODY_BYTES};
@@ -18,13 +19,20 @@ use protocol::{
     StructuredError,
 };
 use serde::{Deserialize, Serialize};
-use std::{convert::Infallible, net::SocketAddr, sync::Arc, time::Duration};
+use std::{
+    convert::Infallible,
+    net::SocketAddr,
+    path::{Path as FilePath, PathBuf},
+    sync::Arc,
+    time::Duration,
+};
 use thiserror::Error;
 use tokio::{
     net::TcpListener,
     runtime::Handle,
     sync::{OwnedSemaphorePermit, Semaphore},
 };
+use tower_http::services::ServeDir;
 
 const MAX_CONCURRENT_COMMANDS: usize = 4;
 const MAX_CONCURRENT_RUN_WORKERS: usize = 4;
@@ -80,7 +88,7 @@ where
 struct ServerState {
     authority: Arc<str>,
     origin: Arc<str>,
-    bootstrap: PublicBootstrap,
+    bootstrap: Arc<PublicBootstrap>,
     sessions: Arc<SessionManager>,
     command_slots: Arc<Semaphore>,
     run_admission_slots: Arc<Semaphore>,
@@ -88,9 +96,32 @@ struct ServerState {
     runtime: Arc<dyn Runtime>,
 }
 
+#[derive(Clone)]
+pub struct StaticAssets {
+    directory: PathBuf,
+}
+
+impl StaticAssets {
+    pub fn open(directory: impl AsRef<FilePath>) -> Result<Self, ServerError> {
+        let directory = directory
+            .as_ref()
+            .canonicalize()
+            .map_err(|source| ServerError::StaticAssets {
+                path: directory.as_ref().to_path_buf(),
+                source,
+            })?;
+        let index_path = directory.join("index.html");
+        if !index_path.is_file() {
+            return Err(ServerError::MissingStaticIndex(index_path));
+        }
+        Ok(Self { directory })
+    }
+}
+
 pub struct StandaloneServer {
     state: ServerState,
     launch_token: Secret,
+    static_assets: Option<StaticAssets>,
 }
 
 impl StandaloneServer {
@@ -109,7 +140,7 @@ impl StandaloneServer {
             state: ServerState {
                 authority,
                 origin,
-                bootstrap,
+                bootstrap: Arc::new(bootstrap),
                 sessions: Arc::new(sessions),
                 command_slots: Arc::new(Semaphore::new(MAX_CONCURRENT_COMMANDS)),
                 run_admission_slots: Arc::new(Semaphore::new(MAX_ADMITTED_RUNS)),
@@ -117,7 +148,13 @@ impl StandaloneServer {
                 runtime,
             },
             launch_token,
+            static_assets: None,
         })
+    }
+
+    pub fn with_static_assets(mut self, static_assets: StaticAssets) -> Self {
+        self.static_assets = Some(static_assets);
+        self
     }
 
     pub fn launch_token(&self) -> &Secret {
@@ -125,14 +162,25 @@ impl StandaloneServer {
     }
 
     pub fn router(&self) -> Router {
-        Router::new()
+        let router = Router::new()
             .route("/api/bootstrap", get(bootstrap))
             .route("/api/session/exchange", post(exchange_session))
             .route("/api/commands", post(command))
             .route("/api/recovery", get(recovery))
             .route("/api/runs/{run_id}/events", get(run_events))
+            .route("/api/{*path}", any(api_not_found))
             .layer(DefaultBodyLimit::max(MAX_COMMAND_BODY_BYTES))
-            .with_state(self.state.clone())
+            .with_state(self.state.clone());
+        let router = match &self.static_assets {
+            Some(static_assets) => {
+                router.fallback_service(ServeDir::new(&static_assets.directory))
+            }
+            None => router,
+        };
+        router.layer(middleware::from_fn_with_state(
+            self.state.clone(),
+            require_valid_host,
+        ))
     }
 
     pub async fn serve(self, listener: TcpListener) -> Result<(), std::io::Error> {
@@ -147,6 +195,10 @@ impl StandaloneServer {
     }
 }
 
+async fn api_not_found() -> StatusCode {
+    StatusCode::NOT_FOUND
+}
+
 #[derive(Debug, Serialize)]
 struct BootstrapResponse {
     #[serde(flatten)]
@@ -156,11 +208,9 @@ struct BootstrapResponse {
 
 async fn bootstrap(
     State(state): State<ServerState>,
-    headers: HeaderMap,
 ) -> Result<Json<BootstrapResponse>, ApiError> {
-    validate_host(&state, &headers)?;
     Ok(Json(BootstrapResponse {
-        bootstrap: state.bootstrap,
+        bootstrap: (*state.bootstrap).clone(),
         session_required: true,
     }))
 }
@@ -175,7 +225,6 @@ async fn exchange_session(
     headers: HeaderMap,
     Json(request): Json<ExchangeRequest>,
 ) -> Result<Response, ApiError> {
-    validate_host(&state, &headers)?;
     validate_origin(&state, &headers)?;
     let (session_token, exchange) = state.sessions.exchange(&request.token)?;
     let cookie = HeaderValue::from_str(&session_cookie(&session_token))
@@ -356,15 +405,23 @@ async fn run_events(
     ))
 }
 
+async fn require_valid_host(
+    State(state): State<ServerState>,
+    headers: HeaderMap,
+    request: Request,
+    next: Next,
+) -> Result<Response, ApiError> {
+    validate_host(&state, &headers)?;
+    Ok(next.run(request).await)
+}
+
 fn validate_mutation_request(state: &ServerState, headers: &HeaderMap) -> Result<(), ApiError> {
-    validate_host(state, headers)?;
     validate_origin(state, headers)?;
     state.sessions.authenticate(headers, true)?;
     Ok(())
 }
 
 fn validate_read_request(state: &ServerState, headers: &HeaderMap) -> Result<(), ApiError> {
-    validate_host(state, headers)?;
     state.sessions.authenticate(headers, false)?;
     Ok(())
 }
@@ -592,4 +649,11 @@ pub enum ServerError {
     NonLoopbackAddress(SocketAddr),
     #[error("local authentication could not be initialized: {0}")]
     Authentication(#[from] AuthError),
+    #[error("static assets directory could not be opened at {path}: {source}")]
+    StaticAssets {
+        path: PathBuf,
+        source: std::io::Error,
+    },
+    #[error("static assets index is missing: {0}")]
+    MissingStaticIndex(PathBuf),
 }

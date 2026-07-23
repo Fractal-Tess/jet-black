@@ -38,6 +38,7 @@
   ],
   "exports": {
     "./globals.css": "./src/app.css",
+    "./theme.css": "./src/theme.css",
     "./lib/*": "./src/lib/*.ts",
     "./components/*": "./src/lib/components/*/index.ts"
   }

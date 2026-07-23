@@ -3,7 +3,7 @@ use config::{CliOverrides, ProviderKind, StandaloneConfig};
 use git::GitService;
 use orchestration::{DEFAULT_APPROVAL_TTL, LocalOrchestrator};
 use persistence::{ArtifactPolicy, LocalArtifactStore, SqliteStore};
-use server::StandaloneServer;
+use server::{StandaloneServer, StaticAssets};
 use std::{collections::HashMap, sync::Arc};
 use tokio::net::TcpListener;
 
@@ -12,6 +12,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let environment = std::env::vars().collect::<HashMap<_, _>>();
     let cli = CliOverrides::parse_from(std::env::args().skip(1))?;
     let config = StandaloneConfig::load(cli, &environment, None, None)?;
+    let static_assets = StaticAssets::open(&config.static_assets_dir)?;
     config.prepare_directories()?;
 
     let search_path = environment.get("PATH").cloned().unwrap_or_default();
@@ -63,7 +64,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         address,
         config.public_bootstrap(provider_availability),
         runtime,
-    )?;
+    )?
+    .with_static_assets(static_assets);
 
     for action in &recovery.actions {
         println!(

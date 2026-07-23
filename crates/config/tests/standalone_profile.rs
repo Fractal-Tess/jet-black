@@ -20,10 +20,13 @@ fn cli_overrides_environment_and_toml() {
         "30".into(),
         "--repository-root".into(),
         root.display().to_string(),
+        "--static-assets-dir".into(),
+        root.display().to_string(),
     ])
     .unwrap();
     let config = StandaloneConfig::load(cli, &environment, None, Some(&profile)).unwrap();
     assert_eq!(config.run_timeout.as_secs(), 30);
+    assert_eq!(config.static_assets_dir, root);
     assert!(config.bind.ip().is_loopback());
     config.prepare_directories().unwrap();
     assert!(config.log_dir.exists());
