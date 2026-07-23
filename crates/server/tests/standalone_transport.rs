@@ -5,16 +5,17 @@ use axum::{
 };
 use config::{ProviderKind, PublicBootstrap};
 use domain::{
-    Changeset, ChangesetMutationKind, Id, Repository, Run, RunState, WorktreeState,
+    Changeset, ChangesetMutationKind, Id, RelativePath, Repository, Run, RunState, WorktreeState,
     limits::MAX_COMMAND_BODY_BYTES,
 };
 use futures_util::StreamExt;
 use protocol::{
     CommandResult, Envelope, EventCursor, EventPage, HistoryResponse, LocalCommand,
     LocalCommandResponse, MutationPreview, MutationResult, OrderedRunEvent, RecoveryResponse,
-    ResponseEnvelope, RunArtifactSegmentMetadata, RunArtifactSegmentResponse, RunArtifactStream,
-    RunArtifactSummary, RunArtifactsDeletedResponse, RunArtifactsResponse, RunSnapshot,
-    SemanticEventKind, StructuredError,
+    ResponseEnvelope, ReviewCheckKind, ReviewCheckResult, ReviewCheckStatus, ReviewReport,
+    RunArtifactSegmentMetadata, RunArtifactSegmentResponse, RunArtifactStream, RunArtifactSummary,
+    RunArtifactsDeletedResponse, RunArtifactsResponse, RunSnapshot, SemanticEventKind,
+    StructuredError,
 };
 use serde::Deserialize;
 use server::{Runtime, StandaloneServer, StaticAssets};
@@ -96,6 +97,47 @@ impl Runtime for FixtureRuntime {
                     runs: vec![self.snapshot.run.clone()],
                 }))
             }
+            LocalCommand::ReviewChangeset {
+                changeset_id: _,
+                expected_version,
+                expected_head_sha: _,
+                checks: _,
+            } if expected_version != self.snapshot.changeset.version() => Err(StructuredError {
+                code: "stale_changeset_version".to_owned(),
+                message: "changeset version changed after the request was prepared".to_owned(),
+                retryable: false,
+            }),
+            LocalCommand::ReviewChangeset {
+                changeset_id: _,
+                expected_version: _,
+                expected_head_sha,
+                checks: _,
+            } if expected_head_sha != self.snapshot.changeset.head_sha() => Err(StructuredError {
+                code: "stale_changeset_head".to_owned(),
+                message: "changeset head changed after the request was prepared".to_owned(),
+                retryable: false,
+            }),
+            LocalCommand::ReviewChangeset {
+                changeset_id,
+                expected_version: _,
+                expected_head_sha,
+                checks,
+            } => Ok(LocalCommandResponse::ReviewCompleted(ReviewReport {
+                changeset_id,
+                changeset_version: self.snapshot.changeset.version(),
+                head_sha: expected_head_sha,
+                changed_paths: vec![RelativePath::parse("README.md").unwrap()],
+                unified_diff: "diff".to_owned(),
+                checks: checks
+                    .into_iter()
+                    .map(|kind| ReviewCheckResult {
+                        kind,
+                        status: ReviewCheckStatus::Passed,
+                        evidence: "passed".to_owned(),
+                    })
+                    .collect(),
+                findings: Vec::new(),
+            })),
             LocalCommand::PreviewCommit {
                 changeset_id,
                 expected_version,
@@ -259,6 +301,124 @@ impl Runtime for FixtureRuntime {
             next_cursor: EventCursor {
                 run_id,
                 after_sequence: sequence,
+            },
+        })
+    }
+}
+
+#[derive(Default)]
+struct ReviewBlockingState {
+    entered: bool,
+    released: bool,
+}
+
+struct ReviewBlockingRuntime {
+    state: Mutex<ReviewBlockingState>,
+    changed: Condvar,
+}
+
+impl ReviewBlockingRuntime {
+    fn new() -> Self {
+        Self {
+            state: Mutex::new(ReviewBlockingState::default()),
+            changed: Condvar::new(),
+        }
+    }
+
+    fn wait_until_entered(&self) -> bool {
+        let deadline = Instant::now() + Duration::from_secs(1);
+        let mut state = self.state.lock().unwrap();
+        while !state.entered {
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            if remaining.is_zero() {
+                return false;
+            }
+            let (next_state, timeout) = self.changed.wait_timeout(state, remaining).unwrap();
+            state = next_state;
+            if timeout.timed_out() && !state.entered {
+                return false;
+            }
+        }
+        true
+    }
+
+    fn release(&self) {
+        self.state.lock().unwrap().released = true;
+        self.changed.notify_all();
+    }
+}
+
+struct ReviewReleaseGuard(Arc<ReviewBlockingRuntime>);
+
+impl Drop for ReviewReleaseGuard {
+    fn drop(&mut self) {
+        self.0.release();
+    }
+}
+
+impl Runtime for ReviewBlockingRuntime {
+    fn dispatch(&self, command: LocalCommand) -> Result<LocalCommandResponse, StructuredError> {
+        match command {
+            LocalCommand::ReviewChangeset {
+                changeset_id,
+                expected_version,
+                expected_head_sha,
+                checks,
+            } => {
+                let mut state = self.state.lock().unwrap();
+                state.entered = true;
+                self.changed.notify_all();
+                while !state.released {
+                    state = self.changed.wait(state).unwrap();
+                }
+                drop(state);
+                Ok(LocalCommandResponse::ReviewCompleted(ReviewReport {
+                    changeset_id,
+                    changeset_version: expected_version,
+                    head_sha: expected_head_sha,
+                    changed_paths: vec![RelativePath::parse("README.md").unwrap()],
+                    unified_diff: "diff".to_owned(),
+                    checks: checks
+                        .into_iter()
+                        .map(|kind| ReviewCheckResult {
+                            kind,
+                            status: ReviewCheckStatus::Passed,
+                            evidence: "passed".to_owned(),
+                        })
+                        .collect(),
+                    findings: Vec::new(),
+                }))
+            }
+            LocalCommand::GetRecovery => Ok(LocalCommandResponse::Recovery(RecoveryResponse {
+                actions: Vec::new(),
+            })),
+            _ => Err(StructuredError {
+                code: "unsupported".to_owned(),
+                message: "unsupported review scheduling command".to_owned(),
+                retryable: false,
+            }),
+        }
+    }
+
+    fn drive_run_to_approval(&self, _run_id: Id) -> Result<(), StructuredError> {
+        Ok(())
+    }
+
+    fn run_state(&self, _run_id: Id) -> Result<RunState, StructuredError> {
+        Ok(RunState::Running)
+    }
+
+    fn events_after(
+        &self,
+        run_id: Id,
+        after_sequence: u64,
+        _limit: usize,
+    ) -> Result<EventPage, StructuredError> {
+        Ok(EventPage {
+            events: Vec::new(),
+            next_cursor: EventCursor {
+                run_id,
+                after_sequence,
             },
         })
     }
@@ -968,6 +1128,134 @@ async fn authenticated_snapshot_history_and_event_commands_are_typed() {
             if history.changeset_id == changeset_id
                 && history.runs.len() == 1
                 && history.runs[0].id == run_id
+    ));
+}
+
+#[tokio::test]
+async fn authenticated_review_commands_preserve_exact_identity_and_checks() {
+    let runtime = Arc::new(FixtureRuntime::default());
+    let changeset_id = runtime.snapshot.changeset.id;
+    let expected_version = runtime.snapshot.changeset.version();
+    let expected_head_sha = runtime.snapshot.changeset.head_sha().to_owned();
+    let server = test_server(runtime);
+    let (router, cookie, csrf) = exchange(&server).await;
+    let checks = vec![
+        ReviewCheckKind::Format,
+        ReviewCheckKind::Typecheck,
+        ReviewCheckKind::Test,
+        ReviewCheckKind::SecretScan,
+        ReviewCheckKind::DependencyAudit,
+    ];
+
+    let (review_json, response) = authenticated_command(
+        &router,
+        &cookie,
+        &csrf,
+        LocalCommand::ReviewChangeset {
+            changeset_id,
+            expected_version,
+            expected_head_sha: expected_head_sha.clone(),
+            checks: checks.clone(),
+        },
+    )
+    .await;
+    assert!(!review_json.contains("canonical_path"));
+    assert!(!review_json.contains("worktrees/"));
+    assert!(matches!(
+        response.result,
+        CommandResult::Ok(LocalCommandResponse::ReviewCompleted(report))
+            if report.changeset_id == changeset_id
+                && report.changeset_version == expected_version
+                && report.head_sha == expected_head_sha
+                && report.checks.iter().map(|check| check.kind).collect::<Vec<_>>() == checks
+    ));
+
+    let (_, stale_version) = authenticated_command(
+        &router,
+        &cookie,
+        &csrf,
+        LocalCommand::ReviewChangeset {
+            changeset_id,
+            expected_version: expected_version + 1,
+            expected_head_sha: expected_head_sha.clone(),
+            checks: Vec::new(),
+        },
+    )
+    .await;
+    assert!(matches!(
+        stale_version.result,
+        CommandResult::Error(StructuredError { code, retryable: false, .. })
+            if code == "stale_changeset_version"
+    ));
+
+    let (_, stale_head) = authenticated_command(
+        &router,
+        &cookie,
+        &csrf,
+        LocalCommand::ReviewChangeset {
+            changeset_id,
+            expected_version,
+            expected_head_sha: "stale-head".to_owned(),
+            checks: Vec::new(),
+        },
+    )
+    .await;
+    assert!(matches!(
+        stale_head.result,
+        CommandResult::Error(StructuredError { code, retryable: false, .. })
+            if code == "stale_changeset_head"
+    ));
+}
+
+#[tokio::test]
+async fn long_review_does_not_block_general_commands() {
+    let runtime = Arc::new(ReviewBlockingRuntime::new());
+    let _release = ReviewReleaseGuard(Arc::clone(&runtime));
+    let server = test_server(runtime.clone());
+    let (router, cookie, csrf) = exchange(&server).await;
+    let review_router = router.clone();
+    let review_cookie = cookie.clone();
+    let review_csrf = csrf.clone();
+    let review = tokio::spawn(async move {
+        authenticated_command(
+            &review_router,
+            &review_cookie,
+            &review_csrf,
+            LocalCommand::ReviewChangeset {
+                changeset_id: Id::new_v4(),
+                expected_version: 1,
+                expected_head_sha: "head".to_owned(),
+                checks: vec![ReviewCheckKind::Format],
+            },
+        )
+        .await
+    });
+    let wait_runtime = Arc::clone(&runtime);
+    assert!(
+        timeout(
+            Duration::from_secs(1),
+            tokio::task::spawn_blocking(move || wait_runtime.wait_until_entered()),
+        )
+        .await
+        .expect("review should enter its executor")
+        .unwrap()
+    );
+
+    let (_, recovery) = timeout(
+        Duration::from_secs(1),
+        authenticated_command(&router, &cookie, &csrf, LocalCommand::GetRecovery),
+    )
+    .await
+    .expect("general command should not wait for the review executor");
+    assert!(matches!(
+        recovery.result,
+        CommandResult::Ok(LocalCommandResponse::Recovery(_))
+    ));
+
+    runtime.release();
+    assert!(matches!(
+        review.await.unwrap().1.result,
+        CommandResult::Ok(LocalCommandResponse::ReviewCompleted(_))
     ));
 }
 

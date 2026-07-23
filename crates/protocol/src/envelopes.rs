@@ -3,7 +3,7 @@ use domain::Id;
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 
-pub const PROTOCOL_VERSION: &str = "0.5";
+pub const PROTOCOL_VERSION: &str = "0.6";
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
 pub struct Envelope<T> {

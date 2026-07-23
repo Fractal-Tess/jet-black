@@ -6,6 +6,8 @@ import type {
   MutationPreview,
   MutationResult,
   RecoveryResponse,
+  ReviewCheckKind,
+  ReviewReport,
 } from "@workspace/shared/protocol";
 import { ExecutionClientError, unwrapCommandResult } from "./errors";
 import type { ExecutionClient } from "./types";
@@ -58,23 +60,73 @@ export const loadStandaloneReview = async (
   return review;
 };
 
+const changesetRevision = (changeset: Changeset) => ({
+  changeset_id: changeset.id,
+  expected_version: changeset.version,
+  expected_head_sha: changeset.head_sha,
+});
+
+const assertChangesetRevisionMatches = (
+  changesetId: string,
+  changesetVersion: number,
+  headSha: string,
+  changeset: Changeset,
+  error: { code: string; message: string }
+): void => {
+  if (
+    changesetId !== changeset.id ||
+    changesetVersion !== changeset.version ||
+    headSha !== changeset.head_sha
+  ) {
+    throw new ExecutionClientError({ ...error, retryable: false });
+  }
+};
+
+export const runStandaloneReview = async (
+  client: ExecutionClient,
+  changeset: Changeset,
+  checks: readonly ReviewCheckKind[]
+): Promise<ReviewReport> => {
+  const response = await client.command({
+    type: "review_changeset",
+    data: { ...changesetRevision(changeset), checks: [...checks] },
+  });
+  const report = unwrapCommandResult(response).data;
+  assertChangesetRevisionMatches(
+    report.changeset_id,
+    report.changeset_version,
+    report.head_sha,
+    changeset,
+    {
+      code: "review_result_mismatch",
+      message: "Review result does not match the requested changeset.",
+    }
+  );
+  return report;
+};
+
 const assertPreviewMatches = (
   preview: MutationPreview,
   changeset: Changeset,
   kind: MutationPreview["kind"]
 ): MutationPreview => {
-  if (
-    preview.kind !== kind ||
-    preview.changeset_id !== changeset.id ||
-    preview.expected_version !== changeset.version ||
-    preview.expected_head_sha !== changeset.head_sha
-  ) {
+  if (preview.kind !== kind) {
     throw new ExecutionClientError({
       code: "mutation_preview_mismatch",
       message: "Finalization preview does not match the current changeset.",
       retryable: false,
     });
   }
+  assertChangesetRevisionMatches(
+    preview.changeset_id,
+    preview.expected_version,
+    preview.expected_head_sha,
+    changeset,
+    {
+      code: "mutation_preview_mismatch",
+      message: "Finalization preview does not match the current changeset.",
+    }
+  );
   return preview;
 };
 
@@ -83,11 +135,7 @@ export const previewChangesetMutation = async (
   changeset: Changeset,
   kind: MutationPreview["kind"]
 ): Promise<MutationPreview> => {
-  const data = {
-    changeset_id: changeset.id,
-    expected_version: changeset.version,
-    expected_head_sha: changeset.head_sha,
-  };
+  const data = changesetRevision(changeset);
   const response =
     kind === "commit"
       ? await client.command({ type: "preview_commit", data })

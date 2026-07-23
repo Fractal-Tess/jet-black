@@ -53,6 +53,13 @@ pub enum LocalCommand {
     GetFindings {
         changeset_id: Id,
     },
+    ReviewChangeset {
+        changeset_id: Id,
+        #[ts(type = "number")]
+        expected_version: u64,
+        expected_head_sha: String,
+        checks: Vec<ReviewCheckKind>,
+    },
     GetRunArtifacts {
         run_id: Id,
     },
@@ -124,6 +131,7 @@ pub enum LocalCommandResponse {
     History(HistoryResponse),
     Recovery(RecoveryResponse),
     Findings(FindingsResponse),
+    ReviewCompleted(ReviewReport),
     RunArtifacts(RunArtifactsResponse),
     RunArtifactSegment(RunArtifactSegmentResponse),
     RunArtifactsDeleted(RunArtifactsDeletedResponse),
@@ -187,6 +195,45 @@ pub struct HistoryResponse {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
 pub struct FindingsResponse {
     pub changeset_id: Id,
+    pub findings: Vec<Finding>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, TS)]
+#[serde(rename_all = "snake_case")]
+pub enum ReviewCheckKind {
+    Format,
+    Typecheck,
+    Test,
+    SecretScan,
+    DependencyAudit,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "snake_case")]
+pub enum ReviewCheckStatus {
+    Passed,
+    Failed,
+    Unavailable,
+    TimedOut,
+    Mutated,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+pub struct ReviewCheckResult {
+    pub kind: ReviewCheckKind,
+    pub status: ReviewCheckStatus,
+    pub evidence: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+pub struct ReviewReport {
+    pub changeset_id: Id,
+    #[ts(type = "number")]
+    pub changeset_version: u64,
+    pub head_sha: String,
+    pub changed_paths: Vec<domain::RelativePath>,
+    pub unified_diff: String,
+    pub checks: Vec<ReviewCheckResult>,
     pub findings: Vec<Finding>,
 }
 

@@ -6,9 +6,10 @@ use protocol::{
     ApprovalRequest, ApprovalResponse, CommandResult, DiffResponse, Envelope, EventCursor,
     EventPage, HistoryResponse, LocalCommand, LocalCommandResponse, MutationPreview,
     MutationResult, OrderedRunEvent, PROTOCOL_VERSION, RecoveryAction, RecoveryResponse,
-    ResponseEnvelope, RunArtifactSegmentMetadata, RunArtifactSegmentResponse, RunArtifactStream,
-    RunArtifactSummary, RunArtifactsDeletedResponse, RunArtifactsResponse, RunSnapshot,
-    RunStartedResponse, SemanticEventKind, StructuredError,
+    ResponseEnvelope, ReviewCheckKind, ReviewCheckResult, ReviewCheckStatus, ReviewReport,
+    RunArtifactSegmentMetadata, RunArtifactSegmentResponse, RunArtifactStream, RunArtifactSummary,
+    RunArtifactsDeletedResponse, RunArtifactsResponse, RunSnapshot, RunStartedResponse,
+    SemanticEventKind, StructuredError,
 };
 use std::path::PathBuf;
 
@@ -148,6 +149,18 @@ fn all_local_message_shapes_round_trip() {
             changeset_id: changeset.id,
             limit: 10,
         },
+        LocalCommand::ReviewChangeset {
+            changeset_id: changeset.id,
+            expected_version: changeset.version(),
+            expected_head_sha: "head".into(),
+            checks: vec![
+                ReviewCheckKind::Format,
+                ReviewCheckKind::Typecheck,
+                ReviewCheckKind::Test,
+                ReviewCheckKind::SecretScan,
+                ReviewCheckKind::DependencyAudit,
+            ],
+        },
         LocalCommand::PreviewCommit {
             changeset_id: changeset.id,
             expected_version: changeset.version(),
@@ -222,6 +235,19 @@ fn all_local_message_shapes_round_trip() {
         LocalCommandResponse::History(HistoryResponse {
             changeset_id: changeset.id,
             runs: vec![run.clone()],
+        }),
+        LocalCommandResponse::ReviewCompleted(ReviewReport {
+            changeset_id: changeset.id,
+            changeset_version: changeset.version(),
+            head_sha: "head".into(),
+            changed_paths: vec![RelativePath::parse("file").unwrap()],
+            unified_diff: "diff".into(),
+            checks: vec![ReviewCheckResult {
+                kind: ReviewCheckKind::Format,
+                status: ReviewCheckStatus::Passed,
+                evidence: "formatted".into(),
+            }],
+            findings: Vec::new(),
         }),
         LocalCommandResponse::MutationPreview(MutationPreview {
             kind: ChangesetMutationKind::Commit,

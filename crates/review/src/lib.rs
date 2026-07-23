@@ -2,6 +2,7 @@ use domain::{Changeset, ChangesetState, Finding, RelativePath, Repository, Workt
 use execution::{CancellationToken, ProcessSpec, TerminalOutcome};
 use git::{GitService, GitStatusSnapshot, content_digest};
 use persistence::SqliteStore;
+pub use protocol::{ReviewCheckKind, ReviewCheckResult, ReviewCheckStatus, ReviewReport};
 use std::{
     collections::{HashMap, HashSet},
     fs,
@@ -12,51 +13,14 @@ use thiserror::Error;
 
 const MAX_REVIEW_CHECKS: usize = 5;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum ReviewCheckKind {
-    Format,
-    Typecheck,
-    Test,
-    SecretScan,
-    DependencyAudit,
-}
-
-impl ReviewCheckKind {
-    fn category(self) -> &'static str {
-        match self {
-            Self::Format => "review_format",
-            Self::Typecheck => "review_typecheck",
-            Self::Test => "review_test",
-            Self::SecretScan => "review_secret_scan",
-            Self::DependencyAudit => "review_dependency_audit",
-        }
+fn review_category(kind: ReviewCheckKind) -> &'static str {
+    match kind {
+        ReviewCheckKind::Format => "review_format",
+        ReviewCheckKind::Typecheck => "review_typecheck",
+        ReviewCheckKind::Test => "review_test",
+        ReviewCheckKind::SecretScan => "review_secret_scan",
+        ReviewCheckKind::DependencyAudit => "review_dependency_audit",
     }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ReviewCheckStatus {
-    Passed,
-    Failed,
-    Unavailable,
-    TimedOut,
-    Mutated,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ReviewCheckResult {
-    pub kind: ReviewCheckKind,
-    pub status: ReviewCheckStatus,
-    pub evidence: String,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ReviewReport {
-    pub changeset_id: domain::Id,
-    pub head_sha: String,
-    pub changed_paths: Vec<RelativePath>,
-    pub unified_diff: String,
-    pub checks: Vec<ReviewCheckResult>,
-    pub findings: Vec<Finding>,
 }
 
 #[derive(Debug, Clone)]
@@ -205,10 +169,14 @@ impl ReviewService {
         {
             return Err(ReviewError::WorktreeChanged);
         }
-        let findings = self.store.save_findings(&findings)?;
+        let findings = self
+            .store
+            .save_findings_for_revision(changeset, &findings)
+            .map_err(map_finding_persistence_error)?;
 
         Ok(ReviewReport {
             changeset_id: changeset.id,
+            changeset_version: changeset.version(),
             head_sha: initial.head_sha,
             changed_paths,
             unified_diff,
@@ -322,6 +290,19 @@ impl ReviewService {
             timeout: self.options.timeout,
             output_limit: self.options.output_limit,
         })
+    }
+}
+
+fn map_finding_persistence_error(error: persistence::PersistenceError) -> ReviewError {
+    match error {
+        persistence::PersistenceError::VersionConflict {
+            aggregate: "changeset",
+            ..
+        } => ReviewError::StaleChangesetVersion,
+        persistence::PersistenceError::InvalidPersistedTransition("review finding persistence") => {
+            ReviewError::InvalidReviewState
+        }
+        error => ReviewError::Persistence(error),
     }
 }
 
@@ -485,7 +466,7 @@ fn finding_for_result(
         changeset_id,
         None,
         blob_identity.to_owned(),
-        result.kind.category().to_owned(),
+        review_category(result.kind).to_owned(),
         severity.to_owned(),
         format!("{:?} check {:?}", result.kind, result.status),
         result.evidence.clone(),
@@ -502,6 +483,8 @@ pub enum ReviewError {
     UnsafeSearchPath,
     #[error("changeset and worktree are not in a reviewable state")]
     InvalidReviewState,
+    #[error("changeset version changed during review")]
+    StaleChangesetVersion,
     #[error("changeset HEAD changed before review")]
     HeadChanged,
     #[error("worktree changed while the review snapshot was being prepared")]

@@ -14,8 +14,11 @@ use persistence::{
     ArtifactPolicy, ArtifactState, ArtifactStream, ChangesetFinalizationState, LocalArtifactStore,
     SqliteStore,
 };
-use protocol::{LocalCommand, MutationResult, RunStartedResponse, SemanticEventKind};
-use review::{ReviewCheckKind, ReviewCheckStatus, ReviewOptions};
+use protocol::{
+    LocalCommand, MutationResult, ReviewCheckKind, ReviewCheckStatus, RunStartedResponse,
+    SemanticEventKind,
+};
+use review::ReviewOptions;
 use std::{
     collections::HashMap,
     fs,
@@ -98,9 +101,39 @@ fn review_service_is_explicitly_composed_and_uses_persisted_aggregates() {
         .approve_and_complete(started.run_id, approval_scope(&started))
         .unwrap();
 
-    let report = runtime
-        .review_changeset(changeset.id, &[ReviewCheckKind::Format])
+    let stale_version = runtime
+        .handle(LocalCommand::ReviewChangeset {
+            changeset_id: changeset.id,
+            expected_version: completed.changeset.version() + 1,
+            expected_head_sha: completed.changeset.head_sha().to_owned(),
+            checks: Vec::new(),
+        })
+        .unwrap_err();
+    assert!(matches!(
+        stale_version,
+        OrchestrationError::StaleChangesetVersion
+    ));
+    let stale_head = runtime
+        .handle(LocalCommand::ReviewChangeset {
+            changeset_id: changeset.id,
+            expected_version: completed.changeset.version(),
+            expected_head_sha: "stale-head".to_owned(),
+            checks: Vec::new(),
+        })
+        .unwrap_err();
+    assert!(matches!(stale_head, OrchestrationError::StaleChangesetHead));
+
+    let outcome = runtime
+        .handle(LocalCommand::ReviewChangeset {
+            changeset_id: changeset.id,
+            expected_version: completed.changeset.version(),
+            expected_head_sha: completed.changeset.head_sha().to_owned(),
+            checks: vec![ReviewCheckKind::Format],
+        })
         .unwrap();
+    let CommandOutcome::ReviewCompleted(report) = outcome else {
+        panic!("expected completed review outcome");
+    };
 
     assert_eq!(report.changeset_id, changeset.id);
     assert_eq!(report.head_sha, completed.changeset.head_sha());
@@ -117,7 +150,7 @@ fn review_requires_explicit_runtime_composition() {
     let runtime = build_runtime(directory.path());
 
     let error = runtime
-        .review_changeset(domain::Id::nil(), &[])
+        .review_changeset(domain::Id::nil(), 0, "head", &[])
         .unwrap_err();
 
     assert!(matches!(

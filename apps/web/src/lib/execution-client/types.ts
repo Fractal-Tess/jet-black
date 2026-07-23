@@ -27,6 +27,7 @@ type CommandResponseTypeMap = {
   read_run_artifact_segment: "run_artifact_segment";
   register_repository: "repository_registered";
   respond_to_approval: "run_completed" | "approval_rejected";
+  review_changeset: "review_completed";
   start_run: "run_started";
 };
 

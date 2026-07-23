@@ -35,6 +35,7 @@ use tokio::{
 use tower_http::services::ServeDir;
 
 const MAX_CONCURRENT_COMMANDS: usize = 4;
+const MAX_CONCURRENT_REVIEWS: usize = 1;
 const MAX_CONCURRENT_RUN_WORKERS: usize = 4;
 const MAX_QUEUED_RUN_WORKERS: usize = 4;
 const MAX_ADMITTED_RUNS: usize = MAX_CONCURRENT_RUN_WORKERS + MAX_QUEUED_RUN_WORKERS;
@@ -91,6 +92,7 @@ struct ServerState {
     bootstrap: Arc<PublicBootstrap>,
     sessions: Arc<SessionManager>,
     command_slots: Arc<Semaphore>,
+    review_slots: Arc<Semaphore>,
     run_admission_slots: Arc<Semaphore>,
     run_slots: Arc<Semaphore>,
     runtime: Arc<dyn Runtime>,
@@ -143,6 +145,7 @@ impl StandaloneServer {
                 bootstrap: Arc::new(bootstrap),
                 sessions: Arc::new(sessions),
                 command_slots: Arc::new(Semaphore::new(MAX_CONCURRENT_COMMANDS)),
+                review_slots: Arc::new(Semaphore::new(MAX_CONCURRENT_REVIEWS)),
                 run_admission_slots: Arc::new(Semaphore::new(MAX_ADMITTED_RUNS)),
                 run_slots: Arc::new(Semaphore::new(MAX_CONCURRENT_RUN_WORKERS)),
                 runtime,
@@ -245,6 +248,7 @@ async fn command(
         return Ok(Json(ResponseEnvelope::error(request_id, error)));
     }
     let starts_run = matches!(&envelope.payload, LocalCommand::StartRun { .. });
+    let runs_review = matches!(&envelope.payload, LocalCommand::ReviewChangeset { .. });
     let run_admission = if starts_run {
         Some(
             Arc::clone(&state.run_admission_slots)
@@ -258,12 +262,17 @@ async fn command(
     let runtime = Arc::clone(&state.runtime);
     let run_slots = Arc::clone(&state.run_slots);
     let runtime_handle = Handle::current();
-    let command_permit = Arc::clone(&state.command_slots)
+    let executor_slots = if runs_review {
+        Arc::clone(&state.review_slots)
+    } else {
+        Arc::clone(&state.command_slots)
+    };
+    let executor_permit = executor_slots
         .acquire_owned()
         .await
         .map_err(|_| ApiError::internal("command executor is unavailable"))?;
     let result = tokio::task::spawn_blocking(move || {
-        let _command_permit = command_permit;
+        let _executor_permit = executor_permit;
         let result = runtime.dispatch(envelope.payload);
         if let (Some(admission_permit), Ok(LocalCommandResponse::RunStarted(started))) =
             (run_admission, &result)
@@ -473,6 +482,7 @@ fn command_response(outcome: CommandOutcome) -> LocalCommandResponse {
         CommandOutcome::History(history) => LocalCommandResponse::History(history),
         CommandOutcome::Recovery(recovery) => LocalCommandResponse::Recovery(recovery),
         CommandOutcome::Findings(findings) => LocalCommandResponse::Findings(findings),
+        CommandOutcome::ReviewCompleted(report) => LocalCommandResponse::ReviewCompleted(report),
         CommandOutcome::RunArtifacts(artifacts) => LocalCommandResponse::RunArtifacts(artifacts),
         CommandOutcome::RunArtifactSegment(segment) => {
             LocalCommandResponse::RunArtifactSegment(segment)
@@ -498,12 +508,12 @@ fn structured_orchestration_error(error: OrchestrationError) -> StructuredError 
         ),
         OrchestrationError::StaleChangesetVersion => (
             "stale_changeset_version",
-            "changeset version changed after preview",
+            "changeset version changed after the request was prepared",
             false,
         ),
         OrchestrationError::StaleChangesetHead => (
             "stale_changeset_head",
-            "changeset head changed after preview",
+            "changeset head changed after the request was prepared",
             false,
         ),
         OrchestrationError::MutationConfirmationMismatch => (
@@ -552,6 +562,54 @@ fn structured_orchestration_error(error: OrchestrationError) -> StructuredError 
             "artifact content failed integrity verification",
             false,
         ),
+        OrchestrationError::ReviewServiceUnavailable => (
+            "review_service_unavailable",
+            "review service is unavailable",
+            false,
+        ),
+        OrchestrationError::InvalidReviewState => (
+            "invalid_review_state",
+            "changeset is not ready for review",
+            false,
+        ),
+        OrchestrationError::ReviewWorktreeChanged => (
+            "review_worktree_changed",
+            "worktree changed during review",
+            false,
+        ),
+        OrchestrationError::ReviewNoChanges => (
+            "review_no_changes",
+            "review requires at least one changed path",
+            false,
+        ),
+        OrchestrationError::ReviewCheckLimit => (
+            "review_check_limit",
+            "too many review checks were requested",
+            false,
+        ),
+        OrchestrationError::DuplicateReviewCheck => (
+            "duplicate_review_check",
+            "a review check was requested more than once",
+            false,
+        ),
+        OrchestrationError::UnsupportedReviewPath => (
+            "unsupported_review_path",
+            "a changed path cannot be reviewed safely",
+            false,
+        ),
+        OrchestrationError::ReviewFileTooLarge => (
+            "review_file_too_large",
+            "a changed file exceeds the review size limit",
+            false,
+        ),
+        OrchestrationError::ReviewConfiguration => (
+            "review_configuration_error",
+            "review service configuration is invalid",
+            false,
+        ),
+        OrchestrationError::ReviewExecution => {
+            ("review_execution_failed", "review execution failed", false)
+        }
         OrchestrationError::MutationLeaseUnavailable => (
             "mutation_lease_unavailable",
             "mutation lease is unavailable",

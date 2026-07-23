@@ -1221,50 +1221,44 @@ impl SqliteStore {
         if findings.is_empty() {
             return Ok(Vec::new());
         }
-        let changeset_id = findings[0].changeset_id();
-        if findings
-            .iter()
-            .any(|finding| finding.changeset_id() != changeset_id)
-        {
-            return Err(PersistenceError::MixedFindingOwners);
-        }
-
+        let changeset_id = validate_finding_owners(findings)?;
         self.with_connection(|connection| {
             let transaction =
                 connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
-            let mut existing = HashMap::new();
-            let mut statement =
-                transaction.prepare("SELECT body FROM findings WHERE owner = ?1 ORDER BY rowid")?;
-            let rows =
-                statement.query_map([changeset_id.to_string()], |row| row.get::<_, String>(0))?;
-            for row in rows {
-                let finding: Finding = decode(&row?)?;
-                existing.insert(finding_dedup_key(&finding)?, finding);
-            }
-            drop(statement);
+            let canonical = save_findings(&transaction, changeset_id, findings)?;
+            transaction.commit()?;
+            Ok(canonical)
+        })
+    }
 
-            let mut canonical = Vec::with_capacity(findings.len());
-            for finding in findings {
-                let dedup_key = finding_dedup_key(finding)?;
-                if let Some(existing_finding) = existing.get(&dedup_key) {
-                    canonical.push(existing_finding.clone());
-                    continue;
-                }
-                if existing.len() >= domain::limits::MAX_FINDINGS_PER_CHANGESET {
-                    return Err(PersistenceError::ResourceLimit("findings per changeset"));
-                }
-                transaction.execute(
-                    "INSERT INTO findings (id, owner, version, body) VALUES (?1, ?2, ?3, ?4)",
-                    params![
-                        finding.id.to_string(),
-                        changeset_id.to_string(),
-                        finding.version(),
-                        encode(finding)?
-                    ],
-                )?;
-                existing.insert(dedup_key, finding.clone());
-                canonical.push(finding.clone());
+    pub fn save_findings_for_revision(
+        &self,
+        changeset: &Changeset,
+        findings: &[Finding],
+    ) -> Result<Vec<Finding>, PersistenceError> {
+        if !findings.is_empty() && validate_finding_owners(findings)? != changeset.id {
+            return Err(PersistenceError::MixedFindingOwners);
+        }
+        self.with_connection(|connection| {
+            let transaction =
+                connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+            let (stored, stored_version) = load_changeset(&transaction, changeset.id)?;
+            if stored_version != changeset.version() {
+                return Err(PersistenceError::VersionConflict {
+                    aggregate: "changeset",
+                    id: changeset.id,
+                    expected: changeset.version(),
+                    actual: stored_version,
+                });
             }
+            if stored.state() != ChangesetState::Reviewable
+                || stored.head_sha() != changeset.head_sha()
+            {
+                return Err(PersistenceError::InvalidPersistedTransition(
+                    "review finding persistence",
+                ));
+            }
+            let canonical = save_findings(&transaction, changeset.id, findings)?;
             transaction.commit()?;
             Ok(canonical)
         })
@@ -3208,6 +3202,62 @@ fn validate_semantic_event(event: &SemanticEventKind) -> Result<(), PersistenceE
         return Err(PersistenceError::ResourceLimit("semantic event text"));
     }
     Ok(())
+}
+
+fn validate_finding_owners(findings: &[Finding]) -> Result<Uuid, PersistenceError> {
+    let changeset_id = findings
+        .first()
+        .ok_or(PersistenceError::InvalidPersistedTransition(
+            "empty finding batch",
+        ))?
+        .changeset_id();
+    if findings
+        .iter()
+        .any(|finding| finding.changeset_id() != changeset_id)
+    {
+        return Err(PersistenceError::MixedFindingOwners);
+    }
+    Ok(changeset_id)
+}
+
+fn save_findings(
+    transaction: &Transaction<'_>,
+    changeset_id: Uuid,
+    findings: &[Finding],
+) -> Result<Vec<Finding>, PersistenceError> {
+    let mut existing = HashMap::new();
+    let mut statement =
+        transaction.prepare("SELECT body FROM findings WHERE owner = ?1 ORDER BY rowid")?;
+    let rows = statement.query_map([changeset_id.to_string()], |row| row.get::<_, String>(0))?;
+    for row in rows {
+        let finding: Finding = decode(&row?)?;
+        existing.insert(finding_dedup_key(&finding)?, finding);
+    }
+    drop(statement);
+
+    let mut canonical = Vec::with_capacity(findings.len());
+    for finding in findings {
+        let dedup_key = finding_dedup_key(finding)?;
+        if let Some(existing_finding) = existing.get(&dedup_key) {
+            canonical.push(existing_finding.clone());
+            continue;
+        }
+        if existing.len() >= domain::limits::MAX_FINDINGS_PER_CHANGESET {
+            return Err(PersistenceError::ResourceLimit("findings per changeset"));
+        }
+        transaction.execute(
+            "INSERT INTO findings (id, owner, version, body) VALUES (?1, ?2, ?3, ?4)",
+            params![
+                finding.id.to_string(),
+                changeset_id.to_string(),
+                finding.version(),
+                encode(finding)?
+            ],
+        )?;
+        existing.insert(dedup_key, finding.clone());
+        canonical.push(finding.clone());
+    }
+    Ok(canonical)
 }
 
 fn finding_dedup_key(finding: &Finding) -> Result<String, PersistenceError> {

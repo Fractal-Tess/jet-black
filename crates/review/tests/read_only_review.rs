@@ -309,6 +309,22 @@ fn duplicate_checks_and_unsafe_options_are_rejected() {
         Err(ReviewError::DuplicateCheck)
     ));
     assert!(matches!(
+        fixture.service(ReviewOptions::default()).review(
+            &fixture.repository,
+            &fixture.changeset,
+            &fixture.worktree,
+            &[
+                ReviewCheckKind::Format,
+                ReviewCheckKind::Typecheck,
+                ReviewCheckKind::Test,
+                ReviewCheckKind::SecretScan,
+                ReviewCheckKind::DependencyAudit,
+                ReviewCheckKind::Format,
+            ]
+        ),
+        Err(ReviewError::TooManyChecks)
+    ));
+    assert!(matches!(
         ReviewService::with_search_path(
             fixture.store.clone(),
             GitService::new(

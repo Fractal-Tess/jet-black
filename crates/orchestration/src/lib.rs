@@ -17,11 +17,11 @@ use persistence::{
 use protocol::{
     ApprovalRequest, CheckpointResponse, DiffResponse, EventCursor, EventPage, FindingsResponse,
     HistoryResponse, LocalCommand, MutationPreview, MutationResult, OrderedRunEvent,
-    RecoveryAction, RecoveryResponse, RunArtifactSegmentMetadata, RunArtifactSegmentResponse,
-    RunArtifactStream, RunArtifactSummary, RunArtifactsDeletedResponse, RunArtifactsResponse,
-    RunCompletedResponse, RunSnapshot, RunStartedResponse, SemanticEventKind,
+    RecoveryAction, RecoveryResponse, ReviewCheckKind, ReviewReport, RunArtifactSegmentMetadata,
+    RunArtifactSegmentResponse, RunArtifactStream, RunArtifactSummary, RunArtifactsDeletedResponse,
+    RunArtifactsResponse, RunCompletedResponse, RunSnapshot, RunStartedResponse, SemanticEventKind,
 };
-use review::{ReviewCheckKind, ReviewOptions, ReviewReport, ReviewService};
+use review::{ReviewOptions, ReviewService};
 use std::{path::Path, sync::Mutex, time::Duration};
 use thiserror::Error;
 use uuid::Uuid;
@@ -90,9 +90,11 @@ impl<P: AgentProvider> LocalOrchestrator<P> {
                 self.git.clone(),
                 options,
                 search_path,
-            )?
+            )
+            .map_err(map_review_error)?
         } else {
-            ReviewService::without_executable_checks(self.store.clone(), self.git.clone(), options)?
+            ReviewService::without_executable_checks(self.store.clone(), self.git.clone(), options)
+                .map_err(map_review_error)?
         };
         self.review_service = Some(review_service);
         Ok(self)
@@ -166,6 +168,17 @@ impl<P: AgentProvider> LocalOrchestrator<P> {
                     findings: self.store.findings_for_changeset(changeset_id)?,
                 }))
             }
+            LocalCommand::ReviewChangeset {
+                changeset_id,
+                expected_version,
+                expected_head_sha,
+                checks,
+            } => Ok(CommandOutcome::ReviewCompleted(self.review_changeset(
+                changeset_id,
+                expected_version,
+                &expected_head_sha,
+                &checks,
+            )?)),
             LocalCommand::GetRunArtifacts { run_id } => {
                 Ok(CommandOutcome::RunArtifacts(self.run_artifacts(run_id)?))
             }
@@ -258,16 +271,20 @@ impl<P: AgentProvider> LocalOrchestrator<P> {
     pub fn review_changeset(
         &self,
         changeset_id: Id,
+        expected_version: u64,
+        expected_head_sha: &str,
         requested_checks: &[ReviewCheckKind],
     ) -> Result<ReviewReport, OrchestrationError> {
         let service = self
             .review_service
             .as_ref()
             .ok_or(OrchestrationError::ReviewServiceUnavailable)?;
-        let changeset = self.changeset(changeset_id)?;
+        let changeset = self.exact_changeset(changeset_id, expected_version, expected_head_sha)?;
         let repository = self.repository(changeset.repository_id())?;
         let worktree = self.worktree(changeset.id)?;
-        Ok(service.review(&repository, &changeset, &worktree, requested_checks)?)
+        service
+            .review(&repository, &changeset, &worktree, requested_checks)
+            .map_err(map_review_error)
     }
 
     pub fn register_repository(&self, path: &Path) -> Result<Repository, OrchestrationError> {
@@ -677,15 +694,9 @@ impl<P: AgentProvider> LocalOrchestrator<P> {
         expected_version: u64,
         expected_head_sha: &str,
     ) -> Result<(MutationPreview, ChangesetMutationScope), OrchestrationError> {
-        let changeset = self.changeset(changeset_id)?;
+        let changeset = self.exact_changeset(changeset_id, expected_version, expected_head_sha)?;
         if changeset.state() != ChangesetState::Reviewable {
             return Err(OrchestrationError::ChangesetNotReviewable);
-        }
-        if changeset.version() != expected_version {
-            return Err(OrchestrationError::StaleChangesetVersion);
-        }
-        if changeset.head_sha() != expected_head_sha {
-            return Err(OrchestrationError::StaleChangesetHead);
         }
         let repository = self.repository(changeset.repository_id())?;
         if repository.base_sha != changeset.base_sha() {
@@ -1705,6 +1716,22 @@ impl<P: AgentProvider> LocalOrchestrator<P> {
             .ok_or(OrchestrationError::NotFound("changeset"))
     }
 
+    fn exact_changeset(
+        &self,
+        changeset_id: Id,
+        expected_version: u64,
+        expected_head_sha: &str,
+    ) -> Result<Changeset, OrchestrationError> {
+        let changeset = self.changeset(changeset_id)?;
+        if changeset.version() != expected_version {
+            return Err(OrchestrationError::StaleChangesetVersion);
+        }
+        if changeset.head_sha() != expected_head_sha {
+            return Err(OrchestrationError::StaleChangesetHead);
+        }
+        Ok(changeset)
+    }
+
     fn run(&self, run_id: Id) -> Result<Run, OrchestrationError> {
         self.store
             .run(run_id)?
@@ -1789,6 +1816,27 @@ const fn artifact_stream(stream: ArtifactStream) -> RunArtifactStream {
 
 fn artifact_byte_count(value: usize) -> Result<u64, OrchestrationError> {
     u64::try_from(value).map_err(|_| OrchestrationError::ResourceLimit("artifact byte count"))
+}
+
+fn map_review_error(error: review::ReviewError) -> OrchestrationError {
+    match error {
+        review::ReviewError::InvalidReviewState => OrchestrationError::InvalidReviewState,
+        review::ReviewError::StaleChangesetVersion => OrchestrationError::StaleChangesetVersion,
+        review::ReviewError::HeadChanged => OrchestrationError::StaleChangesetHead,
+        review::ReviewError::WorktreeChanged => OrchestrationError::ReviewWorktreeChanged,
+        review::ReviewError::NoChangedPaths => OrchestrationError::ReviewNoChanges,
+        review::ReviewError::TooManyChecks => OrchestrationError::ReviewCheckLimit,
+        review::ReviewError::DuplicateCheck => OrchestrationError::DuplicateReviewCheck,
+        review::ReviewError::UnsupportedChangedPath(_) => OrchestrationError::UnsupportedReviewPath,
+        review::ReviewError::ChangedFileTooLarge(_) => OrchestrationError::ReviewFileTooLarge,
+        review::ReviewError::InvalidOptions
+        | review::ReviewError::MissingSearchPath
+        | review::ReviewError::UnsafeSearchPath => OrchestrationError::ReviewConfiguration,
+        review::ReviewError::Io(_)
+        | review::ReviewError::Git(_)
+        | review::ReviewError::Execution(_)
+        | review::ReviewError::Persistence(_) => OrchestrationError::ReviewExecution,
+    }
 }
 
 fn map_artifact_error(error: persistence::PersistenceError) -> OrchestrationError {
@@ -1897,6 +1945,7 @@ pub enum CommandOutcome {
     History(HistoryResponse),
     Recovery(RecoveryResponse),
     Findings(FindingsResponse),
+    ReviewCompleted(ReviewReport),
     RunArtifacts(RunArtifactsResponse),
     RunArtifactSegment(RunArtifactSegmentResponse),
     RunArtifactsDeleted(RunArtifactsDeletedResponse),
@@ -1919,9 +1968,9 @@ pub enum OrchestrationError {
     StaleBase,
     #[error("changeset is not reviewable")]
     ChangesetNotReviewable,
-    #[error("changeset version changed after the mutation request was prepared")]
+    #[error("changeset version changed after the request was prepared")]
     StaleChangesetVersion,
-    #[error("changeset head changed after the mutation request was prepared")]
+    #[error("changeset head changed after the request was prepared")]
     StaleChangesetHead,
     #[error("changeset mutation confirmation did not match the exact preview")]
     MutationConfirmationMismatch,
@@ -1975,8 +2024,24 @@ pub enum OrchestrationError {
     ChangesetRecoveryUnavailable,
     #[error("review service is unavailable in this runtime")]
     ReviewServiceUnavailable,
-    #[error("review operation failed: {0}")]
-    Review(#[from] review::ReviewError),
+    #[error("changeset or worktree is not ready for review")]
+    InvalidReviewState,
+    #[error("worktree changed during review")]
+    ReviewWorktreeChanged,
+    #[error("review requires at least one changed path")]
+    ReviewNoChanges,
+    #[error("too many review checks were requested")]
+    ReviewCheckLimit,
+    #[error("a review check was requested more than once")]
+    DuplicateReviewCheck,
+    #[error("a changed path cannot be reviewed safely")]
+    UnsupportedReviewPath,
+    #[error("a changed file exceeds the review size limit")]
+    ReviewFileTooLarge,
+    #[error("review service configuration is invalid")]
+    ReviewConfiguration,
+    #[error("review execution failed")]
+    ReviewExecution,
     #[error("domain operation failed: {0}")]
     Domain(#[from] domain::DomainError),
     #[error("persistence operation failed: {0}")]

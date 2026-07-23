@@ -8,12 +8,15 @@ import {
   type MutationPreview,
   type MutationResult,
   PROTOCOL_VERSION,
+  type ReviewCheckKind,
+  type ReviewReport,
 } from "@workspace/shared/protocol";
 import { createHttpExecutionClient } from "./http";
 import {
   completeChangesetMutation,
   loadStandaloneReview,
   previewChangesetMutation,
+  runStandaloneReview,
 } from "./standalone-review";
 
 const CHANGESET_ID = "changeset-id";
@@ -26,6 +29,28 @@ const changeset = (): Changeset => ({
   state: "reviewable",
   ticket: null,
   version: 4,
+});
+
+const reviewChecks: ReviewCheckKind[] = [
+  "format",
+  "typecheck",
+  "test",
+  "secret_scan",
+  "dependency_audit",
+];
+
+const reviewReport = (): ReviewReport => ({
+  changeset_id: CHANGESET_ID,
+  changeset_version: 4,
+  head_sha: "head-sha",
+  changed_paths: ["README.md"],
+  unified_diff: "diff",
+  checks: reviewChecks.map((kind) => ({
+    kind,
+    status: "passed",
+    evidence: "passed",
+  })),
+  findings: [],
 });
 
 const mutationPreview = (
@@ -86,6 +111,8 @@ const responseData = (command: LocalCommand): unknown => {
       };
     case "get_recovery":
       return { type: "recovery", data: { actions: [] } };
+    case "review_changeset":
+      return { type: "review_completed", data: reviewReport() };
     case "preview_commit":
       return { type: "mutation_preview", data: mutationPreview("commit") };
     case "preview_discard":
@@ -157,6 +184,51 @@ describe("standalone review", () => {
     } catch (error) {
       expect(error).toEqual(
         expect.objectContaining({ code: "review_mismatch" })
+      );
+    }
+  });
+
+  test("runs typed checks against the exact changeset version and head", async () => {
+    const commands: LocalCommand[] = [];
+    const report = await runStandaloneReview(
+      createClient(commands),
+      changeset(),
+      reviewChecks
+    );
+
+    expect(commands).toEqual([
+      {
+        type: "review_changeset",
+        data: {
+          changeset_id: CHANGESET_ID,
+          expected_version: 4,
+          expected_head_sha: "head-sha",
+          checks: reviewChecks,
+        },
+      },
+    ]);
+    expect(report.checks.map((check) => check.kind)).toEqual(reviewChecks);
+  });
+
+  test("rejects a review result for another changeset head", async () => {
+    const commands: LocalCommand[] = [];
+    const client = createClient(commands, (command) => {
+      const response = responseData(command);
+      if (command.type !== "review_changeset") {
+        return response;
+      }
+      return {
+        type: "review_completed",
+        data: { ...reviewReport(), head_sha: "other-head" },
+      };
+    });
+
+    try {
+      await runStandaloneReview(client, changeset(), reviewChecks);
+      throw new Error("Expected mismatched review result to be rejected.");
+    } catch (error) {
+      expect(error).toEqual(
+        expect.objectContaining({ code: "review_result_mismatch" })
       );
     }
   });

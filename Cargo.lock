@@ -740,6 +740,7 @@ dependencies = [
  "execution",
  "git",
  "persistence",
+ "protocol",
  "serial_test",
  "tempfile",
  "thiserror",

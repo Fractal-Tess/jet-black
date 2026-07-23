@@ -10,6 +10,7 @@ domain.workspace = true
 execution.workspace = true
 git.workspace = true
 persistence.workspace = true
+protocol.workspace = true
 thiserror.workspace = true
 
 [dev-dependencies]

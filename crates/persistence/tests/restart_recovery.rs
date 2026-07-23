@@ -1253,6 +1253,32 @@ fn findings_reload_in_creation_order_with_current_versions() {
 }
 
 #[test]
+fn review_findings_require_the_exact_reviewable_changeset_revision() {
+    let directory = tempdir().unwrap();
+    let store = SqliteStore::open(directory.path().join("review-findings.sqlite3")).unwrap();
+    let fixture = seed_finalization_fixture(&store, ChangesetMutationKind::Commit);
+    let stale = fixture.changeset.clone();
+    let finding = finding(stale.id, "review.txt");
+
+    let saved = store
+        .save_findings_for_revision(&stale, std::slice::from_ref(&finding))
+        .unwrap();
+    assert_eq!(saved, vec![finding.clone()]);
+
+    let mut committed = stale.clone();
+    committed.commit("c".repeat(40)).unwrap();
+    store.persist_changeset_transition(&committed).unwrap();
+
+    assert!(matches!(
+        store.save_findings_for_revision(&stale, std::slice::from_ref(&finding)),
+        Err(PersistenceError::VersionConflict {
+            aggregate: "changeset",
+            ..
+        })
+    ));
+}
+
+#[test]
 fn finding_batches_are_atomic_and_bounded() {
     let directory = tempdir().unwrap();
     let store = SqliteStore::open(directory.path().join("bounded-findings.sqlite3")).unwrap();
