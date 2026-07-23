@@ -4,14 +4,17 @@ use axum::{
     http::{Request, StatusCode, header},
 };
 use config::{ProviderKind, PublicBootstrap};
-use domain::{Changeset, Id, Repository, Run, RunState, limits::MAX_COMMAND_BODY_BYTES};
+use domain::{
+    Changeset, ChangesetMutationKind, Id, Repository, Run, RunState, WorktreeState,
+    limits::MAX_COMMAND_BODY_BYTES,
+};
 use futures_util::StreamExt;
 use protocol::{
     CommandResult, Envelope, EventCursor, EventPage, HistoryResponse, LocalCommand,
-    LocalCommandResponse, OrderedRunEvent, RecoveryResponse, ResponseEnvelope,
-    RunArtifactSegmentMetadata, RunArtifactSegmentResponse, RunArtifactStream, RunArtifactSummary,
-    RunArtifactsDeletedResponse, RunArtifactsResponse, RunSnapshot, SemanticEventKind,
-    StructuredError,
+    LocalCommandResponse, MutationPreview, MutationResult, OrderedRunEvent, RecoveryResponse,
+    ResponseEnvelope, RunArtifactSegmentMetadata, RunArtifactSegmentResponse, RunArtifactStream,
+    RunArtifactSummary, RunArtifactsDeletedResponse, RunArtifactsResponse, RunSnapshot,
+    SemanticEventKind, StructuredError,
 };
 use serde::Deserialize;
 use server::{Runtime, StandaloneServer};
@@ -90,6 +93,66 @@ impl Runtime for FixtureRuntime {
                     runs: vec![self.snapshot.run.clone()],
                 }))
             }
+            LocalCommand::PreviewCommit {
+                changeset_id,
+                expected_version,
+                expected_head_sha,
+            } => Ok(LocalCommandResponse::MutationPreview(MutationPreview {
+                kind: ChangesetMutationKind::Commit,
+                changeset_id,
+                checkpoint_id: Id::new_v4(),
+                expected_version,
+                expected_head_sha,
+                manifest_sha256: "b".repeat(64),
+                confirmation_digest: "a".repeat(64),
+            })),
+            LocalCommand::PreviewDiscard {
+                changeset_id,
+                expected_version,
+                expected_head_sha,
+            } => Ok(LocalCommandResponse::MutationPreview(MutationPreview {
+                kind: ChangesetMutationKind::Discard,
+                changeset_id,
+                checkpoint_id: Id::new_v4(),
+                expected_version,
+                expected_head_sha,
+                manifest_sha256: "b".repeat(64),
+                confirmation_digest: "c".repeat(64),
+            })),
+            LocalCommand::CommitChangeset {
+                confirmation_digest,
+                ..
+            } if confirmation_digest != "a".repeat(64) => Err(StructuredError {
+                code: "mutation_confirmation_mismatch".to_owned(),
+                message: "confirmation did not match the exact mutation preview".to_owned(),
+                retryable: false,
+            }),
+            LocalCommand::CommitChangeset {
+                confirmation_digest,
+                ..
+            } => Ok(LocalCommandResponse::MutationCompleted(
+                MutationResult::Commit {
+                    confirmation_digest,
+                    checkpoint_id: Id::new_v4(),
+                    manifest_sha256: "b".repeat(64),
+                    changeset: self.snapshot.changeset.clone(),
+                    worktree_state: WorktreeState::Removed,
+                    resulting_head_sha: "d".repeat(40),
+                    app_ref: format!("refs/jet-black/changesets/{}", self.snapshot.changeset.id),
+                },
+            )),
+            LocalCommand::DiscardChangeset {
+                confirmation_digest,
+                ..
+            } => Ok(LocalCommandResponse::MutationCompleted(
+                MutationResult::Discard {
+                    confirmation_digest,
+                    checkpoint_id: Id::new_v4(),
+                    manifest_sha256: "b".repeat(64),
+                    changeset: self.snapshot.changeset.clone(),
+                    worktree_state: WorktreeState::Removed,
+                },
+            )),
             LocalCommand::GetRunArtifacts { run_id } => {
                 Ok(LocalCommandResponse::RunArtifacts(RunArtifactsResponse {
                     run_id,
@@ -596,6 +659,126 @@ async fn authenticated_artifact_commands_return_path_free_typed_responses() {
         active_delete.result,
         CommandResult::Error(StructuredError { code, retryable: false, .. })
             if code == "artifact_run_active"
+    ));
+}
+
+#[tokio::test]
+async fn authenticated_mutation_commands_return_typed_path_free_results() {
+    let runtime = Arc::new(FixtureRuntime::default());
+    let changeset_id = runtime.snapshot.changeset.id;
+    let expected_version = runtime.snapshot.changeset.version();
+    let expected_head_sha = runtime.snapshot.changeset.head_sha().to_owned();
+    let server = fixture_server(runtime);
+    let (router, cookie, csrf) = exchange(&server).await;
+
+    let (_, commit_preview) = authenticated_command(
+        &router,
+        &cookie,
+        &csrf,
+        LocalCommand::PreviewCommit {
+            changeset_id,
+            expected_version,
+            expected_head_sha: expected_head_sha.clone(),
+        },
+    )
+    .await;
+    assert!(matches!(
+        commit_preview.result,
+        CommandResult::Ok(LocalCommandResponse::MutationPreview(MutationPreview {
+            kind: ChangesetMutationKind::Commit,
+            changeset_id: response_changeset_id,
+            confirmation_digest,
+            ..
+        })) if response_changeset_id == changeset_id && confirmation_digest == "a".repeat(64)
+    ));
+
+    let (_, mismatch) = authenticated_command(
+        &router,
+        &cookie,
+        &csrf,
+        LocalCommand::CommitChangeset {
+            changeset_id,
+            expected_version,
+            expected_head_sha: expected_head_sha.clone(),
+            confirmation_digest: "0".repeat(64),
+        },
+    )
+    .await;
+    assert!(matches!(
+        mismatch.result,
+        CommandResult::Error(StructuredError { code, retryable: false, .. })
+            if code == "mutation_confirmation_mismatch"
+    ));
+
+    let (commit_json, commit) = authenticated_command(
+        &router,
+        &cookie,
+        &csrf,
+        LocalCommand::CommitChangeset {
+            changeset_id,
+            expected_version,
+            expected_head_sha: expected_head_sha.clone(),
+            confirmation_digest: "a".repeat(64),
+        },
+    )
+    .await;
+    assert!(!commit_json.contains("canonical_path"));
+    assert!(!commit_json.contains("worktrees/"));
+    assert!(matches!(
+        commit.result,
+        CommandResult::Ok(LocalCommandResponse::MutationCompleted(
+            MutationResult::Commit {
+                worktree_state: WorktreeState::Removed,
+                resulting_head_sha,
+                app_ref,
+                ..
+            }
+        )) if resulting_head_sha == "d".repeat(40)
+            && app_ref == format!("refs/jet-black/changesets/{changeset_id}")
+    ));
+
+    let (_, discard_preview) = authenticated_command(
+        &router,
+        &cookie,
+        &csrf,
+        LocalCommand::PreviewDiscard {
+            changeset_id,
+            expected_version,
+            expected_head_sha: expected_head_sha.clone(),
+        },
+    )
+    .await;
+    assert!(matches!(
+        discard_preview.result,
+        CommandResult::Ok(LocalCommandResponse::MutationPreview(MutationPreview {
+            kind: ChangesetMutationKind::Discard,
+            confirmation_digest,
+            ..
+        })) if confirmation_digest == "c".repeat(64)
+    ));
+
+    let (discard_json, discard) = authenticated_command(
+        &router,
+        &cookie,
+        &csrf,
+        LocalCommand::DiscardChangeset {
+            changeset_id,
+            expected_version,
+            expected_head_sha,
+            confirmation_digest: "c".repeat(64),
+        },
+    )
+    .await;
+    assert!(!discard_json.contains("canonical_path"));
+    assert!(!discard_json.contains("worktrees/"));
+    assert!(matches!(
+        discard.result,
+        CommandResult::Ok(LocalCommandResponse::MutationCompleted(
+            MutationResult::Discard {
+                worktree_state: WorktreeState::Removed,
+                ..
+            }
+        ))
     ));
 }
 

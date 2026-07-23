@@ -466,6 +466,7 @@ fn exact_commit_and_discard_reject_stale_manifests() {
     fs::write(worktree.path.join("change.txt"), "first\n").unwrap();
     let stale = service.mutation_manifest(&registered, &worktree).unwrap();
     fs::write(worktree.path.join("change.txt"), "second\n").unwrap();
+    fs::write(worktree.path.join("binary.bin"), [0, 0xff, 1, 0xfe]).unwrap();
     assert!(matches!(
         service.commit_exact(&registered, &worktree, &stale.head_sha, &stale.sha256),
         Err(GitError::MutationPreviewMismatch)
@@ -510,6 +511,46 @@ fn exact_commit_and_discard_reject_stale_manifests() {
             )
             .unwrap(),
         committed
+    );
+    assert_eq!(
+        service
+            .recover_exact_commit_result(
+                &registered,
+                changeset_id,
+                &commit_manifest.head_sha,
+                &commit_manifest.sha256,
+            )
+            .unwrap(),
+        Some(committed.clone())
+    );
+    assert!(matches!(
+        service.recover_exact_commit_result(
+            &registered,
+            changeset_id,
+            &commit_manifest.head_sha,
+            &"0".repeat(64),
+        ),
+        Err(GitError::MutationPreviewMismatch)
+    ));
+    assert!(matches!(
+        service.recover_exact_commit_result(
+            &registered,
+            changeset_id,
+            &"0".repeat(40),
+            &commit_manifest.sha256,
+        ),
+        Err(GitError::CommitVerificationFailed)
+    ));
+    assert!(
+        service
+            .recover_exact_commit_result(
+                &registered,
+                uuid::Uuid::new_v4(),
+                &commit_manifest.head_sha,
+                &commit_manifest.sha256,
+            )
+            .unwrap()
+            .is_none()
     );
     fs::write(worktree.path.join("ignored.txt"), "ignored\n").unwrap();
     assert!(matches!(

@@ -360,6 +360,10 @@ fn command_response(outcome: CommandOutcome) -> LocalCommandResponse {
         CommandOutcome::RunArtifactsDeleted(deleted) => {
             LocalCommandResponse::RunArtifactsDeleted(deleted)
         }
+        CommandOutcome::MutationPreview(preview) => LocalCommandResponse::MutationPreview(preview),
+        CommandOutcome::MutationCompleted(result) => {
+            LocalCommandResponse::MutationCompleted(result)
+        }
     }
 }
 
@@ -367,6 +371,41 @@ fn structured_orchestration_error(error: OrchestrationError) -> StructuredError 
     let (code, message, retryable) = match error {
         OrchestrationError::NotFound(_) => ("not_found", "requested resource was not found", false),
         OrchestrationError::StaleBase => ("stale_base", "repository base changed", false),
+        OrchestrationError::ChangesetNotReviewable => (
+            "changeset_not_reviewable",
+            "changeset is not ready to be committed or discarded",
+            false,
+        ),
+        OrchestrationError::StaleChangesetVersion => (
+            "stale_changeset_version",
+            "changeset version changed after preview",
+            false,
+        ),
+        OrchestrationError::StaleChangesetHead => (
+            "stale_changeset_head",
+            "changeset head changed after preview",
+            false,
+        ),
+        OrchestrationError::MutationConfirmationMismatch => (
+            "mutation_confirmation_mismatch",
+            "confirmation did not match the exact mutation preview",
+            false,
+        ),
+        OrchestrationError::MutationPreviewMismatch => (
+            "mutation_preview_mismatch",
+            "changeset no longer matches the mutation preview",
+            false,
+        ),
+        OrchestrationError::ChangesetFinalizationDivergent => (
+            "changeset_divergent",
+            "changeset finalization requires manual resolution",
+            false,
+        ),
+        OrchestrationError::ChangesetFinalizationCorrupt => (
+            "changeset_finalization_corrupt",
+            "changeset finalization state is invalid",
+            false,
+        ),
         OrchestrationError::ApprovalMismatch => (
             "approval_mismatch",
             "approval did not match the pending action",
@@ -397,6 +436,16 @@ fn structured_orchestration_error(error: OrchestrationError) -> StructuredError 
             "mutation_lease_unavailable",
             "mutation lease is unavailable",
             true,
+        ),
+        OrchestrationError::NoChangesToFinalize => (
+            "no_changes_to_finalize",
+            "worktree has no changes to finalize",
+            false,
+        ),
+        OrchestrationError::ChangesetFinalizationConflict => (
+            "changeset_finalization_conflict",
+            "changeset finalization conflicts with durable state",
+            false,
         ),
         _ => ("runtime_error", "local runtime operation failed", false),
     };

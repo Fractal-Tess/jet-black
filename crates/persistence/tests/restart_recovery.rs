@@ -135,6 +135,25 @@ fn seed_finalization_fixture(
 }
 
 #[test]
+fn worktree_lookup_by_id_returns_existing_and_missing_rows() {
+    let directory = tempdir().unwrap();
+    let store = SqliteStore::open(directory.path().join("worktree-lookup.sqlite3")).unwrap();
+    let changeset_id = uuid::Uuid::new_v4();
+    seed_changeset(&store, changeset_id);
+    let worktree = Worktree::creating(
+        uuid::Uuid::new_v4(),
+        changeset_id,
+        "/worktree".into(),
+        "fixture".to_owned(),
+        "base".to_owned(),
+    );
+    store.save_worktree(&worktree).unwrap();
+
+    assert_eq!(store.worktree(worktree.id).unwrap(), Some(worktree));
+    assert_eq!(store.worktree(uuid::Uuid::new_v4()).unwrap(), None);
+}
+
+#[test]
 fn restart_maps_active_states_deterministically() {
     let directory = tempdir().expect("temp directory");
     let path = directory.path().join("state.sqlite3");
@@ -1278,6 +1297,10 @@ fn commit_finalization_updates_all_records_atomically_and_replays() {
     );
     assert_eq!(completed.changeset.head_sha(), "b".repeat(40));
     assert_eq!(completed.worktree.state(), WorktreeState::Removed);
+    assert_eq!(
+        store.completed_changeset_finalization(&digest).unwrap(),
+        completed
+    );
     assert_eq!(
         store
             .complete_changeset_finalization(&digest, result, 40)

@@ -6,10 +6,10 @@ mod typescript;
 
 pub use commands::{
     ApprovalRequest, ApprovalResponse, CheckpointResponse, DiffResponse, FindingsResponse,
-    HistoryResponse, LocalCommand, LocalCommandResponse, MutationPreview, RecoveryAction,
-    RecoveryResponse, RunArtifactSegmentMetadata, RunArtifactSegmentResponse, RunArtifactStream,
-    RunArtifactSummary, RunArtifactsDeletedResponse, RunArtifactsResponse, RunCompletedResponse,
-    RunSnapshot, RunStartedResponse,
+    HistoryResponse, LocalCommand, LocalCommandResponse, MutationPreview, MutationResult,
+    RecoveryAction, RecoveryResponse, RunArtifactSegmentMetadata, RunArtifactSegmentResponse,
+    RunArtifactStream, RunArtifactSummary, RunArtifactsDeletedResponse, RunArtifactsResponse,
+    RunCompletedResponse, RunSnapshot, RunStartedResponse,
 };
 pub use envelopes::{CommandResult, Envelope, PROTOCOL_VERSION, ResponseEnvelope};
 pub use errors::StructuredError;

@@ -1,40 +1,55 @@
 import {
-  type CheckpointResponse,
-  type DiffResponse,
   type Envelope,
-  type EventPage,
-  type FindingsResponse,
-  type HistoryResponse,
   type LocalCommand,
-  type MutationPreview,
+  type LocalCommandResponse,
+  type MutationResult,
   PROTOCOL_VERSION,
-  type RecoveryResponse,
   type ResponseEnvelope,
-  type RunSnapshot,
 } from "@workspace/shared/protocol";
 
 const UUID_PATTERN =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu;
 
-type CommandResponseMap = {
-  get_checkpoint: CheckpointResponse;
-  get_diff: DiffResponse;
-  get_events: EventPage;
-  get_findings: FindingsResponse;
-  get_history: HistoryResponse;
-  get_recovery: RecoveryResponse;
-  get_snapshot: RunSnapshot;
-  preview_commit: MutationPreview;
-  preview_discard: MutationPreview;
+type CommandResponseTypeMap = {
+  create_changeset: "changeset_created";
+  delete_run_artifacts: "run_artifacts_deleted";
+  get_checkpoint: "checkpoint";
+  get_diff: "diff";
+  get_events: "events";
+  get_findings: "findings";
+  get_history: "history";
+  get_recovery: "recovery";
+  get_run_artifacts: "run_artifacts";
+  get_snapshot: "snapshot";
+  interrupt_run: "run_interrupted";
+  preview_commit: "mutation_preview";
+  preview_discard: "mutation_preview";
+  read_run_artifact_segment: "run_artifact_segment";
+  register_repository: "repository_registered";
+  respond_to_approval: "run_completed" | "approval_rejected";
+  start_run: "run_started";
 };
 
 export type ExecutionClientMode = "disabled" | "http" | "tauri";
 
+type MutationCompletedResponse<Kind extends MutationResult["kind"]> = Omit<
+  Extract<LocalCommandResponse, { type: "mutation_completed" }>,
+  "data"
+> & {
+  data: Extract<MutationResult, { kind: Kind }>;
+};
+
 export type ExecutionCommandResponse<C extends LocalCommand> = C extends {
-  type: infer Type extends keyof CommandResponseMap;
+  type: "commit_changeset";
 }
-  ? CommandResponseMap[Type]
-  : unknown;
+  ? MutationCompletedResponse<"commit">
+  : C extends { type: "discard_changeset" }
+    ? MutationCompletedResponse<"discard">
+    : C extends {
+          type: infer Type extends keyof CommandResponseTypeMap;
+        }
+      ? Extract<LocalCommandResponse, { type: CommandResponseTypeMap[Type] }>
+      : never;
 
 export type FetchTransport = (
   input: RequestInfo | URL,

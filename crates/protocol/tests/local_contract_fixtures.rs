@@ -1,14 +1,14 @@
 use domain::{
-    ActionKind, ActionProposal, ApprovalScope, Changeset, Checkpoint, RelativePath, Repository,
-    Run, RunState,
+    ActionKind, ActionProposal, ApprovalScope, Changeset, ChangesetMutationKind, Checkpoint,
+    RelativePath, Repository, Run, RunState, WorktreeState,
 };
 use protocol::{
     ApprovalRequest, ApprovalResponse, CommandResult, DiffResponse, Envelope, EventCursor,
-    EventPage, HistoryResponse, LocalCommand, LocalCommandResponse, OrderedRunEvent,
-    PROTOCOL_VERSION, RecoveryAction, RecoveryResponse, ResponseEnvelope,
-    RunArtifactSegmentMetadata, RunArtifactSegmentResponse, RunArtifactStream, RunArtifactSummary,
-    RunArtifactsDeletedResponse, RunArtifactsResponse, RunSnapshot, SemanticEventKind,
-    StructuredError,
+    EventPage, HistoryResponse, LocalCommand, LocalCommandResponse, MutationPreview,
+    MutationResult, OrderedRunEvent, PROTOCOL_VERSION, RecoveryAction, RecoveryResponse,
+    ResponseEnvelope, RunArtifactSegmentMetadata, RunArtifactSegmentResponse, RunArtifactStream,
+    RunArtifactSummary, RunArtifactsDeletedResponse, RunArtifactsResponse, RunSnapshot,
+    SemanticEventKind, StructuredError,
 };
 use std::path::PathBuf;
 
@@ -128,7 +128,9 @@ fn all_local_message_shapes_round_trip() {
         updated_at_unix_ms: 101,
         expires_at_unix_ms: 200,
     };
-    let artifact_commands = [
+    let confirmation_digest = "a".repeat(64);
+    let manifest_sha256 = "b".repeat(64);
+    let commands = [
         LocalCommand::GetRunArtifacts { run_id: run.id },
         LocalCommand::ReadRunArtifactSegment {
             run_id: run.id,
@@ -146,8 +148,30 @@ fn all_local_message_shapes_round_trip() {
             changeset_id: changeset.id,
             limit: 10,
         },
+        LocalCommand::PreviewCommit {
+            changeset_id: changeset.id,
+            expected_version: changeset.version(),
+            expected_head_sha: "head".into(),
+        },
+        LocalCommand::CommitChangeset {
+            changeset_id: changeset.id,
+            expected_version: changeset.version(),
+            expected_head_sha: "head".into(),
+            confirmation_digest: confirmation_digest.clone(),
+        },
+        LocalCommand::PreviewDiscard {
+            changeset_id: changeset.id,
+            expected_version: changeset.version(),
+            expected_head_sha: "head".into(),
+        },
+        LocalCommand::DiscardChangeset {
+            changeset_id: changeset.id,
+            expected_version: changeset.version(),
+            expected_head_sha: "head".into(),
+            confirmation_digest: confirmation_digest.clone(),
+        },
     ];
-    let artifact_responses = [
+    let responses = [
         LocalCommandResponse::RunArtifacts(RunArtifactsResponse {
             run_id: run.id,
             artifacts: vec![artifact.clone()],
@@ -183,6 +207,40 @@ fn all_local_message_shapes_round_trip() {
         LocalCommandResponse::History(HistoryResponse {
             changeset_id: changeset.id,
             runs: vec![run.clone()],
+        }),
+        LocalCommandResponse::MutationPreview(MutationPreview {
+            kind: ChangesetMutationKind::Commit,
+            changeset_id: changeset.id,
+            checkpoint_id: checkpoint.id,
+            expected_version: changeset.version(),
+            expected_head_sha: "head".into(),
+            manifest_sha256: manifest_sha256.clone(),
+            confirmation_digest: confirmation_digest.clone(),
+        }),
+        LocalCommandResponse::MutationCompleted(MutationResult::Commit {
+            confirmation_digest: confirmation_digest.clone(),
+            checkpoint_id: checkpoint.id,
+            manifest_sha256: manifest_sha256.clone(),
+            changeset: changeset.clone(),
+            worktree_state: WorktreeState::Removed,
+            resulting_head_sha: "resulting-head".into(),
+            app_ref: format!("refs/jet-black/changesets/{}", changeset.id),
+        }),
+        LocalCommandResponse::MutationPreview(MutationPreview {
+            kind: ChangesetMutationKind::Discard,
+            changeset_id: changeset.id,
+            checkpoint_id: checkpoint.id,
+            expected_version: changeset.version(),
+            expected_head_sha: "head".into(),
+            manifest_sha256: manifest_sha256.clone(),
+            confirmation_digest: confirmation_digest.clone(),
+        }),
+        LocalCommandResponse::MutationCompleted(MutationResult::Discard {
+            confirmation_digest: confirmation_digest.clone(),
+            checkpoint_id: checkpoint.id,
+            manifest_sha256,
+            changeset: changeset.clone(),
+            worktree_state: WorktreeState::Removed,
         }),
     ];
     let values = vec![
@@ -252,14 +310,14 @@ fn all_local_message_shapes_round_trip() {
         serde_json::from_value::<LocalCommand>(values[12].clone()).unwrap(),
         recovery_command
     );
-    for command in artifact_commands {
+    for command in commands {
         let value = serde_json::to_value(&command).unwrap();
         assert_eq!(
             serde_json::from_value::<LocalCommand>(value).unwrap(),
             command
         );
     }
-    for response in artifact_responses {
+    for response in responses {
         let value = serde_json::to_value(&response).unwrap();
         assert_eq!(
             serde_json::from_value::<LocalCommandResponse>(value).unwrap(),

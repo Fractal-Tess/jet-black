@@ -1,15 +1,15 @@
 use crate::{
     ApprovalRequest, ApprovalResponse, CheckpointResponse, CommandResult, DiffResponse, Envelope,
     EventCursor, EventPage, FindingsResponse, HistoryResponse, LocalCommand, LocalCommandResponse,
-    MutationPreview, OrderedRunEvent, PROTOCOL_VERSION, RecoveryAction, RecoveryResponse,
-    ResponseEnvelope, RunArtifactSegmentMetadata, RunArtifactSegmentResponse, RunArtifactStream,
-    RunArtifactSummary, RunArtifactsDeletedResponse, RunArtifactsResponse, RunCompletedResponse,
-    RunSnapshot, RunStartedResponse, SemanticEventKind, StructuredError,
+    MutationPreview, MutationResult, OrderedRunEvent, PROTOCOL_VERSION, RecoveryAction,
+    RecoveryResponse, ResponseEnvelope, RunArtifactSegmentMetadata, RunArtifactSegmentResponse,
+    RunArtifactStream, RunArtifactSummary, RunArtifactsDeletedResponse, RunArtifactsResponse,
+    RunCompletedResponse, RunSnapshot, RunStartedResponse, SemanticEventKind, StructuredError,
 };
 use domain::{
-    ActionKind, ActionProposal, ApprovalScope, Changeset, ChangesetState, Checkpoint,
-    ControlPlaneId, ExecutionTargetId, Finding, FindingState, RelativePath, Repository, Run,
-    RunKind, RunState, TicketRef, Worktree, WorktreeState,
+    ActionKind, ActionProposal, ApprovalScope, Changeset, ChangesetMutationKind, ChangesetState,
+    Checkpoint, ControlPlaneId, ExecutionTargetId, Finding, FindingState, RelativePath, Repository,
+    Run, RunKind, RunState, TicketRef, Worktree, WorktreeState,
 };
 use ts_rs::TS;
 
@@ -22,6 +22,7 @@ pub fn declarations() -> String {
         exported_decl::<ActionKind>(),
         exported_decl::<ActionProposal>(),
         exported_decl::<ApprovalScope>(),
+        exported_decl::<ChangesetMutationKind>(),
         exported_decl::<ChangesetState>(),
         exported_decl::<RunKind>(),
         exported_decl::<RunState>(),
@@ -58,6 +59,7 @@ pub fn declarations() -> String {
         exported_decl::<RunArtifactSegmentResponse>(),
         exported_decl::<RunArtifactsDeletedResponse>(),
         exported_decl::<MutationPreview>(),
+        exported_decl::<MutationResult>(),
         exported_decl::<Envelope<LocalCommand>>(),
         exported_decl::<CommandResult<LocalCommandResponse>>(),
         exported_decl::<ResponseEnvelope<LocalCommandResponse>>(),

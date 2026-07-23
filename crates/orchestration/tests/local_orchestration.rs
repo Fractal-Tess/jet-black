@@ -1,14 +1,20 @@
 use agents::{AgentProvider, ClaudeCodeProvider, MockProvider, ProposedFileChange, ProviderError};
 use base64::{Engine as _, engine::general_purpose::STANDARD};
-use domain::{ChangesetState, RelativePath, RunState, WorktreeState, limits};
+use domain::{
+    ChangesetMutationKind, ChangesetMutationScope, ChangesetState, RelativePath, RunState,
+    WorktreeState, limits,
+};
 use execution::{
     CancellationToken, ProcessResult, ProcessSpec, ProcessStartIdentity, ProcessSupervisor,
     SupervisionState, TerminationReason,
 };
 use git::GitService;
 use orchestration::{CommandOutcome, LocalOrchestrator, OrchestrationError};
-use persistence::{ArtifactPolicy, ArtifactState, ArtifactStream, LocalArtifactStore, SqliteStore};
-use protocol::{LocalCommand, SemanticEventKind};
+use persistence::{
+    ArtifactPolicy, ArtifactState, ArtifactStream, ChangesetFinalizationState, LocalArtifactStore,
+    SqliteStore,
+};
+use protocol::{LocalCommand, MutationResult, SemanticEventKind};
 use std::{
     collections::HashMap,
     fs,
@@ -477,6 +483,326 @@ fn command_boundary_completes_and_recovers_a_digest_approved_run() {
         restarted.cleanup_changeset(changeset.id).unwrap().state(),
         WorktreeState::Removed
     );
+}
+
+#[test]
+fn commit_and_discard_commands_require_exact_previews_and_replay_terminal_results() {
+    let directory = tempdir().unwrap();
+    let repository_path = fixture_repository(directory.path());
+    let runtime = build_runtime(directory.path());
+    let repository = runtime.register_repository(&repository_path).unwrap();
+
+    let commit_changeset = runtime
+        .create_changeset(repository.id, &repository.base_sha, None)
+        .unwrap();
+    let commit_started = runtime.start_run(commit_changeset.id).unwrap();
+    let commit_completed = runtime
+        .approve_and_complete(
+            commit_started.run_id,
+            &commit_started.approval_request.scope,
+        )
+        .unwrap();
+    let commit_version = commit_completed.changeset.version();
+    let expected_head_sha = commit_completed.checkpoint.head_sha.clone();
+
+    assert!(matches!(
+        runtime.handle(LocalCommand::PreviewCommit {
+            changeset_id: commit_changeset.id,
+            expected_version: commit_version + 1,
+            expected_head_sha: expected_head_sha.clone(),
+        }),
+        Err(OrchestrationError::StaleChangesetVersion)
+    ));
+    assert!(matches!(
+        runtime.handle(LocalCommand::PreviewCommit {
+            changeset_id: commit_changeset.id,
+            expected_version: commit_version,
+            expected_head_sha: repository.base_sha.clone() + "0",
+        }),
+        Err(OrchestrationError::StaleChangesetHead)
+    ));
+
+    let commit_preview = match runtime
+        .handle(LocalCommand::PreviewCommit {
+            changeset_id: commit_changeset.id,
+            expected_version: commit_version,
+            expected_head_sha: expected_head_sha.clone(),
+        })
+        .unwrap()
+    {
+        CommandOutcome::MutationPreview(preview) => preview,
+        outcome => panic!("unexpected outcome: {outcome:?}"),
+    };
+    assert_eq!(commit_preview.kind, ChangesetMutationKind::Commit);
+    assert!(matches!(
+        runtime.handle(LocalCommand::CommitChangeset {
+            changeset_id: commit_changeset.id,
+            expected_version: commit_version,
+            expected_head_sha: expected_head_sha.clone(),
+            confirmation_digest: "0".repeat(64),
+        }),
+        Err(OrchestrationError::MutationConfirmationMismatch)
+    ));
+
+    let commit = match runtime
+        .handle(LocalCommand::CommitChangeset {
+            changeset_id: commit_changeset.id,
+            expected_version: commit_version,
+            expected_head_sha: expected_head_sha.clone(),
+            confirmation_digest: commit_preview.confirmation_digest.clone(),
+        })
+        .unwrap()
+    {
+        CommandOutcome::MutationCompleted(result) => result,
+        outcome => panic!("unexpected outcome: {outcome:?}"),
+    };
+    let MutationResult::Commit {
+        changeset,
+        worktree_state,
+        resulting_head_sha,
+        app_ref,
+        ..
+    } = &commit
+    else {
+        panic!("expected commit result");
+    };
+    assert_eq!(changeset.state(), ChangesetState::Committed);
+    assert_eq!(*worktree_state, WorktreeState::Removed);
+    assert_eq!(changeset.head_sha(), resulting_head_sha);
+    assert_eq!(
+        app_ref,
+        &format!("refs/jet-black/changesets/{}", commit_changeset.id)
+    );
+    assert!(
+        !directory
+            .path()
+            .join("worktrees")
+            .join(commit_changeset.id.to_string())
+            .exists()
+    );
+    assert_eq!(
+        runtime
+            .finalize_changeset(
+                ChangesetMutationKind::Commit,
+                commit_changeset.id,
+                commit_version,
+                &expected_head_sha,
+                &commit_preview.confirmation_digest,
+            )
+            .unwrap(),
+        commit
+    );
+    let discard_changeset = runtime
+        .create_changeset(repository.id, &repository.base_sha, None)
+        .unwrap();
+    let discard_started = runtime.start_run(discard_changeset.id).unwrap();
+    let discard_completed = runtime
+        .approve_and_complete(
+            discard_started.run_id,
+            &discard_started.approval_request.scope,
+        )
+        .unwrap();
+    let discard_preview = runtime
+        .preview_changeset_mutation(
+            ChangesetMutationKind::Discard,
+            discard_changeset.id,
+            discard_completed.changeset.version(),
+            &discard_completed.checkpoint.head_sha,
+        )
+        .unwrap();
+    let discard = runtime
+        .finalize_changeset(
+            ChangesetMutationKind::Discard,
+            discard_changeset.id,
+            discard_completed.changeset.version(),
+            &discard_completed.checkpoint.head_sha,
+            &discard_preview.confirmation_digest,
+        )
+        .unwrap();
+    assert!(matches!(
+        discard,
+        MutationResult::Discard {
+            changeset,
+            worktree_state: WorktreeState::Removed,
+            ..
+        } if changeset.state() == ChangesetState::Discarded
+    ));
+}
+
+#[test]
+fn startup_recovery_completes_a_prepared_commit_after_worktree_removal() {
+    let directory = tempdir().unwrap();
+    let repository_path = fixture_repository(directory.path());
+    let store_path = directory.path().join("state.sqlite3");
+    let runtime = build_runtime(directory.path());
+    let repository = runtime.register_repository(&repository_path).unwrap();
+    let changeset = runtime
+        .create_changeset(repository.id, &repository.base_sha, None)
+        .unwrap();
+    let started = runtime.start_run(changeset.id).unwrap();
+    let completed = runtime
+        .approve_and_complete(started.run_id, &started.approval_request.scope)
+        .unwrap();
+    let preview = runtime
+        .preview_changeset_mutation(
+            ChangesetMutationKind::Commit,
+            changeset.id,
+            completed.changeset.version(),
+            &completed.checkpoint.head_sha,
+        )
+        .unwrap();
+    drop(runtime);
+
+    let store = SqliteStore::open(&store_path).unwrap();
+    let mut worktree = store.worktree_for_changeset(changeset.id).unwrap().unwrap();
+    let scope = ChangesetMutationScope {
+        kind: ChangesetMutationKind::Commit,
+        repository_id: repository.id,
+        changeset_id: changeset.id,
+        checkpoint_id: preview.checkpoint_id,
+        expected_version: preview.expected_version,
+        base_sha: repository.base_sha.clone(),
+        expected_head_sha: preview.expected_head_sha.clone(),
+        manifest_sha256: preview.manifest_sha256.clone(),
+    };
+    store
+        .prepare_changeset_finalization(
+            &preview.confirmation_digest,
+            &scope,
+            worktree.id,
+            worktree.version(),
+            100,
+        )
+        .unwrap();
+    let git = GitService::new(
+        vec![directory.path().to_path_buf()],
+        directory.path().join("worktrees"),
+    )
+    .unwrap();
+    let exact = git
+        .commit_exact(
+            &repository,
+            &worktree,
+            &preview.expected_head_sha,
+            &preview.manifest_sha256,
+        )
+        .unwrap();
+    git.cleanup_worktree(&repository, &mut worktree).unwrap();
+    assert!(!worktree.path.exists());
+
+    let restarted = build_runtime(directory.path());
+    let recovery = restarted.recover().unwrap();
+    assert!(recovery.actions.iter().any(|action| {
+        action.aggregate_id == changeset.id && action.action == "finalization_completed"
+    }));
+    let finalization = store
+        .changeset_finalization(&preview.confirmation_digest)
+        .unwrap()
+        .unwrap();
+    assert_eq!(finalization.state, ChangesetFinalizationState::Completed);
+    assert_eq!(
+        store.changeset(changeset.id).unwrap().unwrap().state(),
+        ChangesetState::Committed
+    );
+    let replay = restarted
+        .finalize_changeset(
+            ChangesetMutationKind::Commit,
+            changeset.id,
+            preview.expected_version,
+            &preview.expected_head_sha,
+            &preview.confirmation_digest,
+        )
+        .unwrap();
+    assert!(matches!(
+        replay,
+        MutationResult::Commit {
+            resulting_head_sha,
+            worktree_state: WorktreeState::Removed,
+            ..
+        } if resulting_head_sha == exact.resulting_head_sha
+    ));
+}
+
+#[test]
+fn startup_recovery_records_the_observed_head_for_divergent_finalization() {
+    let directory = tempdir().unwrap();
+    let repository_path = fixture_repository(directory.path());
+    let store_path = directory.path().join("state.sqlite3");
+    let runtime = build_runtime(directory.path());
+    let repository = runtime.register_repository(&repository_path).unwrap();
+    let changeset = runtime
+        .create_changeset(repository.id, &repository.base_sha, None)
+        .unwrap();
+    let started = runtime.start_run(changeset.id).unwrap();
+    let completed = runtime
+        .approve_and_complete(started.run_id, &started.approval_request.scope)
+        .unwrap();
+    let preview = runtime
+        .preview_changeset_mutation(
+            ChangesetMutationKind::Commit,
+            changeset.id,
+            completed.changeset.version(),
+            &completed.checkpoint.head_sha,
+        )
+        .unwrap();
+    drop(runtime);
+
+    let store = SqliteStore::open(&store_path).unwrap();
+    let worktree = store.worktree_for_changeset(changeset.id).unwrap().unwrap();
+    let scope = ChangesetMutationScope {
+        kind: ChangesetMutationKind::Commit,
+        repository_id: repository.id,
+        changeset_id: changeset.id,
+        checkpoint_id: preview.checkpoint_id,
+        expected_version: preview.expected_version,
+        base_sha: repository.base_sha.clone(),
+        expected_head_sha: preview.expected_head_sha.clone(),
+        manifest_sha256: preview.manifest_sha256.clone(),
+    };
+    store
+        .prepare_changeset_finalization(
+            &preview.confirmation_digest,
+            &scope,
+            worktree.id,
+            worktree.version(),
+            100,
+        )
+        .unwrap();
+    fs::write(worktree.path.join("diverged.txt"), "diverged\n").unwrap();
+    run_git(&worktree.path, &["add", "diverged.txt"]);
+    run_git(&worktree.path, &["commit", "-qm", "diverge"]);
+    let git = GitService::new(
+        vec![directory.path().to_path_buf()],
+        directory.path().join("worktrees"),
+    )
+    .unwrap();
+    let observed_head_sha = git.head_sha(&worktree).unwrap();
+    assert_ne!(observed_head_sha, preview.expected_head_sha);
+
+    let restarted = build_runtime(directory.path());
+    let recovery = restarted.recover().unwrap();
+    let finalization = store
+        .changeset_finalization(&preview.confirmation_digest)
+        .unwrap()
+        .unwrap();
+    assert_eq!(finalization.state, ChangesetFinalizationState::Divergent);
+    assert_eq!(
+        store.changeset(changeset.id).unwrap().unwrap().head_sha(),
+        observed_head_sha
+    );
+    assert_eq!(
+        store
+            .worktree_for_changeset(changeset.id)
+            .unwrap()
+            .unwrap()
+            .state(),
+        WorktreeState::Quarantined
+    );
+    assert!(recovery.actions.iter().any(|action| {
+        action.aggregate_id == changeset.id
+            && action.action == "finalization_divergent"
+            && action.detail.contains(&observed_head_sha)
+    }));
 }
 
 #[test]

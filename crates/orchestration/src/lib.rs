@@ -1,8 +1,8 @@
 use agents::AgentProvider;
 use base64::{Engine as _, engine::general_purpose::STANDARD};
 use domain::{
-    Approval, ApprovalScope, Changeset, ChangesetState, Checkpoint, Id, Repository, Run, RunState,
-    TicketRef, Worktree, WorktreeState,
+    Approval, ApprovalScope, Changeset, ChangesetMutationKind, ChangesetMutationScope,
+    ChangesetState, Checkpoint, Id, Repository, Run, RunState, TicketRef, Worktree, WorktreeState,
 };
 use execution::{
     CancellationToken, ProcessResult, ProcessSpec, ProcessSupervisor, SupervisionState,
@@ -10,15 +10,16 @@ use execution::{
 };
 use git::GitService;
 use persistence::{
-    ArtifactSegment, ArtifactStream, LocalArtifactStore, MutationLease, RecoveryReport,
-    RunArtifact, SqliteStore, VerifiedArtifactSegment,
+    ArtifactSegment, ArtifactStream, ChangesetFinalization, ChangesetFinalizationResult,
+    ChangesetFinalizationState, CompletedChangesetFinalization, LocalArtifactStore, MutationLease,
+    RecoveryReport, RunArtifact, SqliteStore, VerifiedArtifactSegment,
 };
 use protocol::{
     ApprovalRequest, CheckpointResponse, DiffResponse, EventCursor, EventPage, FindingsResponse,
-    HistoryResponse, LocalCommand, OrderedRunEvent, RecoveryAction, RecoveryResponse,
-    RunArtifactSegmentMetadata, RunArtifactSegmentResponse, RunArtifactStream, RunArtifactSummary,
-    RunArtifactsDeletedResponse, RunArtifactsResponse, RunCompletedResponse, RunSnapshot,
-    RunStartedResponse, SemanticEventKind,
+    HistoryResponse, LocalCommand, MutationPreview, MutationResult, OrderedRunEvent,
+    RecoveryAction, RecoveryResponse, RunArtifactSegmentMetadata, RunArtifactSegmentResponse,
+    RunArtifactStream, RunArtifactSummary, RunArtifactsDeletedResponse, RunArtifactsResponse,
+    RunCompletedResponse, RunSnapshot, RunStartedResponse, SemanticEventKind,
 };
 use std::{path::Path, sync::Mutex, time::Duration};
 use thiserror::Error;
@@ -181,10 +182,54 @@ impl<P: AgentProvider> LocalOrchestrator<P> {
                         .map_err(|_| OrchestrationError::ResourceLimit("run history page size"))?,
                 )?,
             )),
-            LocalCommand::PreviewCommit { .. }
-            | LocalCommand::CommitChangeset { .. }
-            | LocalCommand::PreviewDiscard { .. }
-            | LocalCommand::DiscardChangeset { .. } => Err(OrchestrationError::UnsupportedCommand),
+            LocalCommand::PreviewCommit {
+                changeset_id,
+                expected_version,
+                expected_head_sha,
+            } => Ok(CommandOutcome::MutationPreview(
+                self.preview_changeset_mutation(
+                    ChangesetMutationKind::Commit,
+                    changeset_id,
+                    expected_version,
+                    &expected_head_sha,
+                )?,
+            )),
+            LocalCommand::CommitChangeset {
+                changeset_id,
+                expected_version,
+                expected_head_sha,
+                confirmation_digest,
+            } => Ok(CommandOutcome::MutationCompleted(self.finalize_changeset(
+                ChangesetMutationKind::Commit,
+                changeset_id,
+                expected_version,
+                &expected_head_sha,
+                &confirmation_digest,
+            )?)),
+            LocalCommand::PreviewDiscard {
+                changeset_id,
+                expected_version,
+                expected_head_sha,
+            } => Ok(CommandOutcome::MutationPreview(
+                self.preview_changeset_mutation(
+                    ChangesetMutationKind::Discard,
+                    changeset_id,
+                    expected_version,
+                    &expected_head_sha,
+                )?,
+            )),
+            LocalCommand::DiscardChangeset {
+                changeset_id,
+                expected_version,
+                expected_head_sha,
+                confirmation_digest,
+            } => Ok(CommandOutcome::MutationCompleted(self.finalize_changeset(
+                ChangesetMutationKind::Discard,
+                changeset_id,
+                expected_version,
+                &expected_head_sha,
+                &confirmation_digest,
+            )?)),
         }
     }
 
@@ -454,6 +499,228 @@ impl<P: AgentProvider> LocalOrchestrator<P> {
         Ok(worktree)
     }
 
+    pub fn preview_changeset_mutation(
+        &self,
+        kind: ChangesetMutationKind,
+        changeset_id: Id,
+        expected_version: u64,
+        expected_head_sha: &str,
+    ) -> Result<MutationPreview, OrchestrationError> {
+        self.build_mutation_preview(kind, changeset_id, expected_version, expected_head_sha)
+            .map(|(preview, _)| preview)
+    }
+
+    pub fn finalize_changeset(
+        &self,
+        kind: ChangesetMutationKind,
+        changeset_id: Id,
+        expected_version: u64,
+        expected_head_sha: &str,
+        confirmation_digest: &str,
+    ) -> Result<MutationResult, OrchestrationError> {
+        let _recovery_lock = self.store.acquire_recovery_lock()?;
+
+        if let Some(finalization) = self.store.changeset_finalization(confirmation_digest)? {
+            self.validate_finalization_command(
+                &finalization,
+                kind,
+                changeset_id,
+                expected_version,
+                expected_head_sha,
+            )?;
+            return match finalization.state {
+                ChangesetFinalizationState::Prepared => {
+                    self.execute_prepared_finalization(&finalization, true)
+                }
+                ChangesetFinalizationState::Completed => {
+                    self.completed_mutation_result(&finalization)
+                }
+                ChangesetFinalizationState::Divergent => {
+                    Err(OrchestrationError::ChangesetFinalizationDivergent)
+                }
+            };
+        }
+
+        let (preview, scope) =
+            self.build_mutation_preview(kind, changeset_id, expected_version, expected_head_sha)?;
+        if preview.confirmation_digest != confirmation_digest {
+            return Err(OrchestrationError::MutationConfirmationMismatch);
+        }
+        let worktree = self.worktree(changeset_id)?;
+        let finalization = self
+            .store
+            .prepare_changeset_finalization(
+                confirmation_digest,
+                &scope,
+                worktree.id,
+                worktree.version(),
+                current_unix_ms(),
+            )
+            .map_err(map_finalization_persistence_error)?;
+        self.execute_prepared_finalization(&finalization, false)
+    }
+
+    fn build_mutation_preview(
+        &self,
+        kind: ChangesetMutationKind,
+        changeset_id: Id,
+        expected_version: u64,
+        expected_head_sha: &str,
+    ) -> Result<(MutationPreview, ChangesetMutationScope), OrchestrationError> {
+        let changeset = self.changeset(changeset_id)?;
+        if changeset.state() != ChangesetState::Reviewable {
+            return Err(OrchestrationError::ChangesetNotReviewable);
+        }
+        if changeset.version() != expected_version {
+            return Err(OrchestrationError::StaleChangesetVersion);
+        }
+        if changeset.head_sha() != expected_head_sha {
+            return Err(OrchestrationError::StaleChangesetHead);
+        }
+        let repository = self.repository(changeset.repository_id())?;
+        if repository.base_sha != changeset.base_sha() {
+            return Err(OrchestrationError::StaleBase);
+        }
+        let worktree = self.worktree(changeset.id)?;
+        if worktree.state() != WorktreeState::Ready {
+            return Err(OrchestrationError::ChangesetNotReviewable);
+        }
+        let checkpoint = self
+            .store
+            .checkpoint_for_changeset(changeset.id)?
+            .ok_or(OrchestrationError::NotFound("checkpoint"))?;
+        if checkpoint.base_sha != changeset.base_sha() || checkpoint.head_sha != expected_head_sha {
+            return Err(OrchestrationError::MutationPreviewMismatch);
+        }
+        let manifest = self
+            .git
+            .mutation_manifest(&repository, &worktree)
+            .map_err(map_mutation_git_error)?;
+        if manifest.head_sha != expected_head_sha {
+            return Err(OrchestrationError::StaleChangesetHead);
+        }
+        let scope = ChangesetMutationScope {
+            kind,
+            repository_id: repository.id,
+            changeset_id,
+            checkpoint_id: checkpoint.id,
+            expected_version,
+            base_sha: changeset.base_sha().to_owned(),
+            expected_head_sha: expected_head_sha.to_owned(),
+            manifest_sha256: manifest.sha256,
+        };
+        let preview = MutationPreview {
+            kind,
+            changeset_id,
+            checkpoint_id: checkpoint.id,
+            expected_version,
+            expected_head_sha: expected_head_sha.to_owned(),
+            manifest_sha256: scope.manifest_sha256.clone(),
+            confirmation_digest: scope.digest(),
+        };
+        Ok((preview, scope))
+    }
+
+    fn validate_finalization_command(
+        &self,
+        finalization: &ChangesetFinalization,
+        kind: ChangesetMutationKind,
+        changeset_id: Id,
+        expected_version: u64,
+        expected_head_sha: &str,
+    ) -> Result<(), OrchestrationError> {
+        if finalization.scope.kind != kind
+            || finalization.scope.changeset_id != changeset_id
+            || finalization.scope.expected_version != expected_version
+            || finalization.scope.expected_head_sha != expected_head_sha
+        {
+            return Err(OrchestrationError::MutationConfirmationMismatch);
+        }
+        Ok(())
+    }
+
+    fn execute_prepared_finalization(
+        &self,
+        finalization: &ChangesetFinalization,
+        recover_existing_commit: bool,
+    ) -> Result<MutationResult, OrchestrationError> {
+        let repository = self.repository(finalization.scope.repository_id)?;
+        let mut worktree = self
+            .store
+            .worktree(finalization.worktree_id)?
+            .ok_or(OrchestrationError::NotFound("worktree"))?;
+        let result = match finalization.scope.kind {
+            ChangesetMutationKind::Commit => {
+                let recovered = recover_existing_commit
+                    .then(|| {
+                        self.git.recover_exact_commit_result(
+                            &repository,
+                            finalization.scope.changeset_id,
+                            &finalization.scope.expected_head_sha,
+                            &finalization.scope.manifest_sha256,
+                        )
+                    })
+                    .transpose()
+                    .map_err(map_mutation_git_error)?
+                    .flatten();
+                let exact = match recovered {
+                    Some(exact) => exact,
+                    None => self
+                        .git
+                        .commit_exact(
+                            &repository,
+                            &worktree,
+                            &finalization.scope.expected_head_sha,
+                            &finalization.scope.manifest_sha256,
+                        )
+                        .map_err(map_mutation_git_error)?,
+                };
+                self.git.cleanup_worktree(&repository, &mut worktree)?;
+                ChangesetFinalizationResult::Commit {
+                    resulting_head_sha: exact.resulting_head_sha,
+                    app_ref: exact.app_ref,
+                }
+            }
+            ChangesetMutationKind::Discard => {
+                match self.git.discard_exact(
+                    &repository,
+                    &mut worktree,
+                    &finalization.scope.expected_head_sha,
+                    &finalization.scope.manifest_sha256,
+                ) {
+                    Ok(()) => {}
+                    Err(git::GitError::Io(error))
+                        if error.kind() == std::io::ErrorKind::NotFound =>
+                    {
+                        self.git.cleanup_worktree(&repository, &mut worktree)?;
+                    }
+                    Err(error) => return Err(map_mutation_git_error(error)),
+                }
+                ChangesetFinalizationResult::Discard
+            }
+        };
+        let completed = self
+            .store
+            .complete_changeset_finalization(
+                &finalization.confirmation_digest,
+                result,
+                current_unix_ms(),
+            )
+            .map_err(map_finalization_persistence_error)?;
+        mutation_result(&completed)
+    }
+
+    fn completed_mutation_result(
+        &self,
+        finalization: &ChangesetFinalization,
+    ) -> Result<MutationResult, OrchestrationError> {
+        let completed = self
+            .store
+            .completed_changeset_finalization(&finalization.confirmation_digest)
+            .map_err(map_finalization_persistence_error)?;
+        mutation_result(&completed)
+    }
+
     pub fn events(&self, run_id: Id) -> Result<Vec<OrderedRunEvent>, OrchestrationError> {
         Ok(self.store.events(run_id)?)
     }
@@ -622,6 +889,8 @@ impl<P: AgentProvider> LocalOrchestrator<P> {
             )?);
         }
 
+        self.reconcile_prepared_finalizations(now_unix_ms, &mut report)?;
+
         for run in self.store.runs()? {
             match run.state() {
                 RunState::Completed | RunState::Interrupted | RunState::Failed => {
@@ -676,6 +945,82 @@ impl<P: AgentProvider> LocalOrchestrator<P> {
         }
 
         Ok(report)
+    }
+
+    fn observed_finalization_head(
+        &self,
+        finalization: &ChangesetFinalization,
+    ) -> Result<String, OrchestrationError> {
+        let repository = self.repository(finalization.scope.repository_id)?;
+        let worktree = self
+            .store
+            .worktree(finalization.worktree_id)?
+            .ok_or(OrchestrationError::NotFound("worktree"))?;
+        self.git
+            .status_snapshot(&repository, &worktree)
+            .map(|snapshot| snapshot.head_sha)
+            .map_err(OrchestrationError::Git)
+    }
+
+    fn reconcile_prepared_finalizations(
+        &self,
+        now_unix_ms: i64,
+        report: &mut RecoveryReport,
+    ) -> Result<(), OrchestrationError> {
+        for finalization in self.store.prepared_changeset_finalizations()? {
+            match self.execute_prepared_finalization(&finalization, true) {
+                Ok(_) => {
+                    report.actions.push(
+                        self.record_recovery_action(
+                            format!(
+                                "changeset:{}:finalization:{}:completed",
+                                finalization.scope.changeset_id, finalization.confirmation_digest
+                            ),
+                            None,
+                            Some(finalization.scope.changeset_id),
+                            RecoveryAction {
+                                aggregate_kind: "changeset".to_owned(),
+                                aggregate_id: finalization.scope.changeset_id,
+                                action: "finalization_completed".to_owned(),
+                                detail:
+                                    "prepared changeset finalization was verified and completed"
+                                        .to_owned(),
+                            },
+                            now_unix_ms,
+                        )?,
+                    );
+                }
+                Err(error) if finalization_error_is_divergent(&error) => {
+                    let observed_head_sha = self.observed_finalization_head(&finalization)?;
+                    let detail = format!(
+                        "prepared finalization diverged at worktree HEAD {observed_head_sha}: {error}"
+                    );
+                    self.store.mark_changeset_finalization_divergent(
+                        &finalization.confirmation_digest,
+                        observed_head_sha,
+                        detail.clone(),
+                        now_unix_ms,
+                    )?;
+                    report.actions.push(self.record_recovery_action(
+                        format!(
+                            "changeset:{}:finalization:{}:divergent",
+                            finalization.scope.changeset_id, finalization.confirmation_digest
+                        ),
+                        None,
+                        Some(finalization.scope.changeset_id),
+                        RecoveryAction {
+                            aggregate_kind: "changeset".to_owned(),
+                            aggregate_id: finalization.scope.changeset_id,
+                            action: "finalization_divergent".to_owned(),
+                            detail,
+                        },
+                        now_unix_ms,
+                    )?);
+                }
+                Err(error) => return Err(error),
+            }
+        }
+        Ok(())
     }
 
     fn reconcile_orphan_worktrees(
@@ -1331,6 +1676,86 @@ fn map_artifact_error(error: persistence::PersistenceError) -> OrchestrationErro
     }
 }
 
+fn map_mutation_git_error(error: git::GitError) -> OrchestrationError {
+    match error {
+        git::GitError::NoChanges => OrchestrationError::NoChangesToFinalize,
+        git::GitError::MutationPreviewMismatch | git::GitError::WorktreeChangedDuringRead => {
+            OrchestrationError::MutationPreviewMismatch
+        }
+        error => OrchestrationError::Git(error),
+    }
+}
+
+fn map_finalization_persistence_error(error: persistence::PersistenceError) -> OrchestrationError {
+    match error {
+        persistence::PersistenceError::FinalizationConflict
+        | persistence::PersistenceError::FinalizationDigestMismatch => {
+            OrchestrationError::ChangesetFinalizationConflict
+        }
+        persistence::PersistenceError::VersionConflict {
+            aggregate: "changeset",
+            ..
+        } => OrchestrationError::StaleChangesetVersion,
+        error => OrchestrationError::Persistence(error),
+    }
+}
+
+fn finalization_error_is_divergent(error: &OrchestrationError) -> bool {
+    match error {
+        OrchestrationError::MutationPreviewMismatch | OrchestrationError::NoChangesToFinalize => {
+            true
+        }
+        OrchestrationError::Git(
+            git::GitError::RepositoryIdentityChanged
+            | git::GitError::WorktreeChangedDuringRead
+            | git::GitError::NoChanges
+            | git::GitError::IgnoredContent
+            | git::GitError::UnsupportedIndexState
+            | git::GitError::MutationPreviewMismatch
+            | git::GitError::ChangesetRefConflict
+            | git::GitError::CommitVerificationFailed,
+        ) => true,
+        OrchestrationError::Git(git::GitError::Io(error)) => {
+            error.kind() == std::io::ErrorKind::NotFound
+        }
+        _ => false,
+    }
+}
+
+fn mutation_result(
+    completed: &CompletedChangesetFinalization,
+) -> Result<MutationResult, OrchestrationError> {
+    let confirmation_digest = completed.finalization.confirmation_digest.clone();
+    let checkpoint_id = completed.finalization.scope.checkpoint_id;
+    let manifest_sha256 = completed.finalization.scope.manifest_sha256.clone();
+    match completed
+        .finalization
+        .result
+        .as_ref()
+        .ok_or(OrchestrationError::ChangesetFinalizationCorrupt)?
+    {
+        ChangesetFinalizationResult::Commit {
+            resulting_head_sha,
+            app_ref,
+        } => Ok(MutationResult::Commit {
+            confirmation_digest,
+            checkpoint_id,
+            manifest_sha256,
+            changeset: completed.changeset.clone(),
+            worktree_state: completed.worktree.state(),
+            resulting_head_sha: resulting_head_sha.clone(),
+            app_ref: app_ref.clone(),
+        }),
+        ChangesetFinalizationResult::Discard => Ok(MutationResult::Discard {
+            confirmation_digest,
+            checkpoint_id,
+            manifest_sha256,
+            changeset: completed.changeset.clone(),
+            worktree_state: completed.worktree.state(),
+        }),
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CommandOutcome {
     RepositoryRegistered(Repository),
@@ -1349,6 +1774,8 @@ pub enum CommandOutcome {
     RunArtifacts(RunArtifactsResponse),
     RunArtifactSegment(RunArtifactSegmentResponse),
     RunArtifactsDeleted(RunArtifactsDeletedResponse),
+    MutationPreview(MutationPreview),
+    MutationCompleted(MutationResult),
 }
 
 fn current_unix_ms() -> i64 {
@@ -1364,6 +1791,24 @@ pub enum OrchestrationError {
     NotFound(&'static str),
     #[error("repository base SHA changed before changeset creation")]
     StaleBase,
+    #[error("changeset is not reviewable")]
+    ChangesetNotReviewable,
+    #[error("changeset version changed after the mutation request was prepared")]
+    StaleChangesetVersion,
+    #[error("changeset head changed after the mutation request was prepared")]
+    StaleChangesetHead,
+    #[error("changeset mutation confirmation did not match the exact preview")]
+    MutationConfirmationMismatch,
+    #[error("changeset mutation state did not match its checkpoint or Git manifest")]
+    MutationPreviewMismatch,
+    #[error("worktree has no changes to finalize")]
+    NoChangesToFinalize,
+    #[error("changeset finalization conflicts with durable state")]
+    ChangesetFinalizationConflict,
+    #[error("changeset finalization is divergent and requires manual resolution")]
+    ChangesetFinalizationDivergent,
+    #[error("changeset finalization record is incomplete or corrupt")]
+    ChangesetFinalizationCorrupt,
     #[error("approval response does not match the pending request")]
     ApprovalMismatch,
     #[error("command is defined by the protocol but is not implemented by this runtime phase")]

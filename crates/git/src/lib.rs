@@ -403,6 +403,82 @@ impl GitService {
         })
     }
 
+    pub fn recover_exact_commit_result(
+        &self,
+        repository: &Repository,
+        changeset_id: Id,
+        expected_head_sha: &str,
+        expected_manifest_sha256: &str,
+    ) -> Result<Option<ExactCommitResult>, GitError> {
+        let _lock = self.lock_changeset(changeset_id, true)?;
+        let repository_path = self.validate_registered_repository_for_cleanup(repository)?;
+        let app_ref = format!("refs/jet-black/changesets/{changeset_id}");
+        let Some(resulting_head_sha) = self.existing_changeset_ref(&repository_path, &app_ref)?
+        else {
+            return Ok(None);
+        };
+        let parent_sha = self.git_text(
+            &repository_path,
+            ["rev-parse", &format!("{resulting_head_sha}^")],
+        )?;
+        if parent_sha != expected_head_sha {
+            return Err(GitError::CommitVerificationFailed);
+        }
+
+        let paths = ensure_success(
+            self.git_output(
+                &repository_path,
+                [
+                    "diff",
+                    "--name-only",
+                    "-z",
+                    "--no-renames",
+                    expected_head_sha,
+                    &resulting_head_sha,
+                    "--",
+                ],
+            )?,
+            "read recovered changeset paths",
+        )?;
+        if paths.stdout_truncated {
+            return Err(GitError::ResourceLimit("changed file paths"));
+        }
+        let changed_path_count = paths
+            .stdout
+            .split(|byte| *byte == 0)
+            .filter(|path| !path.is_empty())
+            .count();
+        if changed_path_count == 0 || changed_path_count > limits::MAX_CHANGED_FILES {
+            return Err(GitError::ResourceLimit("changed file count"));
+        }
+
+        let diff = self.git_output_with_limit(
+            &repository_path,
+            [
+                "diff",
+                "--no-ext-diff",
+                "--no-textconv",
+                "--binary",
+                expected_head_sha,
+                &resulting_head_sha,
+                "--",
+            ],
+            limits::MAX_UNIFIED_DIFF_BYTES,
+        )?;
+        if diff.stdout_truncated {
+            return Err(GitError::ResourceLimit("mutation diff"));
+        }
+        let diff = ensure_success(diff, "read recovered changeset diff")?.stdout;
+        if mutation_manifest_digest(expected_head_sha, &diff) != expected_manifest_sha256 {
+            return Err(GitError::MutationPreviewMismatch);
+        }
+
+        Ok(Some(ExactCommitResult {
+            resulting_head_sha,
+            app_ref,
+        }))
+    }
+
     pub fn discard_exact(
         &self,
         repository: &Repository,
@@ -457,31 +533,35 @@ impl GitService {
         if worktree.state() != domain::WorktreeState::Ready {
             return Err(GitError::WorktreeNotReady);
         }
-        self.ensure_ready(worktree)?;
         let repository_path = self.validate_registered_repository_for_cleanup(repository)?;
+        let lexical = worktree.path.clone();
+        ensure_lexical_child(&self.worktree_root, &lexical)?;
+        let canonical = match fs::canonicalize(&lexical) {
+            Ok(canonical) => {
+                self.ensure_ready(worktree)?;
+                ensure_canonical_child(&self.worktree_root, &canonical)?;
+                Some(canonical)
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+            Err(error) => return Err(error.into()),
+        };
         worktree.begin_removal().map_err(GitError::Domain)?;
         let result = (|| {
-            let lexical = worktree.path.clone();
-            ensure_lexical_child(&self.worktree_root, &lexical)?;
-            match fs::canonicalize(&lexical) {
-                Ok(canonical) => {
-                    ensure_canonical_child(&self.worktree_root, &canonical)?;
-                    let output = self.git_output(
-                        &repository_path,
-                        [
-                            OsStr::new("worktree"),
-                            OsStr::new("remove"),
-                            OsStr::new("--force"),
-                            canonical.as_os_str(),
-                        ],
-                    )?;
-                    ensure_success(output, "remove worktree")?;
-                }
-                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-                Err(error) => return Err(error.into()),
+            if let Some(canonical) = canonical {
+                let output = self.git_output(
+                    &repository_path,
+                    [
+                        OsStr::new("worktree"),
+                        OsStr::new("remove"),
+                        OsStr::new("--force"),
+                        canonical.as_os_str(),
+                    ],
+                )?;
+                ensure_success(output, "remove worktree")?;
+            } else {
+                let prune = self.git_output(&repository_path, ["worktree", "prune"])?;
+                ensure_success(prune, "prune worktrees")?;
             }
-            let prune = self.git_output(&repository_path, ["worktree", "prune"])?;
-            ensure_success(prune, "prune worktrees")?;
             Ok::<(), GitError>(())
         })();
         match result {
@@ -771,9 +851,15 @@ impl GitService {
         worktree: &Worktree,
         exclusive: bool,
     ) -> Result<WorktreeMutationLock, GitError> {
-        let path = self
-            .mutation_lock_root
-            .join(format!("{}.lock", worktree.changeset_id()));
+        self.lock_changeset(worktree.changeset_id(), exclusive)
+    }
+
+    fn lock_changeset(
+        &self,
+        changeset_id: Id,
+        exclusive: bool,
+    ) -> Result<WorktreeMutationLock, GitError> {
+        let path = self.mutation_lock_root.join(format!("{changeset_id}.lock"));
         ensure_lexical_child(&self.mutation_lock_root, &path)?;
         let file = OpenOptions::new()
             .read(true)

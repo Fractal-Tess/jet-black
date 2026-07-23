@@ -259,6 +259,10 @@ impl SqliteStore {
         self.with_connection(|connection| load_latest_worktree(connection, changeset_id))
     }
 
+    pub fn worktree(&self, worktree_id: Uuid) -> Result<Option<Worktree>, PersistenceError> {
+        self.with_connection(|connection| load_optional_worktree(connection, worktree_id))
+    }
+
     pub fn update_worktree(&self, worktree: &Worktree) -> Result<(), PersistenceError> {
         self.with_connection(|connection| {
             let transaction =
@@ -861,6 +865,38 @@ impl SqliteStore {
     ) -> Result<Option<ChangesetFinalization>, PersistenceError> {
         self.with_connection(|connection| {
             load_changeset_finalization(connection, confirmation_digest)
+        })
+    }
+
+    pub fn completed_changeset_finalization(
+        &self,
+        confirmation_digest: &str,
+    ) -> Result<CompletedChangesetFinalization, PersistenceError> {
+        self.with_connection(|connection| {
+            let transaction =
+                connection.transaction_with_behavior(TransactionBehavior::Deferred)?;
+            let finalization = load_changeset_finalization(&transaction, confirmation_digest)?
+                .ok_or(PersistenceError::NotFound("changeset finalization"))?;
+            if finalization.state != ChangesetFinalizationState::Completed {
+                return Err(PersistenceError::FinalizationConflict);
+            }
+            let (changeset, changeset_version) =
+                load_changeset(&transaction, finalization.scope.changeset_id)?;
+            let (worktree, worktree_version) =
+                load_worktree(&transaction, finalization.worktree_id)?;
+            validate_completed_finalization_replay(
+                &finalization,
+                &changeset,
+                changeset_version,
+                &worktree,
+                worktree_version,
+            )?;
+            transaction.commit()?;
+            Ok(CompletedChangesetFinalization {
+                finalization,
+                changeset,
+                worktree,
+            })
         })
     }
 
@@ -2097,16 +2133,27 @@ fn load_latest_worktree(
     row.map(validate_worktree).transpose()
 }
 
+fn load_optional_worktree(
+    connection: &Connection,
+    worktree_id: Uuid,
+) -> Result<Option<Worktree>, PersistenceError> {
+    connection
+        .query_row(
+            "SELECT id, changeset_id, state, version, body FROM worktrees WHERE id = ?1",
+            [worktree_id.to_string()],
+            worktree_row,
+        )
+        .optional()?
+        .map(validate_worktree)
+        .transpose()
+}
+
 fn load_worktree(
     connection: &Connection,
     worktree_id: Uuid,
 ) -> Result<(Worktree, u64), PersistenceError> {
-    let row = connection.query_row(
-        "SELECT id, changeset_id, state, version, body FROM worktrees WHERE id = ?1",
-        [worktree_id.to_string()],
-        worktree_row,
-    )?;
-    let worktree = validate_worktree(row)?;
+    let worktree = load_optional_worktree(connection, worktree_id)?
+        .ok_or(PersistenceError::NotFound("worktree"))?;
     let version = worktree.version();
     Ok((worktree, version))
 }

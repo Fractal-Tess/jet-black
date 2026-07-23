@@ -60,7 +60,7 @@ describe("execution client factory", () => {
             request_id: request.request_id,
             result: {
               status: "ok",
-              data: { actions: [] },
+              data: { type: "recovery", data: { actions: [] } },
             },
           })
         );
@@ -76,7 +76,10 @@ describe("execution client factory", () => {
         payload: getRecoveryCommand,
       },
     ]);
-    expect(unwrapCommandResult(response)).toEqual({ actions: [] });
+    expect(unwrapCommandResult(response)).toEqual({
+      type: "recovery",
+      data: { actions: [] },
+    });
   });
 
   test("rejects request IDs that Rust cannot deserialize", () => {
@@ -97,7 +100,10 @@ describe("execution client factory", () => {
         return Promise.resolve({
           version: PROTOCOL_VERSION,
           request_id: TAURI_REQUEST_ID,
-          result: { status: "ok", data: { actions: [] } },
+          result: {
+            status: "ok",
+            data: { type: "recovery", data: { actions: [] } },
+          },
         });
       },
     });

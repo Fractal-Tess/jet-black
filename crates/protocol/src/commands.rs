@@ -1,6 +1,7 @@
 use crate::OrderedRunEvent;
 use domain::{
-    ApprovalScope, Changeset, Checkpoint, Finding, Id, Repository, Run, TicketRef, Worktree,
+    ApprovalScope, Changeset, ChangesetMutationKind, Checkpoint, Finding, Id, Repository, Run,
+    TicketRef, Worktree, WorktreeState,
 };
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
@@ -127,6 +128,7 @@ pub enum LocalCommandResponse {
     RunArtifactSegment(RunArtifactSegmentResponse),
     RunArtifactsDeleted(RunArtifactsDeletedResponse),
     MutationPreview(MutationPreview),
+    MutationCompleted(MutationResult),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
@@ -253,9 +255,33 @@ pub struct RunArtifactsDeletedResponse {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
 pub struct MutationPreview {
+    pub kind: ChangesetMutationKind,
     pub changeset_id: Id,
+    pub checkpoint_id: Id,
     #[ts(type = "number")]
     pub expected_version: u64,
     pub expected_head_sha: String,
+    pub manifest_sha256: String,
     pub confirmation_digest: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum MutationResult {
+    Commit {
+        confirmation_digest: String,
+        checkpoint_id: Id,
+        manifest_sha256: String,
+        changeset: Changeset,
+        worktree_state: WorktreeState,
+        resulting_head_sha: String,
+        app_ref: String,
+    },
+    Discard {
+        confirmation_digest: String,
+        checkpoint_id: Id,
+        manifest_sha256: String,
+        changeset: Changeset,
+        worktree_state: WorktreeState,
+    },
 }
