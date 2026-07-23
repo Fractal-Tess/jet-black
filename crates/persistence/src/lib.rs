@@ -3,10 +3,12 @@ use domain::{
     Finding, Repository, Run, RunState, Worktree,
 };
 use execution::{SupervisionMetadata, SupervisionState};
+use fs2::FileExt;
 use protocol::{OrderedRunEvent, RecoveryAction, SemanticEventKind};
 use rusqlite::{Connection, OptionalExtension, Transaction, TransactionBehavior, params};
 use serde::{Deserialize, Serialize};
 use std::{
+    fs::{File, OpenOptions},
     path::{Path, PathBuf},
     time::Duration,
 };
@@ -20,13 +22,36 @@ pub struct SqliteStore {
     path: PathBuf,
 }
 
+pub struct RecoveryLock {
+    file: File,
+}
+
+impl Drop for RecoveryLock {
+    fn drop(&mut self) {
+        let _ = FileExt::unlock(&self.file);
+    }
+}
+
 impl SqliteStore {
     pub fn open(path: impl AsRef<Path>) -> Result<Self, PersistenceError> {
         let store = Self {
             path: path.as_ref().to_path_buf(),
         };
-        store.with_connection(|connection| migrate(connection))?;
+        store.with_connection(migrate)?;
         Ok(store)
+    }
+
+    pub fn acquire_recovery_lock(&self) -> Result<RecoveryLock, PersistenceError> {
+        let mut lock_path = self.path.as_os_str().to_os_string();
+        lock_path.push(".recovery.lock");
+        let file = OpenOptions::new()
+            .create(true)
+            .truncate(false)
+            .read(true)
+            .write(true)
+            .open(PathBuf::from(lock_path))?;
+        file.lock_exclusive()?;
+        Ok(RecoveryLock { file })
     }
 
     fn with_connection<T>(
@@ -127,6 +152,28 @@ impl SqliteStore {
                     Ok(changeset)
                 })
                 .transpose()
+        })
+    }
+
+    pub fn changesets(&self) -> Result<Vec<Changeset>, PersistenceError> {
+        self.with_connection(|connection| {
+            let mut statement =
+                connection.prepare("SELECT body, version FROM changesets ORDER BY rowid")?;
+            let rows = statement.query_map([], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, u64>(1)?))
+            })?;
+            rows.map(|row| {
+                let (body, scalar_version) = row?;
+                let changeset: Changeset = decode(&body)?;
+                ensure_version_agreement(
+                    "changeset",
+                    changeset.id,
+                    scalar_version,
+                    changeset.version(),
+                )?;
+                Ok(changeset)
+            })
+            .collect()
         })
     }
 
@@ -1745,6 +1792,8 @@ fn append_aggregate_event(
 
 #[derive(Debug, Error)]
 pub enum PersistenceError {
+    #[error("filesystem operation failed: {0}")]
+    Io(#[from] std::io::Error),
     #[error("SQLite operation failed: {0}")]
     Sqlite(#[from] rusqlite::Error),
     #[error("serialization failed: {0}")]

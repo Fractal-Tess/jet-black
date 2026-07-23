@@ -409,8 +409,10 @@ impl<P: AgentProvider> LocalOrchestrator<P> {
             .supervision_transition_gate
             .lock()
             .map_err(|_| OrchestrationError::SupervisionStateUnavailable)?;
+        let _recovery_lock = self.store.acquire_recovery_lock()?;
         let now_unix_ms = current_unix_ms();
         let mut report = RecoveryReport::default();
+        self.reconcile_orphan_worktrees(now_unix_ms, &mut report)?;
 
         for record in self.store.nonterminated_process_supervisions()? {
             let termination = self
@@ -434,29 +436,32 @@ impl<P: AgentProvider> LocalOrchestrator<P> {
                 &terminated,
                 now_unix_ms,
             )?;
-            self.record_recovery_action(
-                &format!("process:{}:terminated", terminated.supervision_id),
+            report.actions.push(self.record_recovery_action(
+                format!("process:{}:terminated", terminated.supervision_id),
                 Some(record.run_id),
                 self.store.run(record.run_id)?.map(|run| run.changeset_id()),
-                "run",
-                record.run_id,
-                "process_terminated",
-                match termination.status {
-                    TerminationStatus::IdentityMismatch => {
-                        "persisted process identity no longer matched the live PID; no signal was sent"
+                RecoveryAction {
+                    aggregate_kind: "run".to_owned(),
+                    aggregate_id: record.run_id,
+                    action: "process_terminated".to_owned(),
+                    detail: match termination.status {
+                        TerminationStatus::IdentityMismatch => {
+                            "persisted process identity no longer matched the live PID; no signal was sent"
+                        }
+                        TerminationStatus::AlreadyExited => {
+                            "persisted process had already exited before startup reconciliation"
+                        }
+                        TerminationStatus::Terminated => {
+                            "surviving provider process tree was terminated and verified"
+                        }
+                        TerminationStatus::Unsupported | TerminationStatus::ProcessesRemain => {
+                            unreachable!("unverified termination returned before recovery action")
+                        }
                     }
-                    TerminationStatus::AlreadyExited => {
-                        "persisted process had already exited before startup reconciliation"
-                    }
-                    TerminationStatus::Terminated => {
-                        "surviving provider process tree was terminated and verified"
-                    }
-                    TerminationStatus::Unsupported | TerminationStatus::ProcessesRemain => {
-                        unreachable!("unverified termination returned before recovery action")
-                    }
+                    .to_owned(),
                 },
                 now_unix_ms,
-            )?;
+            )?);
         }
 
         for run in self.store.runs()? {
@@ -489,29 +494,87 @@ impl<P: AgentProvider> LocalOrchestrator<P> {
                     lease.fencing_epoch,
                 )?
             {
-                self.record_recovery_action(
-                    &format!(
+                report.actions.push(self.record_recovery_action(
+                    format!(
                         "lease:{}:{}:released",
                         lease.changeset_id, lease.fencing_epoch
                     ),
                     Some(lease.run_id),
                     Some(lease.changeset_id),
-                    "changeset",
-                    lease.changeset_id,
-                    "lease_released",
-                    "terminal or expired mutation lease was released using its exact fencing epoch",
+                    RecoveryAction {
+                        aggregate_kind: "changeset".to_owned(),
+                        aggregate_id: lease.changeset_id,
+                        action: "lease_released".to_owned(),
+                        detail: "terminal or expired mutation lease was released using its exact fencing epoch".to_owned(),
+                    },
                     now_unix_ms,
-                )?;
+                )?);
             }
         }
 
-        report.actions = self
-            .store
-            .recovery_actions()?
-            .into_iter()
-            .map(|record| record.action)
-            .collect();
         Ok(report)
+    }
+
+    fn reconcile_orphan_worktrees(
+        &self,
+        now_unix_ms: i64,
+        report: &mut RecoveryReport,
+    ) -> Result<(), OrchestrationError> {
+        for mut changeset in self.store.changesets()? {
+            if changeset.state() != ChangesetState::Created
+                || self.store.worktree_for_changeset(changeset.id)?.is_some()
+            {
+                continue;
+            }
+            let repository = self.repository(changeset.repository_id())?;
+            let Some(worktree) = self
+                .git
+                .recover_orphan_worktree(&repository, changeset.id)?
+            else {
+                continue;
+            };
+            match worktree.state() {
+                WorktreeState::Removed => {
+                    report.actions.push(self.record_recovery_action(
+                        format!("changeset:{}:orphan-worktree-removed", changeset.id),
+                        None,
+                        Some(changeset.id),
+                        RecoveryAction {
+                            aggregate_kind: "changeset".to_owned(),
+                            aggregate_id: changeset.id,
+                            action: "orphan_worktree_removed".to_owned(),
+                            detail:
+                                "unpersisted clean worktree was verified and removed".to_owned(),
+                        },
+                        now_unix_ms,
+                    )?);
+                }
+                WorktreeState::Quarantined => {
+                    self.store.save_worktree(&worktree)?;
+                    changeset.fail()?;
+                    self.store.persist_changeset_transition(&changeset)?;
+                    report.actions.push(self.record_recovery_action(
+                        format!("changeset:{}:orphan-worktree-quarantined", changeset.id),
+                        None,
+                        Some(changeset.id),
+                        RecoveryAction {
+                            aggregate_kind: "changeset".to_owned(),
+                            aggregate_id: changeset.id,
+                            action: "orphan_worktree_quarantined".to_owned(),
+                            detail: "unpersisted worktree could not be verified as clean and was quarantined".to_owned(),
+                        },
+                        now_unix_ms,
+                    )?);
+                }
+                WorktreeState::Creating
+                | WorktreeState::Ready
+                | WorktreeState::Removing
+                | WorktreeState::Failed => {
+                    unreachable!("orphan recovery returns only removed or quarantined worktrees")
+                }
+            }
+        }
+        Ok(())
     }
 
     fn reconcile_nonterminal_run(
@@ -532,16 +595,20 @@ impl<P: AgentProvider> LocalOrchestrator<P> {
             },
         )?;
         report.interrupted.push(run.id);
-        self.record_recovery_action(
-            &format!("run:{}:interrupted", run.id),
+        report.actions.push(self.record_recovery_action(
+            format!("run:{}:interrupted", run.id),
             Some(run.id),
             Some(changeset_id),
-            "run",
-            run.id,
-            "interrupted",
-            &format!("startup reconciled nonterminal state {original_state:?}; {approval_detail}"),
+            RecoveryAction {
+                aggregate_kind: "run".to_owned(),
+                aggregate_id: run.id,
+                action: "interrupted".to_owned(),
+                detail: format!(
+                    "startup reconciled nonterminal state {original_state:?}; {approval_detail}"
+                ),
+            },
             now_unix_ms,
-        )?;
+        )?);
 
         self.reconcile_active_changeset(&run, now_unix_ms, report)
     }
@@ -577,16 +644,18 @@ impl<P: AgentProvider> LocalOrchestrator<P> {
                 changeset.mark_recoverable(state.worktree_head_sha)?;
                 self.store.persist_changeset_transition(&changeset)?;
                 report.recoverable.push(run.id);
-                self.record_recovery_action(
-                    &format!("changeset:{}:recoverable", changeset.id),
+                report.actions.push(self.record_recovery_action(
+                    format!("changeset:{}:recoverable", changeset.id),
                     Some(run.id),
                     Some(changeset.id),
-                    "changeset",
-                    changeset.id,
-                    "worktree_cleaned",
-                    "verified clean worktree was removed and the changeset was made recoverable",
+                    RecoveryAction {
+                        aggregate_kind: "changeset".to_owned(),
+                        aggregate_id: changeset.id,
+                        action: "worktree_cleaned".to_owned(),
+                        detail: "verified clean worktree was removed and the changeset was made recoverable".to_owned(),
+                    },
                     now_unix_ms,
-                )?;
+                )?);
                 None
             }
             Err(_) => Some((
@@ -605,16 +674,18 @@ impl<P: AgentProvider> LocalOrchestrator<P> {
             }
             changeset.mark_divergent(head_sha)?;
             self.store.persist_changeset_transition(&changeset)?;
-            self.record_recovery_action(
-                &format!("changeset:{}:divergent", changeset.id),
+            report.actions.push(self.record_recovery_action(
+                format!("changeset:{}:divergent", changeset.id),
                 Some(run.id),
                 Some(changeset.id),
-                "changeset",
-                changeset.id,
-                "quarantined",
-                detail,
+                RecoveryAction {
+                    aggregate_kind: "changeset".to_owned(),
+                    aggregate_id: changeset.id,
+                    action: "quarantined".to_owned(),
+                    detail: detail.to_owned(),
+                },
                 now_unix_ms,
-            )?;
+            )?);
         }
         Ok(())
     }
@@ -639,31 +710,18 @@ impl<P: AgentProvider> LocalOrchestrator<P> {
         Ok("pending approval was invalidated by restart")
     }
 
-    #[allow(clippy::too_many_arguments)]
     fn record_recovery_action(
         &self,
-        idempotency_key: &str,
+        idempotency_key: String,
         run_id: Option<Id>,
         changeset_id: Option<Id>,
-        aggregate_kind: &str,
-        aggregate_id: Id,
-        action: &str,
-        detail: &str,
+        action: RecoveryAction,
         now_unix_ms: i64,
-    ) -> Result<(), OrchestrationError> {
-        self.store.record_recovery_action(
-            idempotency_key,
-            run_id,
-            changeset_id,
-            RecoveryAction {
-                aggregate_kind: aggregate_kind.to_owned(),
-                aggregate_id,
-                action: action.to_owned(),
-                detail: detail.to_owned(),
-            },
-            now_unix_ms,
-        )?;
-        Ok(())
+    ) -> Result<RecoveryAction, OrchestrationError> {
+        Ok(self
+            .store
+            .record_recovery_action(&idempotency_key, run_id, changeset_id, action, now_unix_ms)?
+            .action)
     }
 
     fn prepare_approval(

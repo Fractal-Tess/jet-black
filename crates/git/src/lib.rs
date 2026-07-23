@@ -2,7 +2,7 @@ use domain::{ActionKind, ApprovedAction, Id, RelativePath, Repository, Worktree,
 use sha2::{Digest, Sha256};
 use std::{
     ffi::{CString, OsStr, OsString},
-    fs,
+    fs::{self, File},
     io::{Read, Write},
     os::{
         fd::{AsRawFd, FromRawFd, OwnedFd},
@@ -12,6 +12,7 @@ use std::{
     process::{Command, ExitStatus, Stdio},
     thread,
 };
+use tempfile::NamedTempFile;
 use thiserror::Error;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -50,6 +51,7 @@ impl GitService {
         if unsafe_config.status.success() && !unsafe_config.stdout.is_empty() {
             return Err(GitError::UnsupportedRepository("executable Git filters"));
         }
+        let git_directory = validate_git_directory(&canonical)?;
         if self.git_text(&canonical, ["rev-parse", "--is-bare-repository"])? != "false" {
             return Err(GitError::BareRepository);
         }
@@ -105,6 +107,7 @@ impl GitService {
         Ok(Repository {
             id: Id::new_v4(),
             filesystem_identity: filesystem_identity(&canonical)?,
+            git_directory_identity: filesystem_identity(&git_directory)?,
             canonical_path: canonical,
             identity,
             primary_remote,
@@ -149,6 +152,43 @@ impl GitService {
         Ok(worktree)
     }
 
+    pub fn recover_orphan_worktree(
+        &self,
+        repository: &Repository,
+        changeset_id: Id,
+    ) -> Result<Option<Worktree>, GitError> {
+        let path = self.worktree_root.join(changeset_id.to_string());
+        ensure_lexical_child(&self.worktree_root, &path)?;
+        let canonical = match fs::canonicalize(&path) {
+            Ok(canonical) => canonical,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+            Err(error) => return Err(error.into()),
+        };
+        ensure_canonical_child(&self.worktree_root, &canonical)?;
+        let mut worktree = Worktree::creating(
+            Id::new_v4(),
+            changeset_id,
+            canonical.clone(),
+            filesystem_identity(&canonical)?,
+            repository.base_sha.clone(),
+        );
+        worktree.ready().map_err(GitError::Domain)?;
+
+        match self.reconciliation_state(repository, &worktree) {
+            Ok(state)
+                if state.repository_head_sha == repository.base_sha
+                    && state.worktree_head_sha == repository.base_sha
+                    && !state.worktree_dirty =>
+            {
+                self.cleanup_worktree(repository, &mut worktree)?;
+            }
+            Ok(_) | Err(_) => {
+                worktree.quarantine().map_err(GitError::Domain)?;
+            }
+        }
+        Ok(Some(worktree))
+    }
+
     pub fn write_approved_file(
         &self,
         repository: &Repository,
@@ -182,6 +222,17 @@ impl GitService {
         self.ensure_ready(worktree)?;
         ensure_canonical_within(&self.worktree_root, &worktree.path)?;
 
+        let index_path =
+            PathBuf::from(self.git_text(&worktree.path, ["rev-parse", "--git-path", "index"])?);
+        let index_path = if index_path.is_absolute() {
+            index_path
+        } else {
+            worktree.path.join(index_path)
+        };
+        let mut temporary_index = NamedTempFile::new()?;
+        let mut index = File::open(index_path)?;
+        std::io::copy(&mut index, temporary_index.as_file_mut())?;
+
         let mut add_arguments = vec![
             OsString::from("add"),
             OsString::from("-N"),
@@ -192,8 +243,13 @@ impl GitService {
                 .iter()
                 .map(|path| path.as_path().as_os_str().to_owned()),
         );
-        let intent_to_add = self.git_output(&worktree.path, add_arguments)?;
-        ensure_success(intent_to_add, "stage worktree paths for diff")?;
+        let intent_to_add = self.git_output_with_index(
+            &worktree.path,
+            add_arguments,
+            temporary_index.path(),
+            limits::MAX_CAPTURED_STREAM_BYTES,
+        )?;
+        ensure_success(intent_to_add, "prepare worktree paths for diff")?;
 
         let mut diff_arguments = vec![
             OsString::from("diff"),
@@ -208,9 +264,10 @@ impl GitService {
                 .iter()
                 .map(|path| path.as_path().as_os_str().to_owned()),
         );
-        let output = self.git_output_with_limit(
+        let output = self.git_output_with_index(
             &worktree.path,
             diff_arguments,
+            temporary_index.path(),
             limits::MAX_UNIFIED_DIFF_BYTES,
         )?;
         if output.stdout_truncated {
@@ -273,24 +330,28 @@ impl GitService {
         if worktree.state() != domain::WorktreeState::Ready {
             return Err(GitError::WorktreeNotReady);
         }
+        self.ensure_ready(worktree)?;
         let repository_path = self.validate_registered_repository_for_cleanup(repository)?;
         worktree.begin_removal().map_err(GitError::Domain)?;
         let result = (|| {
             let lexical = worktree.path.clone();
             ensure_lexical_child(&self.worktree_root, &lexical)?;
-            if lexical.exists() {
-                let canonical = fs::canonicalize(&lexical)?;
-                ensure_canonical_child(&self.worktree_root, &canonical)?;
-                let output = self.git_output(
-                    &repository_path,
-                    [
-                        OsStr::new("worktree"),
-                        OsStr::new("remove"),
-                        OsStr::new("--force"),
-                        canonical.as_os_str(),
-                    ],
-                )?;
-                ensure_success(output, "remove worktree")?;
+            match fs::canonicalize(&lexical) {
+                Ok(canonical) => {
+                    ensure_canonical_child(&self.worktree_root, &canonical)?;
+                    let output = self.git_output(
+                        &repository_path,
+                        [
+                            OsStr::new("worktree"),
+                            OsStr::new("remove"),
+                            OsStr::new("--force"),
+                            canonical.as_os_str(),
+                        ],
+                    )?;
+                    ensure_success(output, "remove worktree")?;
+                }
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                Err(error) => return Err(error.into()),
             }
             let prune = self.git_output(&repository_path, ["worktree", "prune"])?;
             ensure_success(prune, "prune worktrees")?;
@@ -334,7 +395,10 @@ impl GitService {
         if current != repository.canonical_path {
             return Err(GitError::RepositoryIdentityChanged);
         }
-        if filesystem_identity(&current)? != repository.filesystem_identity {
+        let git_directory = validate_git_directory(&current)?;
+        if filesystem_identity(&current)? != repository.filesystem_identity
+            || filesystem_identity(&git_directory)? != repository.git_directory_identity
+        {
             return Err(GitError::RepositoryIdentityChanged);
         }
         if self.git_text(&current, ["rev-parse", "HEAD"])? != repository.base_sha {
@@ -348,8 +412,10 @@ impl GitService {
     ) -> Result<PathBuf, GitError> {
         let current = fs::canonicalize(&repository.canonical_path)?;
         self.ensure_repository_root(&current)?;
+        let git_directory = validate_git_directory(&current)?;
         if current != repository.canonical_path
             || filesystem_identity(&current)? != repository.filesystem_identity
+            || filesystem_identity(&git_directory)? != repository.git_directory_identity
         {
             return Err(GitError::RepositoryIdentityChanged);
         }
@@ -361,6 +427,21 @@ impl GitService {
         S: AsRef<OsStr>,
     {
         self.git_output_with_limit(repository, arguments, limits::MAX_CAPTURED_STREAM_BYTES)
+    }
+    fn git_output_with_index<I, S>(
+        &self,
+        repository: &Path,
+        arguments: I,
+        index_path: &Path,
+        output_limit: usize,
+    ) -> Result<CommandOutput, GitError>
+    where
+        I: IntoIterator<Item = S>,
+        S: AsRef<OsStr>,
+    {
+        let mut command = git_command(&self.git_binary, repository);
+        command.env("GIT_INDEX_FILE", index_path).args(arguments);
+        run_bounded_command(&mut command, output_limit)
     }
     fn git_output_with_limit<I, S>(
         &self,
@@ -476,6 +557,19 @@ fn sanitize_remote(remote: &str) -> String {
     }
     remote.split(['?', '#']).next().unwrap_or(remote).to_owned()
 }
+fn validate_git_directory(repository: &Path) -> Result<PathBuf, GitError> {
+    let git_path = repository.join(".git");
+    if !fs::symlink_metadata(&git_path)?.file_type().is_dir() {
+        return Err(GitError::UnsupportedRepository("redirected Git directory"));
+    }
+    let git_directory = fs::canonicalize(git_path)?;
+    let alternates = git_directory.join("objects/info/alternates");
+    if fs::read(alternates).is_ok_and(|contents| !contents.is_empty()) {
+        return Err(GitError::UnsupportedRepository("object alternates"));
+    }
+    Ok(git_directory)
+}
+
 fn filesystem_identity(path: &Path) -> Result<String, GitError> {
     let metadata = fs::metadata(path)?;
     Ok(format!("{}:{}", metadata.dev(), metadata.ino()))

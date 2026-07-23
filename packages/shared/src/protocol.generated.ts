@@ -29,7 +29,7 @@ export type WorktreeState = "creating" | "ready" | "removing" | "removed" | "fai
 
 export type FindingState = "open" | "resolved" | "dismissed" | "superseded";
 
-export type Repository = { id: string, canonical_path: string, filesystem_identity: string, identity: string, primary_remote: string | null, default_branch: string, base_sha: string, version: number, };
+export type Repository = { id: string, canonical_path: string, filesystem_identity: string, git_directory_identity: string, identity: string, primary_remote: string | null, default_branch: string, base_sha: string, version: number, };
 
 export type Changeset = { id: string, repository_id: string, base_sha: string, head_sha: string, state: ChangesetState, ticket: TicketRef | null, version: number, };
 

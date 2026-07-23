@@ -1,7 +1,8 @@
 use agents::{AgentProvider, MockProvider, ProposedFileChange};
 use domain::{ChangesetState, RelativePath, RunState, WorktreeState, limits};
 use execution::{
-    CancellationToken, ProcessSpec, ProcessSupervisor, SupervisionState, TerminationReason,
+    CancellationToken, ProcessSpec, ProcessStartIdentity, ProcessSupervisor, SupervisionState,
+    TerminationReason,
 };
 use git::GitService;
 use orchestration::{CommandOutcome, LocalOrchestrator, OrchestrationError};
@@ -12,7 +13,7 @@ use std::{
     fs,
     path::Path,
     process::Command,
-    sync::Arc,
+    sync::{Arc, Barrier},
     thread,
     time::{Duration, Instant},
 };
@@ -684,9 +685,177 @@ fn startup_reconciliation_interrupts_clean_pending_run_and_is_idempotent() {
 
     let second = restarted.recover().unwrap();
     assert_eq!(second.terminal, vec![started.run_id]);
-    assert_eq!(second.actions, first.actions);
+    assert!(second.actions.is_empty());
     let response = restarted.handle(LocalCommand::GetRecovery).unwrap();
-    assert!(matches!(response, CommandOutcome::Recovery(_)));
+    assert!(matches!(
+        response,
+        CommandOutcome::Recovery(recovery) if recovery.actions == first.actions
+    ));
+}
+
+#[test]
+fn startup_reconciliation_removes_an_unpersisted_clean_worktree() {
+    let directory = tempdir().unwrap();
+    let repository_path = fixture_repository(directory.path());
+    let store = SqliteStore::open(directory.path().join("state.sqlite3")).unwrap();
+    let runtime = build_runtime(directory.path());
+    let repository = runtime.register_repository(&repository_path).unwrap();
+    let changeset = runtime
+        .create_changeset(repository.id, &repository.base_sha, None)
+        .unwrap();
+    let git = GitService::new(
+        vec![directory.path().to_path_buf()],
+        directory.path().join("worktrees"),
+    )
+    .unwrap();
+    let worktree = git.create_worktree(&repository, changeset.id).unwrap();
+    let worktree_path = worktree.path.clone();
+    assert!(
+        store
+            .worktree_for_changeset(changeset.id)
+            .unwrap()
+            .is_none()
+    );
+
+    let recovery = runtime.recover().unwrap();
+
+    assert!(!worktree_path.exists());
+    assert_eq!(
+        store.changeset(changeset.id).unwrap().unwrap().state(),
+        ChangesetState::Created
+    );
+    assert!(
+        recovery
+            .actions
+            .iter()
+            .any(|action| { action.action == "orphan_worktree_removed" })
+    );
+}
+
+#[test]
+fn startup_reconciliation_quarantines_an_unpersisted_dirty_worktree() {
+    let directory = tempdir().unwrap();
+    let repository_path = fixture_repository(directory.path());
+    let store = SqliteStore::open(directory.path().join("state.sqlite3")).unwrap();
+    let runtime = build_runtime(directory.path());
+    let repository = runtime.register_repository(&repository_path).unwrap();
+    let changeset = runtime
+        .create_changeset(repository.id, &repository.base_sha, None)
+        .unwrap();
+    let git = GitService::new(
+        vec![directory.path().to_path_buf()],
+        directory.path().join("worktrees"),
+    )
+    .unwrap();
+    let worktree = git.create_worktree(&repository, changeset.id).unwrap();
+    fs::write(worktree.path.join("unpersisted.txt"), "dirty\n").unwrap();
+
+    let recovery = runtime.recover().unwrap();
+
+    assert!(worktree.path.exists());
+    assert_eq!(
+        store.changeset(changeset.id).unwrap().unwrap().state(),
+        ChangesetState::Failed
+    );
+    assert_eq!(
+        store
+            .worktree_for_changeset(changeset.id)
+            .unwrap()
+            .unwrap()
+            .state(),
+        WorktreeState::Quarantined
+    );
+    assert!(
+        recovery
+            .actions
+            .iter()
+            .any(|action| { action.action == "orphan_worktree_quarantined" })
+    );
+}
+
+#[test]
+fn concurrent_startup_reconciliation_is_idempotent_across_runtime_instances() {
+    let directory = tempdir().unwrap();
+    let repository_path = fixture_repository(directory.path());
+    let store_path = directory.path().join("state.sqlite3");
+    let runtime = build_runtime(directory.path());
+    let repository = runtime.register_repository(&repository_path).unwrap();
+    let changeset = runtime
+        .create_changeset(repository.id, &repository.base_sha, None)
+        .unwrap();
+    let started = runtime.start_run(changeset.id).unwrap();
+    drop(runtime);
+
+    let barrier = Arc::new(Barrier::new(2));
+    let root = directory.path().to_path_buf();
+    let handles = (0..2)
+        .map(|_| {
+            let barrier = Arc::clone(&barrier);
+            let root = root.clone();
+            thread::spawn(move || {
+                let runtime = build_runtime(&root);
+                barrier.wait();
+                runtime.recover()
+            })
+        })
+        .collect::<Vec<_>>();
+    let results = handles
+        .into_iter()
+        .map(|handle| handle.join().unwrap())
+        .collect::<Vec<_>>();
+
+    assert!(results.iter().all(Result::is_ok), "{results:?}");
+    let store = SqliteStore::open(&store_path).unwrap();
+    assert_eq!(
+        store.run(started.run_id).unwrap().unwrap().state(),
+        RunState::Interrupted
+    );
+    assert_eq!(
+        store.changeset(changeset.id).unwrap().unwrap().state(),
+        ChangesetState::Recoverable
+    );
+    assert!(store.mutation_lease(changeset.id).unwrap().is_none());
+    assert_eq!(store.recovery_actions().unwrap().len(), 3);
+}
+
+#[test]
+fn startup_reconciliation_releases_a_terminal_reviewable_changeset_lease() {
+    let directory = tempdir().unwrap();
+    let repository_path = fixture_repository(directory.path());
+    let store = SqliteStore::open(directory.path().join("state.sqlite3")).unwrap();
+    let runtime = build_runtime(directory.path());
+    let repository = runtime.register_repository(&repository_path).unwrap();
+    let changeset = runtime
+        .create_changeset(repository.id, &repository.base_sha, None)
+        .unwrap();
+    let started = runtime.start_run(changeset.id).unwrap();
+    let completed = runtime
+        .approve_and_complete(started.run_id, &started.approval_request.scope)
+        .unwrap();
+    let worktree_path = directory
+        .path()
+        .join("worktrees")
+        .join(changeset.id.to_string());
+    store
+        .acquire_mutation_lease(changeset.id, started.run_id, 1, Duration::from_secs(60))
+        .unwrap();
+
+    let recovery = runtime.recover().unwrap();
+
+    assert_eq!(recovery.terminal, vec![started.run_id]);
+    assert_eq!(
+        store.changeset(changeset.id).unwrap().unwrap().state(),
+        ChangesetState::Reviewable
+    );
+    assert_eq!(completed.run.state(), RunState::Completed);
+    assert!(worktree_path.exists());
+    assert!(store.mutation_lease(changeset.id).unwrap().is_none());
+    assert!(
+        recovery
+            .actions
+            .iter()
+            .any(|action| action.action == "lease_released")
+    );
 }
 
 #[test]
@@ -741,7 +910,17 @@ fn startup_reconciliation_recovers_active_changeset_for_terminal_run() {
     drop(store);
 
     let second = restarted.recover().unwrap();
-    assert_eq!(second.actions, first.actions);
+    assert!(second.actions.is_empty());
+    assert_eq!(
+        SqliteStore::open(&store_path)
+            .unwrap()
+            .recovery_actions()
+            .unwrap()
+            .into_iter()
+            .map(|record| record.action)
+            .collect::<Vec<_>>(),
+        first.actions
+    );
 }
 
 #[test]
@@ -820,6 +999,195 @@ fn startup_reconciliation_terminates_a_surviving_persisted_process_tree() {
             .iter()
             .any(|action| action.action == "process_terminated")
     );
+}
+
+#[test]
+#[cfg(target_os = "linux")]
+fn startup_reconciliation_terminates_a_prepared_process_before_release() {
+    let directory = tempdir().unwrap();
+    let repository_path = fixture_repository(directory.path());
+    let store = SqliteStore::open(directory.path().join("state.sqlite3")).unwrap();
+    let runtime = build_runtime(directory.path());
+    let repository = runtime.register_repository(&repository_path).unwrap();
+    let changeset = runtime
+        .create_changeset(repository.id, &repository.base_sha, None)
+        .unwrap();
+    let started = runtime.start_run(changeset.id).unwrap();
+    let marker = directory.path().join("prepared-acted");
+    let supervisor = ProcessSupervisor::new();
+    let spec = ProcessSpec {
+        program: "/bin/sh".to_owned(),
+        arguments: vec![
+            "-c".to_owned(),
+            format!("echo acted > '{}'", marker.display()),
+        ],
+        environment: HashMap::new(),
+        current_dir: None,
+        timeout: Duration::from_secs(60),
+        output_limit: 1024,
+    };
+    let (prepared, metadata) = supervisor.prepare(&spec).unwrap();
+    store
+        .insert_prepared_process_supervision(started.run_id, &metadata, 1)
+        .unwrap();
+
+    let recovery = runtime.recover().unwrap();
+
+    assert!(!marker.exists());
+    drop(prepared);
+    assert!(!Path::new(&format!("/proc/{}", metadata.pid)).exists());
+    assert_eq!(
+        store
+            .latest_process_supervision_for_run(started.run_id)
+            .unwrap()
+            .unwrap()
+            .metadata
+            .state,
+        SupervisionState::Terminated
+    );
+    assert!(
+        recovery
+            .actions
+            .iter()
+            .any(|action| action.action == "process_terminated")
+    );
+}
+
+#[test]
+#[cfg(target_os = "linux")]
+fn startup_reconciliation_terminalizes_an_already_exited_process_record() {
+    let directory = tempdir().unwrap();
+    let repository_path = fixture_repository(directory.path());
+    let store = SqliteStore::open(directory.path().join("state.sqlite3")).unwrap();
+    let runtime = build_runtime(directory.path());
+    let repository = runtime.register_repository(&repository_path).unwrap();
+    let changeset = runtime
+        .create_changeset(repository.id, &repository.base_sha, None)
+        .unwrap();
+    let started = runtime.start_run(changeset.id).unwrap();
+    let supervisor = ProcessSupervisor::new();
+    let spec = ProcessSpec {
+        program: "/bin/sh".to_owned(),
+        arguments: vec!["-c".to_owned(), "exit 0".to_owned()],
+        environment: HashMap::new(),
+        current_dir: None,
+        timeout: Duration::from_secs(5),
+        output_limit: 1024,
+    };
+    let (prepared, prepared_metadata) = supervisor.prepare(&spec).unwrap();
+    store
+        .insert_prepared_process_supervision(started.run_id, &prepared_metadata, 1)
+        .unwrap();
+    let running = prepared.release().unwrap();
+    store
+        .mark_process_supervision_running(started.run_id, running.metadata(), 2)
+        .unwrap();
+    let pid = running.metadata().pid;
+    supervisor
+        .wait(running, &CancellationToken::default())
+        .unwrap();
+    assert!(!Path::new(&format!("/proc/{pid}")).exists());
+
+    let recovery = runtime.recover().unwrap();
+
+    assert!(recovery.actions.iter().any(|action| {
+        action.action == "process_terminated" && action.detail.contains("already exited")
+    }));
+    assert_eq!(
+        store
+            .latest_process_supervision_for_run(started.run_id)
+            .unwrap()
+            .unwrap()
+            .metadata
+            .termination_reason,
+        Some(TerminationReason::Requested)
+    );
+}
+
+#[test]
+#[cfg(target_os = "linux")]
+fn startup_reconciliation_does_not_signal_a_pid_with_mismatched_identity() {
+    let directory = tempdir().unwrap();
+    let repository_path = fixture_repository(directory.path());
+    let store = SqliteStore::open(directory.path().join("state.sqlite3")).unwrap();
+    let runtime = build_runtime(directory.path());
+    let repository = runtime.register_repository(&repository_path).unwrap();
+    let changeset = runtime
+        .create_changeset(repository.id, &repository.base_sha, None)
+        .unwrap();
+    let started = runtime.start_run(changeset.id).unwrap();
+    let supervisor = ProcessSupervisor::new();
+    let spec = ProcessSpec {
+        program: "/bin/sh".to_owned(),
+        arguments: vec!["-c".to_owned(), "sleep 30".to_owned()],
+        environment: HashMap::new(),
+        current_dir: None,
+        timeout: Duration::from_secs(60),
+        output_limit: 1024,
+    };
+    let (prepared, mut metadata) = supervisor.prepare(&spec).unwrap();
+    let pid = metadata.pid;
+    metadata.process_start = ProcessStartIdentity::Platform {
+        identity: "stale-start-identity".to_owned(),
+    };
+    store
+        .insert_prepared_process_supervision(started.run_id, &metadata, 1)
+        .unwrap();
+
+    let recovery = runtime.recover().unwrap();
+
+    assert!(Path::new(&format!("/proc/{pid}")).exists());
+    assert!(recovery.actions.iter().any(|action| {
+        action.action == "process_terminated" && action.detail.contains("no signal was sent")
+    }));
+    assert_eq!(
+        store
+            .latest_process_supervision_for_run(started.run_id)
+            .unwrap()
+            .unwrap()
+            .metadata
+            .termination_reason,
+        Some(TerminationReason::IdentityMismatch)
+    );
+    assert!(store.mutation_lease(changeset.id).unwrap().is_none());
+    drop(prepared);
+    assert!(!Path::new(&format!("/proc/{pid}")).exists());
+}
+
+#[test]
+fn startup_reconciliation_quarantines_repository_head_movement() {
+    let directory = tempdir().unwrap();
+    let repository_path = fixture_repository(directory.path());
+    let store = SqliteStore::open(directory.path().join("state.sqlite3")).unwrap();
+    let runtime = build_runtime(directory.path());
+    let repository = runtime.register_repository(&repository_path).unwrap();
+    let changeset = runtime
+        .create_changeset(repository.id, &repository.base_sha, None)
+        .unwrap();
+    let started = runtime.start_run(changeset.id).unwrap();
+    fs::write(repository_path.join("README.md"), "advanced\n").unwrap();
+    run_git(&repository_path, &["add", "README.md"]);
+    run_git(&repository_path, &["commit", "-qm", "advance"]);
+
+    let recovery = runtime.recover().unwrap();
+
+    assert_eq!(recovery.interrupted, vec![started.run_id]);
+    assert_eq!(
+        store.changeset(changeset.id).unwrap().unwrap().state(),
+        ChangesetState::Divergent
+    );
+    assert_eq!(
+        store
+            .worktree_for_changeset(changeset.id)
+            .unwrap()
+            .unwrap()
+            .state(),
+        WorktreeState::Quarantined
+    );
+    assert!(store.mutation_lease(changeset.id).unwrap().is_none());
+    assert!(recovery.actions.iter().any(|action| {
+        action.action == "quarantined" && action.detail == "registered repository HEAD changed"
+    }));
 }
 
 #[test]

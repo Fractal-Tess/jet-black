@@ -35,6 +35,7 @@ fn seed_changeset(store: &SqliteStore, changeset_id: uuid::Uuid) {
     let repository = Repository {
         id: uuid::Uuid::new_v4(),
         filesystem_identity: "fixture".into(),
+        git_directory_identity: "git-fixture".into(),
         canonical_path: "/fixture".into(),
         identity: "fixture".into(),
         primary_remote: None,
@@ -249,6 +250,7 @@ fn adopts_user_version_zero_schema_and_preserves_existing_versions() {
     let repository = Repository {
         id: uuid::Uuid::new_v4(),
         filesystem_identity: "legacy".into(),
+        git_directory_identity: "git-legacy".into(),
         canonical_path: "/legacy".into(),
         identity: "legacy".into(),
         primary_remote: None,
@@ -404,6 +406,7 @@ fn stale_changeset_writer_gets_version_conflict() {
     let repository = Repository {
         id: uuid::Uuid::new_v4(),
         filesystem_identity: "fixture".into(),
+        git_directory_identity: "git-fixture".into(),
         canonical_path: "/fixture".into(),
         identity: "fixture".into(),
         primary_remote: None,

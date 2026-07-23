@@ -226,6 +226,48 @@ fn released_process_tree_can_be_terminated_externally() {
 }
 
 #[test]
+fn exited_parent_still_cleans_token_owned_descendants() {
+    let setsid = std::env::split_paths(&std::env::var_os("PATH").unwrap())
+        .map(|path| path.join("setsid"))
+        .find(|path| path.is_file())
+        .unwrap();
+    let directory = tempfile::tempdir().unwrap();
+    let daemon_pid_file = directory.path().join("orphan.pid");
+    let mut command = spec(0);
+    command.arguments = vec![
+        "-c".into(),
+        format!(
+            "{} /bin/sh -c 'trap \"\" TERM; while :; do :; done' & echo $! > {}; exit 0",
+            setsid.display(),
+            daemon_pid_file.display()
+        ),
+    ];
+    command.timeout = Duration::from_secs(10);
+    let supervisor = ProcessSupervisor;
+    let (prepared, metadata) = supervisor.prepare(&command).unwrap();
+    let running = prepared.release().unwrap();
+    wait_for_file(&daemon_pid_file);
+    let daemon_pid = read_pid(&daemon_pid_file);
+
+    let deadline = Instant::now() + Duration::from_secs(2);
+    let mut status = 0;
+    loop {
+        let waited = unsafe { libc::waitpid(metadata.pid as i32, &mut status, libc::WNOHANG) };
+        if waited == metadata.pid as i32 {
+            break;
+        }
+        assert!(Instant::now() < deadline, "parent process did not exit");
+        std::thread::sleep(Duration::from_millis(10));
+    }
+
+    let termination = supervisor.terminate(&metadata).unwrap();
+
+    assert_eq!(termination.status, TerminationStatus::Terminated);
+    assert_process_gone(daemon_pid);
+    drop(running);
+}
+
+#[test]
 fn stale_process_start_identity_refuses_to_signal() {
     let directory = tempfile::tempdir().unwrap();
     let marker = directory.path().join("running");

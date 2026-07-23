@@ -260,6 +260,8 @@ pub enum ExecutionError {
     MissingPipe,
     #[error("process output reader panicked")]
     ReaderPanicked,
+    #[error("process-tree termination could not be verified; remaining processes: {0:?}")]
+    ProcessTerminationUnverified(Vec<u32>),
     #[error("process identity could not be read")]
     ProcessIdentityUnavailable,
 }
@@ -279,6 +281,9 @@ mod platform {
         thread::{self, JoinHandle},
         time::Instant,
     };
+
+    type BoundedReadResult = Result<(Vec<u8>, bool), std::io::Error>;
+    type ReaderHandle = JoinHandle<BoundedReadResult>;
 
     const POLL_INTERVAL: Duration = Duration::from_millis(10);
     const TERM_GRACE_PERIOD: Duration = Duration::from_millis(250);
@@ -364,8 +369,8 @@ mod platform {
         pid: libc::pid_t,
         metadata: SupervisionMetadata,
         timeout: Duration,
-        stdout_reader: Option<JoinHandle<Result<(Vec<u8>, bool), std::io::Error>>>,
-        stderr_reader: Option<JoinHandle<Result<(Vec<u8>, bool), std::io::Error>>>,
+        stdout_reader: Option<ReaderHandle>,
+        stderr_reader: Option<ReaderHandle>,
         finished: bool,
     }
 
@@ -390,16 +395,16 @@ mod platform {
             let started = Instant::now();
             let (outcome, reason) = loop {
                 if let Some(status) = try_wait(self.pid)? {
-                    cleanup_after_owned_exit(&self.metadata)?;
+                    ensure_termination_verified(terminate_owned(&self.metadata)?)?;
                     break outcome_from_wait_status(status);
                 }
                 if cancellation.cancelled() {
-                    let _ = terminate_owned(&self.metadata)?;
+                    ensure_termination_verified(terminate_owned(&self.metadata)?)?;
                     let _ = reap_blocking(self.pid)?;
                     break (TerminalOutcome::Cancelled, TerminationReason::Cancelled);
                 }
                 if started.elapsed() >= self.timeout {
-                    let _ = terminate_owned(&self.metadata)?;
+                    ensure_termination_verified(terminate_owned(&self.metadata)?)?;
                     let _ = reap_blocking(self.pid)?;
                     break (TerminalOutcome::TimedOut, TerminationReason::TimedOut);
                 }
@@ -536,20 +541,14 @@ mod platform {
     pub fn terminate(metadata: &SupervisionMetadata) -> Result<TerminationResult, ExecutionError> {
         let pid = metadata.pid as libc::pid_t;
         let Some(current_identity) = read_start_identity(pid)? else {
-            return Ok(TerminationResult {
-                status: TerminationStatus::AlreadyExited,
-                term_signal_sent: false,
-                kill_signal_sent: false,
-                remaining_processes: Vec::new(),
-            });
+            return terminate_token_owned(metadata, None, TerminationStatus::AlreadyExited);
         };
         if current_identity != metadata.process_start {
-            return Ok(TerminationResult {
-                status: TerminationStatus::IdentityMismatch,
-                term_signal_sent: false,
-                kill_signal_sent: false,
-                remaining_processes: vec![metadata.pid],
-            });
+            return terminate_token_owned(
+                metadata,
+                Some(metadata.pid),
+                TerminationStatus::IdentityMismatch,
+            );
         }
         terminate_owned(metadata)
     }
@@ -814,6 +813,68 @@ mod platform {
         }))
     }
 
+    fn terminate_token_owned(
+        metadata: &SupervisionMetadata,
+        excluded_pid: Option<u32>,
+        empty_status: TerminationStatus,
+    ) -> Result<TerminationResult, ExecutionError> {
+        let mut remaining_processes =
+            token_processes_excluding(&metadata.supervision_token, excluded_pid)?;
+        if remaining_processes.is_empty() {
+            return Ok(TerminationResult {
+                status: empty_status,
+                term_signal_sent: false,
+                kill_signal_sent: false,
+                remaining_processes,
+            });
+        }
+
+        let term_signal_sent = signal_processes(&remaining_processes, libc::SIGTERM)?;
+        let term_deadline = Instant::now() + TERM_GRACE_PERIOD;
+        while Instant::now() < term_deadline {
+            remaining_processes =
+                token_processes_excluding(&metadata.supervision_token, excluded_pid)?;
+            if remaining_processes.is_empty() {
+                return Ok(TerminationResult {
+                    status: if empty_status == TerminationStatus::IdentityMismatch {
+                        empty_status
+                    } else {
+                        TerminationStatus::Terminated
+                    },
+                    term_signal_sent,
+                    kill_signal_sent: false,
+                    remaining_processes,
+                });
+            }
+            thread::sleep(POLL_INTERVAL);
+        }
+
+        let kill_signal_sent = signal_processes(&remaining_processes, libc::SIGKILL)?;
+        let kill_deadline = Instant::now() + KILL_VERIFICATION_PERIOD;
+        loop {
+            remaining_processes =
+                token_processes_excluding(&metadata.supervision_token, excluded_pid)?;
+            if remaining_processes.is_empty() || Instant::now() >= kill_deadline {
+                break;
+            }
+            thread::sleep(POLL_INTERVAL);
+        }
+        Ok(TerminationResult {
+            status: if remaining_processes.is_empty() {
+                if empty_status == TerminationStatus::IdentityMismatch {
+                    empty_status
+                } else {
+                    TerminationStatus::Terminated
+                }
+            } else {
+                TerminationStatus::ProcessesRemain
+            },
+            term_signal_sent,
+            kill_signal_sent,
+            remaining_processes,
+        })
+    }
+
     fn terminate_owned(
         metadata: &SupervisionMetadata,
     ) -> Result<TerminationResult, ExecutionError> {
@@ -866,9 +927,15 @@ mod platform {
         })
     }
 
-    fn cleanup_after_owned_exit(metadata: &SupervisionMetadata) -> Result<(), ExecutionError> {
-        let _ = terminate_owned(metadata)?;
-        Ok(())
+    fn ensure_termination_verified(result: TerminationResult) -> Result<(), ExecutionError> {
+        match result.status {
+            TerminationStatus::Terminated | TerminationStatus::AlreadyExited => Ok(()),
+            TerminationStatus::IdentityMismatch
+            | TerminationStatus::Unsupported
+            | TerminationStatus::ProcessesRemain => Err(
+                ExecutionError::ProcessTerminationUnverified(result.remaining_processes),
+            ),
+        }
     }
 
     fn supervised_processes(metadata: &SupervisionMetadata) -> Result<Vec<u32>, ExecutionError> {
@@ -897,10 +964,17 @@ mod platform {
     }
 
     fn token_processes(token: &str) -> Result<Vec<u32>, ExecutionError> {
+        token_processes_excluding(token, None)
+    }
+
+    fn token_processes_excluding(
+        token: &str,
+        excluded_pid: Option<u32>,
+    ) -> Result<Vec<u32>, ExecutionError> {
         let marker = format!("{SUPERVISION_TOKEN_ENV}={token}\0");
         let mut processes = Vec::new();
         for pid in proc_pids()? {
-            if pid == std::process::id() as i32 {
+            if pid == std::process::id() as i32 || excluded_pid == Some(pid as u32) {
                 continue;
             }
             let Some(stat) = read_process_stat(pid)? else {
@@ -938,9 +1012,13 @@ mod platform {
     }
 
     fn signal_token_processes(token: &str, signal: i32) -> Result<bool, ExecutionError> {
+        signal_processes(&token_processes(token)?, signal)
+    }
+
+    fn signal_processes(processes: &[u32], signal: i32) -> Result<bool, ExecutionError> {
         let mut sent = false;
-        for pid in token_processes(token)? {
-            sent |= signal_pid(pid as i32, signal)?;
+        for pid in processes {
+            sent |= signal_pid(*pid as i32, signal)?;
         }
         Ok(sent)
     }
@@ -1038,9 +1116,7 @@ mod platform {
         Ok((captured, truncated))
     }
 
-    fn join_reader(
-        reader: Option<JoinHandle<Result<(Vec<u8>, bool), std::io::Error>>>,
-    ) -> Result<(Vec<u8>, bool), ExecutionError> {
+    fn join_reader(reader: Option<ReaderHandle>) -> Result<(Vec<u8>, bool), ExecutionError> {
         reader
             .ok_or(ExecutionError::MissingPipe)?
             .join()

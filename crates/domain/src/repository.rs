@@ -8,6 +8,8 @@ pub struct Repository {
     pub id: Id,
     pub canonical_path: PathBuf,
     pub filesystem_identity: String,
+    #[serde(default)]
+    pub git_directory_identity: String,
     pub identity: String,
     pub primary_remote: Option<String>,
     pub default_branch: String,

@@ -4,7 +4,8 @@ use domain::{
 };
 use protocol::{
     ApprovalRequest, ApprovalResponse, CommandResult, DiffResponse, Envelope, LocalCommand,
-    OrderedRunEvent, PROTOCOL_VERSION, ResponseEnvelope, SemanticEventKind, StructuredError,
+    OrderedRunEvent, PROTOCOL_VERSION, RecoveryAction, RecoveryResponse, ResponseEnvelope,
+    SemanticEventKind, StructuredError,
 };
 use std::path::PathBuf;
 
@@ -49,6 +50,7 @@ fn all_local_message_shapes_round_trip() {
     let repository = Repository {
         id,
         filesystem_identity: "fixture".into(),
+        git_directory_identity: "git-fixture".into(),
         canonical_path: PathBuf::from("/repo"),
         identity: "repo".into(),
         primary_remote: None,
@@ -90,6 +92,16 @@ fn all_local_message_shapes_round_trip() {
         changeset_id: changeset.id,
         unified_diff: "diff".into(),
     };
+    let recovery_action = RecoveryAction {
+        aggregate_kind: "changeset".into(),
+        aggregate_id: changeset.id,
+        action: "orphan_worktree_quarantined".into(),
+        detail: "unpersisted worktree was quarantined".into(),
+    };
+    let recovery = RecoveryResponse {
+        actions: vec![recovery_action.clone()],
+    };
+    let recovery_command = LocalCommand::GetRecovery;
     let values = vec![
         serde_json::to_value(repository.clone()).unwrap(),
         serde_json::to_value(changeset.clone()).unwrap(),
@@ -101,6 +113,9 @@ fn all_local_message_shapes_round_trip() {
         serde_json::to_value(approval_request.clone()).unwrap(),
         serde_json::to_value(approval_response.clone()).unwrap(),
         serde_json::to_value(diff.clone()).unwrap(),
+        serde_json::to_value(recovery_action.clone()).unwrap(),
+        serde_json::to_value(recovery.clone()).unwrap(),
+        serde_json::to_value(recovery_command.clone()).unwrap(),
     ];
     assert_eq!(
         serde_json::from_value::<Repository>(values[0].clone()).unwrap(),
@@ -141,5 +156,17 @@ fn all_local_message_shapes_round_trip() {
     assert_eq!(
         serde_json::from_value::<DiffResponse>(values[9].clone()).unwrap(),
         diff
+    );
+    assert_eq!(
+        serde_json::from_value::<RecoveryAction>(values[10].clone()).unwrap(),
+        recovery_action
+    );
+    assert_eq!(
+        serde_json::from_value::<RecoveryResponse>(values[11].clone()).unwrap(),
+        recovery
+    );
+    assert_eq!(
+        serde_json::from_value::<LocalCommand>(values[12].clone()).unwrap(),
+        recovery_command
     );
 }
