@@ -8,14 +8,17 @@ import {
   createBrowserRunSession,
   isTerminalRunState,
 } from "../lib/execution-client/browser-run-session";
+import type { ExecutionClient } from "../lib/execution-client/types";
+import StandaloneReview from "./StandaloneReview.svelte";
 
 type Props = {
+  client: ExecutionClient;
   runId: string;
 };
 
 type RunOperation = (session: BrowserRunSession) => Promise<void>;
 
-let { runId }: Props = $props();
+let { client, runId }: Props = $props();
 let runSession = $state<BrowserRunSession | null>(null);
 let sessionState = $state<BrowserRunSessionState | null>(null);
 let mutationBusy = $state(false);
@@ -222,4 +225,8 @@ onMount(() => {
       {/each}
     {/if}
   </ol>
+
+  {#if sessionState?.snapshot.changeset.state === "reviewable"}
+    <StandaloneReview client={client} changeset={sessionState.snapshot.changeset} />
+  {/if}
 </section>

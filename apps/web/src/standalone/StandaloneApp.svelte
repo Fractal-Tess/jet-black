@@ -141,7 +141,9 @@ onMount(connect);
               <dd class="mt-1 break-all font-mono">{setup.run.run_id}</dd>
             </div>
           </dl>
-          <StandaloneRun runId={setup.run.run_id} />
+          {#if client !== null}
+            <StandaloneRun client={client} runId={setup.run.run_id} />
+          {/if}
         {/if}
       </Card>
     </section>

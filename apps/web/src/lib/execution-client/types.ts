@@ -72,7 +72,7 @@ export type ExecutionClient = {
 
 export const createCommandEnvelope = <C extends LocalCommand>(
   payload: C,
-  createRequestId: RequestIdFactory = crypto.randomUUID
+  createRequestId: RequestIdFactory = () => crypto.randomUUID()
 ): Envelope<C> => {
   const requestId = createRequestId();
   if (!UUID_PATTERN.test(requestId)) {
