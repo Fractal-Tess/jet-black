@@ -3,7 +3,7 @@ use axum::{
     body::{Body, to_bytes},
     http::{Request, StatusCode, header},
 };
-use config::PublicBootstrap;
+use config::{ProviderKind, PublicBootstrap};
 use domain::{Id, RunState, limits::MAX_COMMAND_BODY_BYTES};
 use futures_util::StreamExt;
 use protocol::{
@@ -80,7 +80,7 @@ fn fixture_server(runtime: Arc<FixtureRuntime>) -> StandaloneServer {
             version: "test".to_owned(),
             protocol_version: protocol::PROTOCOL_VERSION.to_owned(),
             enabled_features: vec!["local_execution".to_owned()],
-            provider_availability: vec!["mock".to_owned()],
+            provider_availability: vec![ProviderKind::Mock],
         },
         runtime,
     )
@@ -135,7 +135,7 @@ async fn binds_an_ephemeral_loopback_listener_before_server_creation() {
             version: "test".to_owned(),
             protocol_version: protocol::PROTOCOL_VERSION.to_owned(),
             enabled_features: vec!["local_execution".to_owned()],
-            provider_availability: vec!["mock".to_owned()],
+            provider_availability: vec![ProviderKind::Mock],
         },
         Arc::new(FixtureRuntime::default()),
     );

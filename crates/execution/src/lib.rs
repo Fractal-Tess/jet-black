@@ -2,6 +2,7 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::{
     collections::HashMap,
+    fmt,
     path::{Path, PathBuf},
     sync::{
         Arc,
@@ -44,7 +45,7 @@ pub struct ProcessResult {
     pub stderr_truncated: bool,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct ProcessSpec {
     pub program: String,
     pub arguments: Vec<String>,
@@ -52,6 +53,22 @@ pub struct ProcessSpec {
     pub current_dir: Option<PathBuf>,
     pub timeout: Duration,
     pub output_limit: usize,
+}
+
+impl fmt::Debug for ProcessSpec {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let mut environment_keys = self.environment.keys().collect::<Vec<_>>();
+        environment_keys.sort();
+        formatter
+            .debug_struct("ProcessSpec")
+            .field("program", &self.program)
+            .field("arguments", &self.arguments)
+            .field("environment_keys", &environment_keys)
+            .field("current_dir", &self.current_dir)
+            .field("timeout", &self.timeout)
+            .field("output_limit", &self.output_limit)
+            .finish()
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -1187,3 +1204,24 @@ mod platform {
 }
 
 pub use platform::{PreparedProcess, RunningProcess};
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn process_spec_debug_redacts_environment_values() {
+        let spec = ProcessSpec {
+            program: "provider".to_owned(),
+            arguments: vec!["run".to_owned()],
+            environment: HashMap::from([("PROVIDER_API_KEY".to_owned(), "top-secret".to_owned())]),
+            current_dir: None,
+            timeout: Duration::from_secs(1),
+            output_limit: 1024,
+        };
+
+        let debug = format!("{spec:?}");
+        assert!(debug.contains("PROVIDER_API_KEY"));
+        assert!(!debug.contains("top-secret"));
+    }
+}

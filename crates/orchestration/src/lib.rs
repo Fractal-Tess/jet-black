@@ -4,8 +4,8 @@ use domain::{
     TicketRef, Worktree, WorktreeState,
 };
 use execution::{
-    CancellationToken, ProcessSpec, ProcessSupervisor, SupervisionState, TerminalOutcome,
-    TerminationReason, TerminationStatus,
+    CancellationToken, ProcessResult, ProcessSpec, ProcessSupervisor, SupervisionState,
+    TerminalOutcome, TerminationReason, TerminationStatus,
 };
 use git::GitService;
 use persistence::{MutationLease, RecoveryReport, SqliteStore};
@@ -772,12 +772,12 @@ impl<P: AgentProvider> LocalOrchestrator<P> {
             },
         )?;
 
-        self.execute_provider_process(run.id, worktree)?;
+        let process_result = self.execute_provider_process(run.id, worktree)?;
         if self.run(run.id)?.state() == RunState::Interrupted {
             return Err(OrchestrationError::RunInterruptedDuringExecution);
         }
 
-        let proposed_change = self.provider.propose();
+        let proposed_change = self.provider.propose(process_result.as_ref())?;
         if proposed_change.content.len() > domain::limits::MAX_APPROVED_FILE_BYTES {
             return Err(OrchestrationError::ResourceLimit("approved file content"));
         }
@@ -858,9 +858,9 @@ impl<P: AgentProvider> LocalOrchestrator<P> {
         &self,
         run_id: Id,
         worktree: &Worktree,
-    ) -> Result<(), OrchestrationError> {
+    ) -> Result<Option<ProcessResult>, OrchestrationError> {
         let Some(mut spec) = self.provider.process_spec(&worktree.path) else {
-            return Ok(());
+            return Ok(None);
         };
         self.bind_process_to_worktree(&mut spec, worktree)?;
         let preparation_guard = self
@@ -963,7 +963,10 @@ impl<P: AgentProvider> LocalOrchestrator<P> {
                 supervised.result.outcome,
             ));
         }
-        Ok(())
+        if supervised.result.stdout_truncated || supervised.result.stderr_truncated {
+            return Err(OrchestrationError::ProviderProcessOutputTruncated);
+        }
+        Ok(Some(supervised.result))
     }
 
     fn bind_process_to_worktree(
@@ -1135,6 +1138,10 @@ pub enum OrchestrationError {
     Execution(#[source] execution::ExecutionError),
     #[error("provider process exited without a successful status: {0:?}")]
     ProviderProcessFailed(TerminalOutcome),
+    #[error("provider process output exceeded the configured limit")]
+    ProviderProcessOutputTruncated,
+    #[error("provider response was invalid: {0}")]
+    Provider(#[from] agents::ProviderError),
     #[error("provider process current directory does not match the registered worktree")]
     ProviderProcessOutsideWorktree,
     #[error("provider process supervision identity did not match the persisted record")]

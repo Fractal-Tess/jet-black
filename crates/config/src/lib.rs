@@ -5,6 +5,7 @@ use std::{
     fmt, fs,
     net::{IpAddr, Ipv4Addr, SocketAddr},
     path::{Path, PathBuf},
+    str::FromStr,
     time::Duration,
 };
 use thiserror::Error;
@@ -25,9 +26,45 @@ impl fmt::Debug for Secret {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum ProviderKind {
+    Mock,
+    ClaudeCode,
+    Codex,
+    OpenCode,
+}
+
+impl ProviderKind {
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Mock => "mock",
+            Self::ClaudeCode => "claude-code",
+            Self::Codex => "codex",
+            Self::OpenCode => "opencode",
+        }
+    }
+}
+
+impl FromStr for ProviderKind {
+    type Err = ConfigError;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        match value {
+            "mock" => Ok(Self::Mock),
+            "claude-code" => Ok(Self::ClaudeCode),
+            "codex" => Ok(Self::Codex),
+            "opencode" => Ok(Self::OpenCode),
+            _ => Err(ConfigError::UnsupportedProvider(value.to_owned())),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Default)]
 pub struct CliOverrides {
     pub profile: Option<String>,
+    pub provider: Option<ProviderKind>,
+    pub provider_model: Option<String>,
     pub bind: Option<SocketAddr>,
     pub sqlite_path: Option<PathBuf>,
     pub data_dir: Option<PathBuf>,
@@ -55,6 +92,12 @@ impl CliOverrides {
                         return Err(ConfigError::UnsupportedProfile(profile));
                     }
                     parsed.profile = Some(profile);
+                }
+                "--provider" => {
+                    parsed.provider = Some(value(&mut arguments)?.parse()?);
+                }
+                "--provider-model" => {
+                    parsed.provider_model = Some(value(&mut arguments)?);
                 }
                 "--bind" => {
                     parsed.bind = Some(
@@ -86,6 +129,8 @@ impl CliOverrides {
 
 #[derive(Debug, Clone, Default, Deserialize)]
 struct FileConfig {
+    provider: Option<ProviderKind>,
+    provider_model: Option<String>,
     bind: Option<SocketAddr>,
     sqlite_path: Option<PathBuf>,
     data_dir: Option<PathBuf>,
@@ -96,6 +141,8 @@ struct FileConfig {
 
 #[derive(Debug, Clone)]
 pub struct StandaloneConfig {
+    pub provider: ProviderKind,
+    pub provider_model: Option<String>,
     pub bind: SocketAddr,
     pub sqlite_path: PathBuf,
     pub data_dir: PathBuf,
@@ -121,6 +168,8 @@ impl StandaloneConfig {
         }
         let home = default_data_dir();
         let mut raw = FileConfig {
+            provider: Some(ProviderKind::Mock),
+            provider_model: None,
             bind: Some(SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 4317)),
             sqlite_path: Some(home.join("jet-black.sqlite3")),
             data_dir: Some(home.clone()),
@@ -133,6 +182,8 @@ impl StandaloneConfig {
         merge_env(&mut raw, env)?;
         merge_cli(&mut raw, cli);
         let config = Self {
+            provider: raw.provider.expect("safe default"),
+            provider_model: raw.provider_model,
             bind: raw.bind.expect("safe default"),
             sqlite_path: raw.sqlite_path.expect("safe default"),
             data_dir: raw.data_dir.expect("safe default"),
@@ -161,6 +212,13 @@ impl StandaloneConfig {
         if self.run_timeout.is_zero() {
             errors.push("run timeout must be greater than zero".to_owned());
         }
+        if self
+            .provider_model
+            .as_deref()
+            .is_some_and(|model| model.trim().is_empty())
+        {
+            errors.push("provider model must not be blank".to_owned());
+        }
         for root in &self.repository_roots {
             if !root.is_absolute() {
                 errors.push(format!(
@@ -176,13 +234,13 @@ impl StandaloneConfig {
         }
     }
 
-    pub fn public_bootstrap(&self) -> PublicBootstrap {
+    pub fn public_bootstrap(&self, provider_availability: Vec<ProviderKind>) -> PublicBootstrap {
         PublicBootstrap {
             profile: "standalone".to_owned(),
             version: env!("CARGO_PKG_VERSION").to_owned(),
             protocol_version: PROTOCOL_VERSION.to_owned(),
             enabled_features: vec!["local_execution".to_owned()],
-            provider_availability: vec!["mock".to_owned()],
+            provider_availability,
         }
     }
 }
@@ -210,6 +268,11 @@ fn merge_file(raw: &mut FileConfig, path: Option<&Path>) -> Result<(), ConfigErr
 }
 fn merge_env(raw: &mut FileConfig, env: &HashMap<String, String>) -> Result<(), ConfigError> {
     let parsed = FileConfig {
+        provider: env
+            .get("JET_BLACK_PROVIDER")
+            .map(|value| value.parse())
+            .transpose()?,
+        provider_model: env.get("JET_BLACK_PROVIDER_MODEL").cloned(),
         bind: env
             .get("JET_BLACK_BIND")
             .map(|v| v.parse())
@@ -234,6 +297,8 @@ fn merge_cli(raw: &mut FileConfig, cli: CliOverrides) {
     merge(
         raw,
         FileConfig {
+            provider: cli.provider,
+            provider_model: cli.provider_model,
             bind: cli.bind,
             sqlite_path: cli.sqlite_path,
             data_dir: cli.data_dir,
@@ -244,6 +309,12 @@ fn merge_cli(raw: &mut FileConfig, cli: CliOverrides) {
     );
 }
 fn merge(target: &mut FileConfig, source: FileConfig) {
+    if source.provider.is_some() {
+        target.provider = source.provider;
+    }
+    if source.provider_model.is_some() {
+        target.provider_model = source.provider_model;
+    }
     if source.bind.is_some() {
         target.bind = source.bind;
     }
@@ -270,7 +341,7 @@ pub struct PublicBootstrap {
     pub version: String,
     pub protocol_version: String,
     pub enabled_features: Vec<String>,
-    pub provider_availability: Vec<String>,
+    pub provider_availability: Vec<ProviderKind>,
 }
 
 #[derive(Debug, Error)]
@@ -291,4 +362,6 @@ pub enum ConfigError {
     InvalidCliValue(String),
     #[error("unsupported runtime profile: {0}")]
     UnsupportedProfile(String),
+    #[error("unsupported local provider: {0}")]
+    UnsupportedProvider(String),
 }

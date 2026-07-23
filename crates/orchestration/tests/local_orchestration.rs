@@ -1,8 +1,8 @@
-use agents::{AgentProvider, MockProvider, ProposedFileChange};
+use agents::{AgentProvider, ClaudeCodeProvider, MockProvider, ProposedFileChange, ProviderError};
 use domain::{ChangesetState, RelativePath, RunState, WorktreeState, limits};
 use execution::{
-    CancellationToken, ProcessSpec, ProcessStartIdentity, ProcessSupervisor, SupervisionState,
-    TerminationReason,
+    CancellationToken, ProcessResult, ProcessSpec, ProcessStartIdentity, ProcessSupervisor,
+    SupervisionState, TerminationReason,
 };
 use git::GitService;
 use orchestration::{CommandOutcome, LocalOrchestrator, OrchestrationError};
@@ -61,7 +61,7 @@ impl AgentProvider for NoProposalProvider {
     fn name(&self) -> &'static str {
         "no-proposal"
     }
-    fn propose(&self) -> ProposedFileChange {
+    fn propose(&self, _: Option<&ProcessResult>) -> Result<ProposedFileChange, ProviderError> {
         panic!("approval resume must use the persisted proposal")
     }
     fn normalized_events(&self, _: &ProposedFileChange, _: &str) -> Vec<SemanticEventKind> {
@@ -75,8 +75,11 @@ impl AgentProvider for MissingProposalEventProvider {
     fn name(&self) -> &'static str {
         "missing-proposal-event"
     }
-    fn propose(&self) -> ProposedFileChange {
-        MockProvider::deterministic().propose()
+    fn propose(
+        &self,
+        process_result: Option<&ProcessResult>,
+    ) -> Result<ProposedFileChange, ProviderError> {
+        MockProvider::deterministic().propose(process_result)
     }
     fn normalized_events(&self, _: &ProposedFileChange, _: &str) -> Vec<SemanticEventKind> {
         vec![SemanticEventKind::Text {
@@ -91,13 +94,16 @@ impl AgentProvider for OversizedProposalProvider {
     fn name(&self) -> &'static str {
         "oversized-proposal"
     }
-    fn propose(&self) -> ProposedFileChange {
-        let mut change = MockProvider::deterministic().propose();
+    fn propose(
+        &self,
+        process_result: Option<&ProcessResult>,
+    ) -> Result<ProposedFileChange, ProviderError> {
+        let mut change = MockProvider::deterministic().propose(process_result)?;
         change
             .content
             .resize(limits::MAX_APPROVED_FILE_BYTES + 1, b'x');
         change.proposal.content_sha256 = git::content_digest(&change.content);
-        change
+        Ok(change)
     }
     fn normalized_events(&self, _: &ProposedFileChange, _: &str) -> Vec<SemanticEventKind> {
         panic!("oversized proposals must be rejected before event normalization")
@@ -125,8 +131,11 @@ impl AgentProvider for LongRunningProcessProvider {
         })
     }
 
-    fn propose(&self) -> ProposedFileChange {
-        MockProvider::deterministic().propose()
+    fn propose(
+        &self,
+        process_result: Option<&ProcessResult>,
+    ) -> Result<ProposedFileChange, ProviderError> {
+        MockProvider::deterministic().propose(process_result)
     }
 
     fn normalized_events(
@@ -156,8 +165,11 @@ impl AgentProvider for ShortProcessProvider {
         })
     }
 
-    fn propose(&self) -> ProposedFileChange {
-        MockProvider::deterministic().propose()
+    fn propose(
+        &self,
+        process_result: Option<&ProcessResult>,
+    ) -> Result<ProposedFileChange, ProviderError> {
+        MockProvider::deterministic().propose(process_result)
     }
 
     fn normalized_events(
@@ -1232,5 +1244,63 @@ fn startup_reconciliation_quarantines_unapproved_worktree_changes() {
             .actions
             .iter()
             .any(|action| action.action == "quarantined")
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn fake_claude_provider_completes_the_approved_orchestration_flow() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let directory = tempdir().unwrap();
+    let repository_path = fixture_repository(directory.path());
+    let executable = directory.path().join("claude");
+    fs::write(
+        &executable,
+        r#"#!/bin/sh
+printf '%s' '{"is_error":false,"structured_output":{"content":"generated read-only\n"}}'
+"#,
+    )
+    .unwrap();
+    let mut permissions = fs::metadata(&executable).unwrap().permissions();
+    permissions.set_mode(0o700);
+    fs::set_permissions(&executable, permissions).unwrap();
+    let provider = ClaudeCodeProvider::discover(
+        &directory.path().to_string_lossy(),
+        Some("fixture-key".to_owned()),
+        &directory.path().join("claude-state"),
+        None,
+        Duration::from_secs(2),
+    )
+    .unwrap();
+    let store = SqliteStore::open(directory.path().join("state.sqlite3")).unwrap();
+    let runtime = LocalOrchestrator::new(
+        store.clone(),
+        GitService::new(
+            vec![directory.path().to_path_buf()],
+            directory.path().join("worktrees"),
+        )
+        .unwrap(),
+        provider,
+        Duration::from_secs(60),
+    );
+    let repository = runtime.register_repository(&repository_path).unwrap();
+    let changeset = runtime
+        .create_changeset(repository.id, &repository.base_sha, None)
+        .unwrap();
+
+    let started = runtime.start_run(changeset.id).unwrap();
+    assert_eq!(
+        started.approval_request.scope.proposal.target_path.as_str(),
+        "jet-black-claude-approved.txt"
+    );
+    let completed = runtime
+        .approve_and_complete(started.run_id, &started.approval_request.scope)
+        .unwrap();
+    assert_eq!(completed.run.state(), RunState::Completed);
+    let worktree = store.worktree_for_changeset(changeset.id).unwrap().unwrap();
+    assert_eq!(
+        fs::read(worktree.path.join("jet-black-claude-approved.txt")).unwrap(),
+        b"generated read-only\n"
     );
 }

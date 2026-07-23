@@ -81,7 +81,7 @@ fn supervised_local_run_survives_restart() {
         execution::TerminalOutcome::Completed(0)
     );
     let provider = MockProvider::deterministic();
-    let change = provider.propose();
+    let change = provider.propose(Some(&process_result)).unwrap();
     let expires = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap()

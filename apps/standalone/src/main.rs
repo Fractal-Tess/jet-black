@@ -1,5 +1,5 @@
-use agents::MockProvider;
-use config::{CliOverrides, StandaloneConfig};
+use agents::{ClaudeCodeProvider, CodexProvider, LocalProvider, MockProvider, OpenCodeProvider};
+use config::{CliOverrides, ProviderKind, StandaloneConfig};
 use git::GitService;
 use orchestration::{DEFAULT_APPROVAL_TTL, LocalOrchestrator};
 use persistence::SqliteStore;
@@ -9,12 +9,38 @@ use tokio::net::TcpListener;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let environment = std::env::vars()
-        .filter(|(key, _)| key.starts_with("JET_BLACK_"))
-        .collect::<HashMap<_, _>>();
+    let environment = std::env::vars().collect::<HashMap<_, _>>();
     let cli = CliOverrides::parse_from(std::env::args().skip(1))?;
     let config = StandaloneConfig::load(cli, &environment, None, None)?;
     config.prepare_directories()?;
+
+    let search_path = environment.get("PATH").cloned().unwrap_or_default();
+    let provider_state = config.data_dir.join("providers");
+    let provider = match config.provider {
+        ProviderKind::Mock => LocalProvider::Mock(MockProvider::deterministic()),
+        ProviderKind::ClaudeCode => LocalProvider::ClaudeCode(ClaudeCodeProvider::discover(
+            &search_path,
+            environment.get("ANTHROPIC_API_KEY").cloned(),
+            &provider_state.join(ProviderKind::ClaudeCode.name()),
+            config.provider_model.clone(),
+            config.run_timeout,
+        )?),
+        ProviderKind::Codex => LocalProvider::Codex(CodexProvider::discover(
+            &search_path,
+            environment.get("OPENAI_API_KEY").cloned(),
+            &provider_state.join(ProviderKind::Codex.name()),
+            config.provider_model.clone(),
+            config.run_timeout,
+        )?),
+        ProviderKind::OpenCode => LocalProvider::OpenCode(OpenCodeProvider::discover(
+            &search_path,
+            &environment,
+            &provider_state.join(ProviderKind::OpenCode.name()),
+            config.provider_model.clone(),
+            config.run_timeout,
+        )?),
+    };
+    let provider_availability = vec![config.provider];
 
     let store = SqliteStore::open(&config.sqlite_path)?;
     let git = GitService::new(
@@ -24,13 +50,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let runtime = Arc::new(LocalOrchestrator::new(
         store,
         git,
-        MockProvider::deterministic(),
+        provider,
         DEFAULT_APPROVAL_TTL,
     ));
     let listener = TcpListener::bind(config.bind).await?;
     let address = listener.local_addr()?;
     let recovery = runtime.recover()?;
-    let server = StandaloneServer::new(address, config.public_bootstrap(), runtime)?;
+    let server = StandaloneServer::new(
+        address,
+        config.public_bootstrap(provider_availability),
+        runtime,
+    )?;
 
     for action in &recovery.actions {
         println!(

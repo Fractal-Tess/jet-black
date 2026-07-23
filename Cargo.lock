@@ -12,8 +12,11 @@ dependencies = [
  "persistence",
  "policy",
  "protocol",
+ "serde",
+ "serde_json",
  "sha2",
  "tempfile",
+ "thiserror",
  "uuid",
 ]
 
