@@ -15,6 +15,7 @@ use persistence::{
     SqliteStore,
 };
 use protocol::{LocalCommand, MutationResult, RunStartedResponse, SemanticEventKind};
+use review::{ReviewCheckKind, ReviewCheckStatus, ReviewOptions};
 use std::{
     collections::HashMap,
     fs,
@@ -68,6 +69,61 @@ fn build_runtime(root: &Path) -> LocalOrchestrator<MockProvider> {
         MockProvider::deterministic(),
         Duration::from_secs(60),
     )
+}
+
+#[test]
+fn review_service_is_explicitly_composed_and_uses_persisted_aggregates() {
+    let directory = tempdir().unwrap();
+    let repository_path = fixture_repository(directory.path());
+    let store = SqliteStore::open(directory.path().join("state.sqlite3")).unwrap();
+    let git = GitService::new(
+        vec![directory.path().to_path_buf()],
+        directory.path().join("worktrees"),
+    )
+    .unwrap();
+    let runtime = LocalOrchestrator::new(
+        store,
+        git,
+        MockProvider::deterministic(),
+        Duration::from_secs(60),
+    )
+    .with_review_options(ReviewOptions::default(), "")
+    .unwrap();
+    let repository = runtime.register_repository(&repository_path).unwrap();
+    let changeset = runtime
+        .create_changeset(repository.id, &repository.base_sha, None)
+        .unwrap();
+    let started = runtime.start_run(changeset.id).unwrap();
+    let completed = runtime
+        .approve_and_complete(started.run_id, approval_scope(&started))
+        .unwrap();
+
+    let report = runtime
+        .review_changeset(changeset.id, &[ReviewCheckKind::Format])
+        .unwrap();
+
+    assert_eq!(report.changeset_id, changeset.id);
+    assert_eq!(report.head_sha, completed.changeset.head_sha());
+    assert!(!report.changed_paths.is_empty());
+    assert!(!report.unified_diff.is_empty());
+    assert_eq!(report.checks.len(), 1);
+    assert_eq!(report.checks[0].status, ReviewCheckStatus::Unavailable);
+    assert_eq!(report.findings.len(), 1);
+}
+
+#[test]
+fn review_requires_explicit_runtime_composition() {
+    let directory = tempdir().unwrap();
+    let runtime = build_runtime(directory.path());
+
+    let error = runtime
+        .review_changeset(domain::Id::nil(), &[])
+        .unwrap_err();
+
+    assert!(matches!(
+        error,
+        OrchestrationError::ReviewServiceUnavailable
+    ));
 }
 
 struct NeverInvokedProvider;

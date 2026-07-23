@@ -11,7 +11,6 @@ use std::{
 use thiserror::Error;
 
 const MAX_REVIEW_CHECKS: usize = 5;
-const MAX_REVIEW_TIMEOUT: Duration = Duration::from_secs(10 * 60);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum ReviewCheckKind {
@@ -70,7 +69,7 @@ pub struct ReviewOptions {
 impl Default for ReviewOptions {
     fn default() -> Self {
         Self {
-            timeout: MAX_REVIEW_TIMEOUT,
+            timeout: Duration::from_secs(limits::MAX_REVIEW_TIMEOUT_SECONDS),
             output_limit: limits::MAX_SEMANTIC_TEXT_BYTES,
             allow_unsandboxed_checks: false,
         }
@@ -100,6 +99,28 @@ impl ReviewService {
     ) -> Result<Self, ReviewError> {
         let search_path = std::env::var("PATH").map_err(|_| ReviewError::MissingSearchPath)?;
         Self::with_search_path(store, git, options, &search_path)
+    }
+
+    pub fn without_executable_checks(
+        store: SqliteStore,
+        git: GitService,
+        options: ReviewOptions,
+    ) -> Result<Self, ReviewError> {
+        validate_options(&options)?;
+        if options.allow_unsandboxed_checks {
+            return Err(ReviewError::InvalidOptions);
+        }
+        Ok(Self {
+            store,
+            git,
+            programs: ReviewPrograms {
+                cargo: None,
+                cargo_deny: None,
+                gitleaks: None,
+                search_path: String::new(),
+            },
+            options,
+        })
     }
 
     pub fn with_search_path(
@@ -306,7 +327,7 @@ impl ReviewService {
 
 fn validate_options(options: &ReviewOptions) -> Result<(), ReviewError> {
     if options.timeout.is_zero()
-        || options.timeout > MAX_REVIEW_TIMEOUT
+        || options.timeout > Duration::from_secs(limits::MAX_REVIEW_TIMEOUT_SECONDS)
         || options.output_limit == 0
         || options.output_limit > limits::MAX_SEMANTIC_TEXT_BYTES
     {

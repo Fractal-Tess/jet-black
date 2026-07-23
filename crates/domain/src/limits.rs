@@ -9,5 +9,6 @@ pub const MAX_SNAPSHOT_EVENT_PAGE_SIZE: usize = 100;
 pub const MAX_RUN_HISTORY_PAGE_SIZE: usize = 1_000;
 pub const MAX_RECOVERY_ACTIONS: usize = 1_000;
 pub const MAX_FINDINGS_PER_CHANGESET: usize = 1_000;
+pub const MAX_REVIEW_TIMEOUT_SECONDS: u64 = 10 * 60;
 pub const MAX_CAPTURED_STREAM_BYTES: usize = 10 * 1024 * 1024;
 pub const MAX_LOCAL_ARTIFACT_BYTES: usize = 25 * 1024 * 1024;

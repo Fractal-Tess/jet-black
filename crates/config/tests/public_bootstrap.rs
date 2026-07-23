@@ -11,6 +11,9 @@ fn bootstrap_excludes_private_paths_and_secrets() {
     assert!(json.contains("0.1"));
     assert!(!json.contains("sqlite"));
     assert!(!json.contains("repository_roots"));
+    assert!(!json.contains("review_timeout"));
+    assert!(!json.contains("review_output_limit"));
+    assert!(!json.contains("allow_unsandboxed"));
     assert!(!json.contains("secret"));
     assert_eq!(
         format!("{:?}", Secret::new("top-secret")),

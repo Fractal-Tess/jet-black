@@ -21,6 +21,7 @@ use protocol::{
     RunArtifactStream, RunArtifactSummary, RunArtifactsDeletedResponse, RunArtifactsResponse,
     RunCompletedResponse, RunSnapshot, RunStartedResponse, SemanticEventKind,
 };
+use review::{ReviewCheckKind, ReviewOptions, ReviewReport, ReviewService};
 use std::{path::Path, sync::Mutex, time::Duration};
 use thiserror::Error;
 use uuid::Uuid;
@@ -36,6 +37,7 @@ pub struct LocalOrchestrator<P> {
     supervisor: ProcessSupervisor,
     mutation_lease_ttl: Duration,
     artifact_store: Option<LocalArtifactStore>,
+    review_service: Option<ReviewService>,
     supervision_transition_gate: Mutex<()>,
 }
 
@@ -67,6 +69,7 @@ impl<P: AgentProvider> LocalOrchestrator<P> {
             supervisor,
             mutation_lease_ttl,
             artifact_store: None,
+            review_service: None,
             supervision_transition_gate: Mutex::new(()),
         }
     }
@@ -74,6 +77,25 @@ impl<P: AgentProvider> LocalOrchestrator<P> {
     pub fn with_artifact_store(mut self, artifact_store: LocalArtifactStore) -> Self {
         self.artifact_store = Some(artifact_store);
         self
+    }
+
+    pub fn with_review_options(
+        mut self,
+        options: ReviewOptions,
+        search_path: &str,
+    ) -> Result<Self, OrchestrationError> {
+        let review_service = if options.allow_unsandboxed_checks {
+            ReviewService::with_search_path(
+                self.store.clone(),
+                self.git.clone(),
+                options,
+                search_path,
+            )?
+        } else {
+            ReviewService::without_executable_checks(self.store.clone(), self.git.clone(), options)?
+        };
+        self.review_service = Some(review_service);
+        Ok(self)
     }
 
     pub fn handle(&self, command: LocalCommand) -> Result<CommandOutcome, OrchestrationError> {
@@ -231,6 +253,21 @@ impl<P: AgentProvider> LocalOrchestrator<P> {
                 &confirmation_digest,
             )?)),
         }
+    }
+
+    pub fn review_changeset(
+        &self,
+        changeset_id: Id,
+        requested_checks: &[ReviewCheckKind],
+    ) -> Result<ReviewReport, OrchestrationError> {
+        let service = self
+            .review_service
+            .as_ref()
+            .ok_or(OrchestrationError::ReviewServiceUnavailable)?;
+        let changeset = self.changeset(changeset_id)?;
+        let repository = self.repository(changeset.repository_id())?;
+        let worktree = self.worktree(changeset.id)?;
+        Ok(service.review(&repository, &changeset, &worktree, requested_checks)?)
     }
 
     pub fn register_repository(&self, path: &Path) -> Result<Repository, OrchestrationError> {
@@ -1936,6 +1973,10 @@ pub enum OrchestrationError {
     MutationLeaseUnavailable,
     #[error("active changeset could not be moved to recoverable state")]
     ChangesetRecoveryUnavailable,
+    #[error("review service is unavailable in this runtime")]
+    ReviewServiceUnavailable,
+    #[error("review operation failed: {0}")]
+    Review(#[from] review::ReviewError),
     #[error("domain operation failed: {0}")]
     Domain(#[from] domain::DomainError),
     #[error("persistence operation failed: {0}")]

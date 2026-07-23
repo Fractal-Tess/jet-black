@@ -1,3 +1,4 @@
+use domain::limits;
 use protocol::PROTOCOL_VERSION;
 use serde::{Deserialize, Serialize};
 use std::{
@@ -72,6 +73,9 @@ pub struct CliOverrides {
     pub log_dir: Option<PathBuf>,
     pub static_assets_dir: Option<PathBuf>,
     pub run_timeout_seconds: Option<u64>,
+    pub review_timeout_seconds: Option<u64>,
+    pub review_output_limit_bytes: Option<usize>,
+    pub allow_unsandboxed_review_checks: Option<bool>,
 }
 
 impl CliOverrides {
@@ -121,6 +125,23 @@ impl CliOverrides {
                             .map_err(|_| ConfigError::InvalidCliValue(argument.clone()))?,
                     )
                 }
+                "--review-timeout-seconds" => {
+                    parsed.review_timeout_seconds = Some(
+                        value(&mut arguments)?
+                            .parse()
+                            .map_err(|_| ConfigError::InvalidCliValue(argument.clone()))?,
+                    )
+                }
+                "--review-output-limit-bytes" => {
+                    parsed.review_output_limit_bytes = Some(
+                        value(&mut arguments)?
+                            .parse()
+                            .map_err(|_| ConfigError::InvalidCliValue(argument.clone()))?,
+                    )
+                }
+                "--allow-unsandboxed-review-checks" => {
+                    parsed.allow_unsandboxed_review_checks = Some(true)
+                }
                 _ => return Err(ConfigError::UnknownArgument(argument)),
             }
         }
@@ -142,6 +163,9 @@ struct FileConfig {
     log_dir: Option<PathBuf>,
     static_assets_dir: Option<PathBuf>,
     run_timeout_seconds: Option<u64>,
+    review_timeout_seconds: Option<u64>,
+    review_output_limit_bytes: Option<usize>,
+    allow_unsandboxed_review_checks: Option<bool>,
 }
 
 #[derive(Debug, Clone)]
@@ -155,6 +179,9 @@ pub struct StandaloneConfig {
     pub log_dir: PathBuf,
     pub static_assets_dir: PathBuf,
     pub run_timeout: Duration,
+    pub review_timeout: Duration,
+    pub review_output_limit: usize,
+    pub allow_unsandboxed_review_checks: bool,
 }
 
 impl StandaloneConfig {
@@ -184,6 +211,9 @@ impl StandaloneConfig {
             log_dir: Some(home.join("logs")),
             static_assets_dir: Some(static_assets_dir),
             run_timeout_seconds: Some(900),
+            review_timeout_seconds: Some(limits::MAX_REVIEW_TIMEOUT_SECONDS),
+            review_output_limit_bytes: Some(limits::MAX_SEMANTIC_TEXT_BYTES),
+            allow_unsandboxed_review_checks: Some(false),
         };
         merge_file(&mut raw, profile_toml)?;
         merge_file(&mut raw, local_toml)?;
@@ -199,6 +229,11 @@ impl StandaloneConfig {
             log_dir: raw.log_dir.expect("safe default"),
             static_assets_dir: raw.static_assets_dir.expect("safe default"),
             run_timeout: Duration::from_secs(raw.run_timeout_seconds.expect("safe default")),
+            review_timeout: Duration::from_secs(raw.review_timeout_seconds.expect("safe default")),
+            review_output_limit: raw.review_output_limit_bytes.expect("safe default"),
+            allow_unsandboxed_review_checks: raw
+                .allow_unsandboxed_review_checks
+                .expect("safe default"),
         };
         config.validate()?;
         Ok(config)
@@ -220,6 +255,22 @@ impl StandaloneConfig {
         }
         if self.run_timeout.is_zero() {
             errors.push("run timeout must be greater than zero".to_owned());
+        }
+        if self.review_timeout.is_zero()
+            || self.review_timeout > Duration::from_secs(limits::MAX_REVIEW_TIMEOUT_SECONDS)
+        {
+            errors.push(format!(
+                "review timeout must be between 1 and {} seconds",
+                limits::MAX_REVIEW_TIMEOUT_SECONDS
+            ));
+        }
+        if self.review_output_limit == 0
+            || self.review_output_limit > limits::MAX_SEMANTIC_TEXT_BYTES
+        {
+            errors.push(format!(
+                "review output limit must be between 1 and {} bytes",
+                limits::MAX_SEMANTIC_TEXT_BYTES
+            ));
         }
         if self
             .provider_model
@@ -309,6 +360,23 @@ fn merge_env(raw: &mut FileConfig, env: &HashMap<String, String>) -> Result<(), 
             .map(|v| v.parse())
             .transpose()
             .map_err(|_| ConfigError::InvalidEnvironment("JET_BLACK_RUN_TIMEOUT_SECONDS"))?,
+        review_timeout_seconds: env
+            .get("JET_BLACK_REVIEW_TIMEOUT_SECONDS")
+            .map(|v| v.parse())
+            .transpose()
+            .map_err(|_| ConfigError::InvalidEnvironment("JET_BLACK_REVIEW_TIMEOUT_SECONDS"))?,
+        review_output_limit_bytes: env
+            .get("JET_BLACK_REVIEW_OUTPUT_LIMIT_BYTES")
+            .map(|v| v.parse())
+            .transpose()
+            .map_err(|_| ConfigError::InvalidEnvironment("JET_BLACK_REVIEW_OUTPUT_LIMIT_BYTES"))?,
+        allow_unsandboxed_review_checks: env
+            .get("JET_BLACK_ALLOW_UNSANDBOXED_REVIEW_CHECKS")
+            .map(|v| v.parse())
+            .transpose()
+            .map_err(|_| {
+                ConfigError::InvalidEnvironment("JET_BLACK_ALLOW_UNSANDBOXED_REVIEW_CHECKS")
+            })?,
     };
     merge(raw, parsed);
     Ok(())
@@ -326,6 +394,9 @@ fn merge_cli(raw: &mut FileConfig, cli: CliOverrides) {
             log_dir: cli.log_dir,
             static_assets_dir: cli.static_assets_dir,
             run_timeout_seconds: cli.run_timeout_seconds,
+            review_timeout_seconds: cli.review_timeout_seconds,
+            review_output_limit_bytes: cli.review_output_limit_bytes,
+            allow_unsandboxed_review_checks: cli.allow_unsandboxed_review_checks,
         },
     );
 }
@@ -356,6 +427,15 @@ fn merge(target: &mut FileConfig, source: FileConfig) {
     }
     if source.run_timeout_seconds.is_some() {
         target.run_timeout_seconds = source.run_timeout_seconds;
+    }
+    if source.review_timeout_seconds.is_some() {
+        target.review_timeout_seconds = source.review_timeout_seconds;
+    }
+    if source.review_output_limit_bytes.is_some() {
+        target.review_output_limit_bytes = source.review_output_limit_bytes;
+    }
+    if source.allow_unsandboxed_review_checks.is_some() {
+        target.allow_unsandboxed_review_checks = source.allow_unsandboxed_review_checks;
     }
 }
 
