@@ -314,11 +314,38 @@ impl SqliteStore {
         run: &Run,
         event: SemanticEventKind,
     ) -> Result<OrderedRunEvent, PersistenceError> {
+        self.persist_run_transition_from(run, event, None)
+    }
+
+    pub fn claim_run_for_drive(&self, run: &Run) -> Result<OrderedRunEvent, PersistenceError> {
+        if run.state() != RunState::Running {
+            return Err(PersistenceError::InvalidPersistedTransition(
+                "run drive claim",
+            ));
+        }
+        self.persist_run_transition_from(
+            run,
+            SemanticEventKind::Lifecycle {
+                state: RunState::Running,
+            },
+            Some(RunState::Starting),
+        )
+    }
+
+    fn persist_run_transition_from(
+        &self,
+        run: &Run,
+        event: SemanticEventKind,
+        expected_source: Option<RunState>,
+    ) -> Result<OrderedRunEvent, PersistenceError> {
         validate_semantic_event(&event)?;
         self.with_connection(|connection| {
             let transaction =
                 connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
             let (stored, stored_version) = load_run(&transaction, run.id)?;
+            if expected_source.is_some_and(|expected| stored.state() != expected) {
+                return Err(PersistenceError::RunDriveAlreadyClaimed);
+            }
             validate_versioned_transition(
                 "run",
                 run.id,
@@ -558,22 +585,39 @@ impl SqliteStore {
 
     pub fn save_proposed_change(
         &self,
-        run_id: Uuid,
+        run: &Run,
         proposal: &ActionProposal,
         content: &[u8],
     ) -> Result<(), PersistenceError> {
         if content.len() > domain::limits::MAX_APPROVED_FILE_BYTES {
             return Err(PersistenceError::ResourceLimit("approved file content"));
         }
-        let proposed_change = StoredProposedChange {
+        let proposed_change = encode(&StoredProposedChange {
             proposal: proposal.clone(),
             content: content.to_vec(),
-        };
+        })?;
         self.with_connection(|connection| {
-            connection.execute(
+            let transaction =
+                connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+            let (stored, stored_version) = load_run(&transaction, run.id)?;
+            if stored_version != run.version() {
+                return Err(PersistenceError::VersionConflict {
+                    aggregate: "run",
+                    id: run.id,
+                    expected: run.version(),
+                    actual: stored_version,
+                });
+            }
+            if stored != *run || run.state() != RunState::Running {
+                return Err(PersistenceError::InvalidPersistedTransition(
+                    "proposed change",
+                ));
+            }
+            transaction.execute(
                 "INSERT INTO proposed_changes (owner, body) VALUES (?1, ?2)",
-                params![run_id.to_string(), encode(&proposed_change)?],
+                params![run.id.to_string(), proposed_change],
             )?;
+            transaction.commit()?;
             Ok(())
         })
     }
@@ -591,6 +635,16 @@ impl SqliteStore {
                 )
                 .optional()?;
             body.map(|value| decode(&value)).transpose()
+        })
+    }
+
+    pub fn delete_proposed_change_for_run(&self, run_id: Uuid) -> Result<(), PersistenceError> {
+        self.with_connection(|connection| {
+            connection.execute(
+                "DELETE FROM proposed_changes WHERE owner = ?1",
+                [run_id.to_string()],
+            )?;
+            Ok(())
         })
     }
 
@@ -3205,6 +3259,8 @@ pub enum PersistenceError {
     InvalidPersistedTransition(&'static str),
     #[error("approval does not match the run's pending proposal")]
     ApprovalDoesNotMatchRun,
+    #[error("run provider execution was already claimed")]
+    RunDriveAlreadyClaimed,
     #[error("resource limit exceeded for {0}")]
     ResourceLimit(&'static str),
     #[error("a finding batch must belong to one changeset")]

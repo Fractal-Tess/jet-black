@@ -70,6 +70,82 @@ fn build_runtime(root: &Path) -> LocalOrchestrator<MockProvider> {
     )
 }
 
+struct NeverInvokedProvider;
+
+impl AgentProvider for NeverInvokedProvider {
+    fn name(&self) -> &'static str {
+        "never-invoked"
+    }
+
+    fn process_spec(&self, _: &Path) -> Option<ProcessSpec> {
+        panic!("begin_run must not invoke the provider")
+    }
+
+    fn propose(&self, _: Option<&ProcessResult>) -> Result<ProposedFileChange, ProviderError> {
+        panic!("begin_run must not invoke the provider")
+    }
+
+    fn normalized_events(&self, _: &ProposedFileChange, _: &str) -> Vec<SemanticEventKind> {
+        panic!("begin_run must not invoke the provider")
+    }
+}
+
+struct BlockingProposalProvider {
+    entered: Arc<Barrier>,
+    release: Arc<Barrier>,
+}
+
+impl AgentProvider for BlockingProposalProvider {
+    fn name(&self) -> &'static str {
+        "blocking-proposal"
+    }
+
+    fn propose(
+        &self,
+        process_result: Option<&ProcessResult>,
+    ) -> Result<ProposedFileChange, ProviderError> {
+        self.entered.wait();
+        self.release.wait();
+        MockProvider::deterministic().propose(process_result)
+    }
+
+    fn normalized_events(
+        &self,
+        change: &ProposedFileChange,
+        digest: &str,
+    ) -> Vec<SemanticEventKind> {
+        MockProvider::deterministic().normalized_events(change, digest)
+    }
+}
+
+struct BlockingEventsProvider {
+    entered: Arc<Barrier>,
+    release: Arc<Barrier>,
+}
+
+impl AgentProvider for BlockingEventsProvider {
+    fn name(&self) -> &'static str {
+        "blocking-events"
+    }
+
+    fn propose(
+        &self,
+        process_result: Option<&ProcessResult>,
+    ) -> Result<ProposedFileChange, ProviderError> {
+        MockProvider::deterministic().propose(process_result)
+    }
+
+    fn normalized_events(
+        &self,
+        change: &ProposedFileChange,
+        digest: &str,
+    ) -> Vec<SemanticEventKind> {
+        self.entered.wait();
+        self.release.wait();
+        MockProvider::deterministic().normalized_events(change, digest)
+    }
+}
+
 struct NoProposalProvider;
 
 impl AgentProvider for NoProposalProvider {
@@ -323,6 +399,389 @@ impl AgentProvider for SensitiveOutputProvider {
     ) -> Vec<SemanticEventKind> {
         MockProvider::deterministic().normalized_events(change, digest)
     }
+}
+
+#[test]
+fn begin_run_is_durable_without_invoking_the_provider() {
+    let directory = tempdir().unwrap();
+    let repository_path = fixture_repository(directory.path());
+    let store = SqliteStore::open(directory.path().join("state.sqlite3")).unwrap();
+    let runtime = LocalOrchestrator::new(
+        store.clone(),
+        GitService::new(
+            vec![directory.path().to_path_buf()],
+            directory.path().join("worktrees"),
+        )
+        .unwrap(),
+        NeverInvokedProvider,
+        Duration::from_secs(60),
+    );
+    let repository = runtime.register_repository(&repository_path).unwrap();
+    let changeset = runtime
+        .create_changeset(repository.id, &repository.base_sha, None)
+        .unwrap();
+
+    let started = runtime.begin_run(changeset.id).unwrap();
+
+    assert!(started.approval_id.is_none());
+    assert!(started.approval_request.is_none());
+    assert_eq!(
+        store.run(started.run_id).unwrap().unwrap().state(),
+        RunState::Starting
+    );
+    assert_eq!(
+        store.changeset(changeset.id).unwrap().unwrap().state(),
+        ChangesetState::Active
+    );
+    assert_eq!(
+        store
+            .worktree(started.worktree_id)
+            .unwrap()
+            .unwrap()
+            .state(),
+        WorktreeState::Ready
+    );
+    assert_eq!(
+        store.mutation_lease(changeset.id).unwrap().unwrap().run_id,
+        started.run_id
+    );
+    let events = runtime.events(started.run_id).unwrap();
+    assert_eq!(events.len(), 1);
+    assert!(matches!(
+        events[0].event,
+        SemanticEventKind::Lifecycle {
+            state: RunState::Starting
+        }
+    ));
+}
+
+#[test]
+fn drive_run_to_approval_drives_an_existing_begin() {
+    let directory = tempdir().unwrap();
+    let repository_path = fixture_repository(directory.path());
+    let runtime = build_runtime(directory.path());
+    let repository = runtime.register_repository(&repository_path).unwrap();
+    let changeset = runtime
+        .create_changeset(repository.id, &repository.base_sha, None)
+        .unwrap();
+    let begun = runtime.begin_run(changeset.id).unwrap();
+
+    let started = runtime.drive_run_to_approval(begun.run_id).unwrap();
+
+    assert_eq!(started.run_id, begun.run_id);
+    assert_eq!(started.changeset_id, begun.changeset_id);
+    assert_eq!(started.worktree_id, begun.worktree_id);
+    assert!(started.approval_id.is_some());
+    assert!(started.approval_request.is_some());
+    assert_eq!(
+        runtime.run_state(started.run_id).unwrap(),
+        RunState::AwaitingApproval
+    );
+    let events = runtime.events(started.run_id).unwrap();
+    assert!(matches!(
+        events.first().map(|event| &event.event),
+        Some(SemanticEventKind::Lifecycle {
+            state: RunState::Starting
+        })
+    ));
+    assert!(matches!(
+        events.get(1).map(|event| &event.event),
+        Some(SemanticEventKind::Lifecycle {
+            state: RunState::Running
+        })
+    ));
+    assert!(matches!(
+        events.last().map(|event| &event.event),
+        Some(SemanticEventKind::ActionProposal { .. })
+    ));
+}
+
+#[test]
+fn concurrent_drive_attempts_do_not_compensate_the_winner() {
+    let directory = tempdir().unwrap();
+    let repository_path = fixture_repository(directory.path());
+    let database_path = directory.path().join("state.sqlite3");
+    let store = SqliteStore::open(&database_path).unwrap();
+    let runtime_one = Arc::new(LocalOrchestrator::new(
+        store.clone(),
+        GitService::new(
+            vec![directory.path().to_path_buf()],
+            directory.path().join("worktrees"),
+        )
+        .unwrap(),
+        MockProvider::deterministic(),
+        Duration::from_secs(60),
+    ));
+    let runtime_two = Arc::new(LocalOrchestrator::new(
+        SqliteStore::open(&database_path).unwrap(),
+        GitService::new(
+            vec![directory.path().to_path_buf()],
+            directory.path().join("worktrees"),
+        )
+        .unwrap(),
+        MockProvider::deterministic(),
+        Duration::from_secs(60),
+    ));
+    let repository = runtime_one.register_repository(&repository_path).unwrap();
+    let changeset = runtime_one
+        .create_changeset(repository.id, &repository.base_sha, None)
+        .unwrap();
+    let begun = runtime_one.begin_run(changeset.id).unwrap();
+    let barrier = Arc::new(Barrier::new(3));
+
+    let handles = [runtime_one, runtime_two]
+        .into_iter()
+        .map(|runtime| {
+            let barrier = Arc::clone(&barrier);
+            thread::spawn(move || {
+                barrier.wait();
+                runtime.drive_run_to_approval(begun.run_id)
+            })
+        })
+        .collect::<Vec<_>>();
+    barrier.wait();
+    let results = handles
+        .into_iter()
+        .map(|handle| handle.join().unwrap())
+        .collect::<Vec<_>>();
+
+    assert_eq!(results.iter().filter(|result| result.is_ok()).count(), 1);
+    assert_eq!(
+        results
+            .iter()
+            .filter(|result| matches!(result, Err(OrchestrationError::RunDriveUnavailable)))
+            .count(),
+        1
+    );
+    assert_eq!(
+        store.run(begun.run_id).unwrap().unwrap().state(),
+        RunState::AwaitingApproval
+    );
+    assert_eq!(
+        store.changeset(changeset.id).unwrap().unwrap().state(),
+        ChangesetState::Active
+    );
+    assert_eq!(
+        store
+            .worktree_for_changeset(changeset.id)
+            .unwrap()
+            .unwrap()
+            .state(),
+        WorktreeState::Ready
+    );
+    assert_eq!(
+        store
+            .events(begun.run_id)
+            .unwrap()
+            .iter()
+            .filter(|event| matches!(
+                event.event,
+                SemanticEventKind::Lifecycle {
+                    state: RunState::Running
+                }
+            ))
+            .count(),
+        1
+    );
+}
+
+#[test]
+fn interrupting_a_begun_run_prevents_provider_execution_and_cleans_the_worktree() {
+    let directory = tempdir().unwrap();
+    let repository_path = fixture_repository(directory.path());
+    let store = SqliteStore::open(directory.path().join("state.sqlite3")).unwrap();
+    let runtime = LocalOrchestrator::new(
+        store.clone(),
+        GitService::new(
+            vec![directory.path().to_path_buf()],
+            directory.path().join("worktrees"),
+        )
+        .unwrap(),
+        NeverInvokedProvider,
+        Duration::from_secs(60),
+    );
+    let repository = runtime.register_repository(&repository_path).unwrap();
+    let changeset = runtime
+        .create_changeset(repository.id, &repository.base_sha, None)
+        .unwrap();
+    let begun = runtime.begin_run(changeset.id).unwrap();
+
+    let interrupted = runtime.interrupt_run(begun.run_id).unwrap();
+
+    assert_eq!(interrupted.state(), RunState::Interrupted);
+    assert!(matches!(
+        runtime.drive_run_to_approval(begun.run_id),
+        Err(OrchestrationError::RunDriveUnavailable)
+    ));
+    assert!(store.mutation_lease(changeset.id).unwrap().is_none());
+    assert_eq!(
+        store
+            .worktree_for_changeset(changeset.id)
+            .unwrap()
+            .unwrap()
+            .state(),
+        WorktreeState::Removed
+    );
+    assert!(store.approval_for_run(begun.run_id).unwrap().is_none());
+}
+
+#[test]
+fn interrupted_pre_drive_cleanup_can_be_retried() {
+    let directory = tempdir().unwrap();
+    let repository_path = fixture_repository(directory.path());
+    let moved_repository_path = directory.path().join("repo-moved");
+    let store = SqliteStore::open(directory.path().join("state.sqlite3")).unwrap();
+    let runtime = LocalOrchestrator::new(
+        store.clone(),
+        GitService::new(
+            vec![directory.path().to_path_buf()],
+            directory.path().join("worktrees"),
+        )
+        .unwrap(),
+        NeverInvokedProvider,
+        Duration::from_secs(60),
+    );
+    let repository = runtime.register_repository(&repository_path).unwrap();
+    let changeset = runtime
+        .create_changeset(repository.id, &repository.base_sha, None)
+        .unwrap();
+    let begun = runtime.begin_run(changeset.id).unwrap();
+    fs::rename(&repository_path, &moved_repository_path).unwrap();
+
+    assert!(runtime.interrupt_run(begun.run_id).is_err());
+    assert_eq!(
+        store.run(begun.run_id).unwrap().unwrap().state(),
+        RunState::Interrupted
+    );
+    assert_eq!(
+        store
+            .worktree_for_changeset(changeset.id)
+            .unwrap()
+            .unwrap()
+            .state(),
+        WorktreeState::Ready
+    );
+
+    fs::rename(&moved_repository_path, &repository_path).unwrap();
+    let interrupted = runtime.interrupt_run(begun.run_id).unwrap();
+
+    assert_eq!(interrupted.state(), RunState::Interrupted);
+    assert_eq!(
+        store
+            .worktree_for_changeset(changeset.id)
+            .unwrap()
+            .unwrap()
+            .state(),
+        WorktreeState::Removed
+    );
+}
+
+#[test]
+fn interrupted_provider_completion_cannot_persist_a_proposal_or_approval() {
+    let directory = tempdir().unwrap();
+    let repository_path = fixture_repository(directory.path());
+    let store = SqliteStore::open(directory.path().join("state.sqlite3")).unwrap();
+    let entered = Arc::new(Barrier::new(2));
+    let release = Arc::new(Barrier::new(2));
+    let runtime = Arc::new(LocalOrchestrator::new(
+        store.clone(),
+        GitService::new(
+            vec![directory.path().to_path_buf()],
+            directory.path().join("worktrees"),
+        )
+        .unwrap(),
+        BlockingProposalProvider {
+            entered: Arc::clone(&entered),
+            release: Arc::clone(&release),
+        },
+        Duration::from_secs(60),
+    ));
+    let repository = runtime.register_repository(&repository_path).unwrap();
+    let changeset = runtime
+        .create_changeset(repository.id, &repository.base_sha, None)
+        .unwrap();
+    let begun = runtime.begin_run(changeset.id).unwrap();
+    let drive_runtime = Arc::clone(&runtime);
+    let drive = thread::spawn(move || drive_runtime.drive_run_to_approval(begun.run_id));
+    entered.wait();
+
+    runtime.interrupt_run(begun.run_id).unwrap();
+    release.wait();
+
+    assert!(matches!(
+        drive.join().unwrap(),
+        Err(OrchestrationError::RunInterruptedDuringExecution)
+    ));
+    assert_eq!(
+        store.run(begun.run_id).unwrap().unwrap().state(),
+        RunState::Interrupted
+    );
+    assert!(
+        store
+            .proposed_change_for_run(begun.run_id)
+            .unwrap()
+            .is_none()
+    );
+    assert!(store.approval_for_run(begun.run_id).unwrap().is_none());
+    assert_eq!(
+        store
+            .worktree_for_changeset(changeset.id)
+            .unwrap()
+            .unwrap()
+            .state(),
+        WorktreeState::Removed
+    );
+}
+
+#[test]
+fn interruption_deletes_a_proposal_persisted_before_approval() {
+    let directory = tempdir().unwrap();
+    let repository_path = fixture_repository(directory.path());
+    let store = SqliteStore::open(directory.path().join("state.sqlite3")).unwrap();
+    let entered = Arc::new(Barrier::new(2));
+    let release = Arc::new(Barrier::new(2));
+    let runtime = Arc::new(LocalOrchestrator::new(
+        store.clone(),
+        GitService::new(
+            vec![directory.path().to_path_buf()],
+            directory.path().join("worktrees"),
+        )
+        .unwrap(),
+        BlockingEventsProvider {
+            entered: Arc::clone(&entered),
+            release: Arc::clone(&release),
+        },
+        Duration::from_secs(60),
+    ));
+    let repository = runtime.register_repository(&repository_path).unwrap();
+    let changeset = runtime
+        .create_changeset(repository.id, &repository.base_sha, None)
+        .unwrap();
+    let begun = runtime.begin_run(changeset.id).unwrap();
+    let drive_runtime = Arc::clone(&runtime);
+    let drive = thread::spawn(move || drive_runtime.drive_run_to_approval(begun.run_id));
+    entered.wait();
+    assert!(
+        store
+            .proposed_change_for_run(begun.run_id)
+            .unwrap()
+            .is_some()
+    );
+
+    runtime.interrupt_run(begun.run_id).unwrap();
+    release.wait();
+
+    assert!(matches!(
+        drive.join().unwrap(),
+        Err(OrchestrationError::RunInterruptedDuringExecution)
+    ));
+    assert!(
+        store
+            .proposed_change_for_run(begun.run_id)
+            .unwrap()
+            .is_none()
+    );
+    assert!(store.approval_for_run(begun.run_id).unwrap().is_none());
 }
 
 #[test]

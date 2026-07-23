@@ -258,6 +258,11 @@ impl<P: AgentProvider> LocalOrchestrator<P> {
     }
 
     pub fn start_run(&self, changeset_id: Id) -> Result<RunStarted, OrchestrationError> {
+        let started = self.begin_run(changeset_id)?;
+        self.drive_run_to_approval(started.run_id)
+    }
+
+    pub fn begin_run(&self, changeset_id: Id) -> Result<RunStarted, OrchestrationError> {
         let mut changeset = self.changeset(changeset_id)?;
         let repository = self.repository(changeset.repository_id())?;
         let mut worktree = self.git.create_worktree(&repository, changeset.id)?;
@@ -291,11 +296,75 @@ impl<P: AgentProvider> LocalOrchestrator<P> {
             self.compensate_failed_start(&mut changeset, &repository, &mut worktree, run.id)?;
             return Err(error.into());
         }
-        match self.prepare_approval(&repository, &changeset, &worktree, &mut run) {
+        if let Err(error) = self.store.persist_run_transition(
+            &run,
+            SemanticEventKind::Lifecycle {
+                state: RunState::Starting,
+            },
+        ) {
+            self.compensate_failed_start(&mut changeset, &repository, &mut worktree, run.id)?;
+            return Err(error.into());
+        }
+
+        Ok(RunStarted {
+            run_id: run.id,
+            changeset_id: changeset.id,
+            worktree_id: worktree.id,
+            approval_id: None,
+            approval_request: None,
+        })
+    }
+
+    pub fn drive_run_to_approval(&self, run_id: Id) -> Result<RunStarted, OrchestrationError> {
+        let mut run = self.run(run_id)?;
+        if run.state() != RunState::Starting {
+            return Err(OrchestrationError::RunDriveUnavailable);
+        }
+        let mut changeset = self.changeset(run.changeset_id())?;
+        let repository = self.repository(changeset.repository_id())?;
+        let mut worktree = self.worktree(changeset.id)?;
+        if worktree.changeset_id() != changeset.id || worktree.state() != WorktreeState::Ready {
+            return Err(OrchestrationError::RunDriveUnavailable);
+        }
+        let lease = self
+            .store
+            .mutation_lease(changeset.id)?
+            .ok_or(OrchestrationError::MutationLeaseUnavailable)?;
+        if lease.run_id != run.id {
+            return Err(OrchestrationError::MutationLeaseUnavailable);
+        }
+        if lease.expires_at_unix_ms <= current_unix_ms() {
+            return Err(persistence::PersistenceError::MutationLeaseExpired.into());
+        }
+
+        let drive_claim_guard = self
+            .supervision_transition_gate
+            .lock()
+            .map_err(|_| OrchestrationError::SupervisionStateUnavailable)?;
+        run.running()?;
+        match self.store.claim_run_for_drive(&run) {
+            Ok(_) => {}
+            Err(
+                persistence::PersistenceError::RunDriveAlreadyClaimed
+                | persistence::PersistenceError::VersionConflict { .. },
+            ) => return Err(OrchestrationError::RunDriveUnavailable),
+            Err(error) => return Err(error.into()),
+        }
+        drop(drive_claim_guard);
+
+        match self.drive_claimed_run_to_approval(&repository, &changeset, &worktree, &mut run) {
             Ok(started) => Ok(started),
             Err(error) => {
+                let interrupted = matches!(
+                    self.store.run(run.id),
+                    Ok(Some(current)) if current.state() == RunState::Interrupted
+                );
                 self.compensate_failed_start(&mut changeset, &repository, &mut worktree, run.id)?;
-                Err(error)
+                if interrupted {
+                    Err(OrchestrationError::RunInterruptedDuringExecution)
+                } else {
+                    Err(error)
+                }
             }
         }
     }
@@ -440,50 +509,58 @@ impl<P: AgentProvider> LocalOrchestrator<P> {
     }
 
     pub fn interrupt_run(&self, run_id: Id) -> Result<Run, OrchestrationError> {
-        let _transition_guard = self
+        let transition_guard = self
             .supervision_transition_gate
             .lock()
             .map_err(|_| OrchestrationError::SupervisionStateUnavailable)?;
         let mut run = self.run(run_id)?;
-        if run.state() == RunState::Interrupted {
-            self.release_run_lease(run.changeset_id(), run.id)?;
-            return Ok(run);
-        }
-
-        if let Some(record) = self.store.latest_process_supervision_for_run(run_id)?
-            && record.metadata.state != SupervisionState::Terminated
-        {
-            let termination = self
-                .supervisor
-                .terminate(&record.metadata)
-                .map_err(OrchestrationError::Execution)?;
-            if !matches!(
-                termination.status,
-                TerminationStatus::Terminated | TerminationStatus::AlreadyExited
-            ) {
-                return Err(OrchestrationError::ProcessTerminationUnverified);
+        let cleanup_pre_drive_worktree = if run.state() == RunState::Interrupted {
+            !self.run_provider_drive_started(run.id)?
+        } else {
+            let interrupted_before_drive = run.state() == RunState::Starting;
+            if let Some(record) = self.store.latest_process_supervision_for_run(run_id)?
+                && record.metadata.state != SupervisionState::Terminated
+            {
+                let termination = self
+                    .supervisor
+                    .terminate(&record.metadata)
+                    .map_err(OrchestrationError::Execution)?;
+                if !matches!(
+                    termination.status,
+                    TerminationStatus::Terminated | TerminationStatus::AlreadyExited
+                ) {
+                    return Err(OrchestrationError::ProcessTerminationUnverified);
+                }
+                let mut terminated_metadata = record.metadata;
+                terminated_metadata.state = SupervisionState::Terminated;
+                terminated_metadata.termination_reason = Some(TerminationReason::Requested);
+                self.store.mark_process_supervision_terminated(
+                    run_id,
+                    &terminated_metadata,
+                    current_unix_ms(),
+                )?;
             }
-            let mut terminated_metadata = record.metadata;
-            terminated_metadata.state = SupervisionState::Terminated;
-            terminated_metadata.termination_reason = Some(TerminationReason::Requested);
-            self.store.mark_process_supervision_terminated(
-                run_id,
-                &terminated_metadata,
-                current_unix_ms(),
-            )?;
-        }
 
-        run.interrupt()?;
-        self.store.persist_run_transition(
-            &run,
-            SemanticEventKind::Lifecycle {
-                state: RunState::Interrupted,
-            },
-        )?;
+            run.interrupt()?;
+            self.store.persist_run_transition(
+                &run,
+                SemanticEventKind::Lifecycle {
+                    state: RunState::Interrupted,
+                },
+            )?;
+            interrupted_before_drive
+        };
+        drop(transition_guard);
+
+        let delete_proposal = self.store.delete_proposed_change_for_run(run.id);
         let recover_changeset = self.mark_changeset_recoverable(run.changeset_id());
         let release_lease = self.release_run_lease(run.changeset_id(), run.id);
+        delete_proposal?;
         recover_changeset?;
         release_lease?;
+        if cleanup_pre_drive_worktree {
+            self.cleanup_interrupted_pre_drive_worktree(run.changeset_id())?;
+        }
         Ok(run)
     }
 
@@ -1236,29 +1313,15 @@ impl<P: AgentProvider> LocalOrchestrator<P> {
             .action)
     }
 
-    fn prepare_approval(
+    fn drive_claimed_run_to_approval(
         &self,
         repository: &Repository,
         changeset: &Changeset,
         worktree: &Worktree,
         run: &mut Run,
     ) -> Result<RunStarted, OrchestrationError> {
-        self.store.persist_run_transition(
-            run,
-            SemanticEventKind::Lifecycle {
-                state: RunState::Starting,
-            },
-        )?;
-        run.running()?;
-        self.store.persist_run_transition(
-            run,
-            SemanticEventKind::Lifecycle {
-                state: RunState::Running,
-            },
-        )?;
-
         let process_result = self.execute_provider_process(run.id, worktree)?;
-        if self.run(run.id)?.state() == RunState::Interrupted {
+        if self.run(run.id)?.state() != RunState::Running {
             return Err(OrchestrationError::RunInterruptedDuringExecution);
         }
 
@@ -1273,7 +1336,7 @@ impl<P: AgentProvider> LocalOrchestrator<P> {
             ));
         }
         self.store.save_proposed_change(
-            run.id,
+            run,
             &proposed_change.proposal,
             &proposed_change.content,
         )?;
@@ -1340,7 +1403,15 @@ impl<P: AgentProvider> LocalOrchestrator<P> {
         run_id: Id,
         worktree: &Worktree,
     ) -> Result<Option<ProcessResult>, OrchestrationError> {
+        let preparation_guard = self
+            .supervision_transition_gate
+            .lock()
+            .map_err(|_| OrchestrationError::SupervisionStateUnavailable)?;
+        if self.run(run_id)?.state() != RunState::Running {
+            return Err(OrchestrationError::RunInterruptedDuringExecution);
+        }
         let Some(mut spec) = self.provider.process_spec(&worktree.path) else {
+            drop(preparation_guard);
             return Ok(None);
         };
         self.bind_process_to_worktree(&mut spec, worktree)?;
@@ -1351,10 +1422,6 @@ impl<P: AgentProvider> LocalOrchestrator<P> {
             .filter(|value| !value.is_empty())
             .map(|value| value.as_bytes().to_vec())
             .collect::<Vec<_>>();
-        let preparation_guard = self
-            .supervision_transition_gate
-            .lock()
-            .map_err(|_| OrchestrationError::SupervisionStateUnavailable)?;
 
         let (prepared, prepared_metadata) = self
             .supervisor
@@ -1495,15 +1562,41 @@ impl<P: AgentProvider> LocalOrchestrator<P> {
         worktree: &mut Worktree,
         run_id: Id,
     ) -> Result<(), OrchestrationError> {
+        let delete_proposal = self.store.delete_proposed_change_for_run(run_id);
         let fail_run = self.fail_active_run(run_id);
         let recover_changeset = self.mark_changeset_recoverable(changeset.id);
         let release_lease = self.release_run_lease(changeset.id, run_id);
         let cleanup_worktree = self.cleanup_setup_worktree(repository, worktree);
 
+        delete_proposal?;
         fail_run?;
         recover_changeset?;
         release_lease?;
         cleanup_worktree
+    }
+
+    fn run_provider_drive_started(&self, run_id: Id) -> Result<bool, OrchestrationError> {
+        Ok(self.store.events(run_id)?.iter().any(|event| {
+            matches!(
+                event.event,
+                SemanticEventKind::Lifecycle {
+                    state: RunState::Running
+                }
+            )
+        }))
+    }
+
+    fn cleanup_interrupted_pre_drive_worktree(
+        &self,
+        changeset_id: Id,
+    ) -> Result<(), OrchestrationError> {
+        let changeset = self.changeset(changeset_id)?;
+        let repository = self.repository(changeset.repository_id())?;
+        let mut worktree = self.worktree(changeset.id)?;
+        if worktree.state() == WorktreeState::Removed {
+            return Ok(());
+        }
+        self.cleanup_setup_worktree(&repository, &mut worktree)
     }
 
     fn cleanup_setup_worktree(
@@ -1839,6 +1932,8 @@ pub enum OrchestrationError {
     ProcessTerminationUnverified,
     #[error("run was interrupted while provider execution was active")]
     RunInterruptedDuringExecution,
+    #[error("run is not available for provider execution")]
+    RunDriveUnavailable,
     #[error("process supervision state is unavailable")]
     SupervisionStateUnavailable,
     #[error("the run's mutation lease is missing or owned by another fencing epoch")]
