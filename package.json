@@ -41,7 +41,7 @@
     "@tiptap/extension-link": "^2.22.3",
     "@tiptap/extension-placeholder": "^2.22.3",
     "@tiptap/pm": "^2.22.3",
-    "@tiptap/starter-kit": "^2.22.3",
+    "@tiptap/starter-kit": "^3.28.0",
     "tiptap-markdown": "^0.8.10"
   }
 }
