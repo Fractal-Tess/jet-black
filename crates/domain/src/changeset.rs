@@ -120,6 +120,9 @@ impl Changeset {
     }
 
     pub fn mark_divergent(&mut self, head_sha: String) -> Result<(), DomainError> {
+        if !is_valid_object_id(&head_sha) {
+            return Err(DomainError::InvalidCommitSha);
+        }
         self.transition(ChangesetState::Divergent)?;
         self.head_sha = head_sha;
         Ok(())

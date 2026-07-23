@@ -1,9 +1,15 @@
-use domain::{Changeset, Finding, RelativePath, Repository, Run, RunState, limits};
+use domain::{
+    Changeset, ChangesetMutationKind, ChangesetMutationScope, Checkpoint, Finding, RelativePath,
+    Repository, Run, RunState, Worktree, WorktreeState, limits,
+};
 use execution::{
     ExecutableIdentity, ProcessGroupIdentity, ProcessStartIdentity, SupervisionMetadata,
     SupervisionState, TerminationReason,
 };
-use persistence::{MutationLease, PersistenceError, SqliteStore};
+use persistence::{
+    ChangesetFinalizationResult, ChangesetFinalizationState, MutationLease, PersistenceError,
+    SqliteStore,
+};
 use protocol::{OrderedRunEvent, RecoveryAction, SemanticEventKind};
 use rusqlite::{Connection, params};
 use std::time::Duration;
@@ -59,6 +65,73 @@ fn seed_changeset(store: &SqliteStore, changeset_id: uuid::Uuid) {
     let mut changeset = Changeset::new(repository.id, "base".into());
     changeset.id = changeset_id;
     store.save_changeset(&changeset).unwrap();
+}
+
+struct FinalizationFixture {
+    changeset: Changeset,
+    worktree: Worktree,
+    scope: ChangesetMutationScope,
+}
+
+fn seed_finalization_fixture(
+    store: &SqliteStore,
+    kind: ChangesetMutationKind,
+) -> FinalizationFixture {
+    let base_sha = "a".repeat(40);
+    let head_sha = base_sha.clone();
+    let repository = Repository {
+        id: uuid::Uuid::new_v4(),
+        filesystem_identity: "fixture".into(),
+        git_directory_identity: "git-fixture".into(),
+        canonical_path: "/fixture".into(),
+        identity: "fixture".into(),
+        primary_remote: None,
+        default_branch: "main".into(),
+        base_sha: base_sha.clone(),
+        version: 0,
+    };
+    store.save_repository(&repository).unwrap();
+    let mut changeset = Changeset::new(repository.id, base_sha.clone());
+    store.save_changeset(&changeset).unwrap();
+    changeset.activate().unwrap();
+    store.persist_changeset_transition(&changeset).unwrap();
+    changeset.mark_reviewable(head_sha.clone()).unwrap();
+    store.persist_changeset_transition(&changeset).unwrap();
+
+    let run = Run::new(changeset.id);
+    store.save_run(&run).unwrap();
+    let checkpoint = Checkpoint {
+        id: uuid::Uuid::new_v4(),
+        run_id: run.id,
+        base_sha: base_sha.clone(),
+        head_sha: head_sha.clone(),
+        diff: "fixture diff".to_owned(),
+    };
+    store.save_checkpoint(&checkpoint).unwrap();
+    let mut worktree = Worktree::creating(
+        uuid::Uuid::new_v4(),
+        changeset.id,
+        "/fixture-worktree".into(),
+        "worktree-fixture".to_owned(),
+        base_sha.clone(),
+    );
+    worktree.ready().unwrap();
+    store.save_worktree(&worktree).unwrap();
+    let scope = ChangesetMutationScope {
+        kind,
+        repository_id: repository.id,
+        changeset_id: changeset.id,
+        checkpoint_id: checkpoint.id,
+        expected_version: changeset.version(),
+        base_sha,
+        expected_head_sha: head_sha,
+        manifest_sha256: "d".repeat(64),
+    };
+    FinalizationFixture {
+        changeset,
+        worktree,
+        scope,
+    }
 }
 
 #[test]
@@ -434,6 +507,14 @@ fn adopts_user_version_zero_schema_and_preserves_existing_versions() {
     changeset.activate().unwrap();
     let mut run = Run::new(changeset.id);
     run.start().unwrap();
+    let mut worktree = Worktree::creating(
+        uuid::Uuid::new_v4(),
+        changeset.id,
+        "/legacy-worktree".into(),
+        "legacy-worktree".to_owned(),
+        "base".to_owned(),
+    );
+    worktree.ready().unwrap();
 
     let connection = Connection::open(&path).unwrap();
     connection
@@ -486,6 +567,16 @@ fn adopts_user_version_zero_schema_and_preserves_existing_versions() {
             ],
         )
         .unwrap();
+    connection
+        .execute(
+            "INSERT INTO worktrees (id, changeset_id, body) VALUES (?1, ?2, ?3)",
+            params![
+                worktree.id.to_string(),
+                changeset.id.to_string(),
+                serde_json::to_string(&worktree).unwrap()
+            ],
+        )
+        .unwrap();
     drop(connection);
 
     let store = SqliteStore::open(&path).unwrap();
@@ -494,6 +585,10 @@ fn adopts_user_version_zero_schema_and_preserves_existing_versions() {
         Some(changeset.clone())
     );
     assert_eq!(store.run(run.id).unwrap(), Some(run.clone()));
+    assert_eq!(
+        store.worktree_for_changeset(changeset.id).unwrap(),
+        Some(worktree.clone())
+    );
 
     let connection = Connection::open(&path).unwrap();
     let user_version: u32 = connection
@@ -513,9 +608,21 @@ fn adopts_user_version_zero_schema_and_preserves_existing_versions() {
             |row| row.get(0),
         )
         .unwrap();
-    assert_eq!(user_version, 4);
+    let (worktree_state, worktree_version): (String, u64) = connection
+        .query_row(
+            "SELECT state, version FROM worktrees WHERE id = ?1",
+            [worktree.id.to_string()],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .unwrap();
+    assert_eq!(user_version, 5);
     assert_eq!(changeset_version, changeset.version());
     assert_eq!(run_version, run.version());
+    assert_eq!(
+        worktree_state,
+        serde_json::to_string(&worktree.state()).unwrap()
+    );
+    assert_eq!(worktree_version, worktree.version());
 }
 
 #[test]
@@ -525,7 +632,12 @@ fn version_four_quarantines_legacy_artifact_rows() {
     let connection = Connection::open(&path).unwrap();
     connection
         .execute_batch(
-            "CREATE TABLE artifacts (
+            "CREATE TABLE worktrees (
+                id TEXT PRIMARY KEY,
+                changeset_id TEXT NOT NULL,
+                body TEXT NOT NULL
+            );
+            CREATE TABLE artifacts (
                 id TEXT PRIMARY KEY,
                 changeset_id TEXT NOT NULL,
                 run_id TEXT,
@@ -557,7 +669,7 @@ fn version_four_quarantines_legacy_artifact_rows() {
     assert_eq!(stored_bytes, 0);
     assert_eq!(updated_at, 42);
     assert_eq!(expires_at, None);
-    assert_eq!(user_version, 4);
+    assert_eq!(user_version, 5);
 }
 
 #[test]
@@ -572,7 +684,7 @@ fn rejects_schema_versions_newer_than_the_runtime() {
         SqliteStore::open(&path),
         Err(PersistenceError::UnsupportedSchemaVersion {
             database: 999,
-            runtime: 4
+            runtime: 5
         })
     ));
 }
@@ -646,6 +758,87 @@ fn stale_changeset_writer_gets_version_conflict() {
             ..
         })
     ));
+}
+
+#[test]
+fn stale_worktree_writer_gets_version_conflict() {
+    let directory = tempdir().unwrap();
+    let store = SqliteStore::open(directory.path().join("stale-worktree.sqlite3")).unwrap();
+    let changeset_id = uuid::Uuid::new_v4();
+    seed_changeset(&store, changeset_id);
+    let worktree = Worktree::creating(
+        uuid::Uuid::new_v4(),
+        changeset_id,
+        "/worktree".into(),
+        "fixture".to_owned(),
+        "base".to_owned(),
+    );
+    store.save_worktree(&worktree).unwrap();
+    let mut first = worktree.clone();
+    let mut stale = worktree;
+    first.ready().unwrap();
+    stale.fail().unwrap();
+
+    store.update_worktree(&first).unwrap();
+    assert!(matches!(
+        store.update_worktree(&stale),
+        Err(PersistenceError::VersionConflict {
+            aggregate: "worktree",
+            expected: 0,
+            actual: 1,
+            ..
+        })
+    ));
+}
+
+#[test]
+fn worktree_replay_is_a_noop_and_removal_records_both_transitions() {
+    let directory = tempdir().unwrap();
+    let path = directory.path().join("worktree-events.sqlite3");
+    let store = SqliteStore::open(&path).unwrap();
+    let changeset_id = uuid::Uuid::new_v4();
+    seed_changeset(&store, changeset_id);
+    let mut worktree = Worktree::creating(
+        uuid::Uuid::new_v4(),
+        changeset_id,
+        "/worktree".into(),
+        "fixture".to_owned(),
+        "base".to_owned(),
+    );
+    worktree.ready().unwrap();
+    store.save_worktree(&worktree).unwrap();
+    store.update_worktree(&worktree).unwrap();
+
+    let mut altered = worktree.clone();
+    altered.path = "/different-worktree".into();
+    assert!(matches!(
+        store.update_worktree(&altered),
+        Err(PersistenceError::InvalidPersistedTransition("worktree"))
+    ));
+
+    worktree.begin_removal().unwrap();
+    worktree.removed().unwrap();
+    store.update_worktree(&worktree).unwrap();
+    let connection = Connection::open(path).unwrap();
+    let mut statement = connection
+        .prepare(
+            "SELECT body FROM aggregate_events
+             WHERE aggregate_kind = 'worktree' AND aggregate_id = ?1
+             ORDER BY sequence",
+        )
+        .unwrap();
+    let events = statement
+        .query_map([worktree.id.to_string()], |row| row.get::<_, String>(0))
+        .unwrap()
+        .collect::<Result<Vec<_>, _>>()
+        .unwrap();
+    assert_eq!(
+        events,
+        vec![
+            "{\"state\":\"removing\"}".to_owned(),
+            "{\"state\":\"removed\"}".to_owned(),
+        ]
+    );
 }
 
 fn seed_lease_runs(store: &SqliteStore) -> (uuid::Uuid, Run, Run) {
@@ -937,4 +1130,261 @@ fn finding_batches_are_atomic_and_bounded() {
             .unwrap()
             .is_empty()
     );
+}
+
+#[test]
+fn finalization_preparation_is_exact_replay_safe_and_ordered() {
+    let directory = tempdir().unwrap();
+    let store = SqliteStore::open(directory.path().join("finalization-prepare.sqlite3")).unwrap();
+    let first = seed_finalization_fixture(&store, ChangesetMutationKind::Commit);
+    let first_digest = first.scope.digest();
+    let prepared = store
+        .prepare_changeset_finalization(
+            &first_digest,
+            &first.scope,
+            first.worktree.id,
+            first.worktree.version(),
+            20,
+        )
+        .unwrap();
+    assert_eq!(prepared.state, ChangesetFinalizationState::Prepared);
+    assert_eq!(
+        store
+            .prepare_changeset_finalization(
+                &first_digest,
+                &first.scope,
+                first.worktree.id,
+                first.worktree.version(),
+                99,
+            )
+            .unwrap(),
+        prepared
+    );
+    assert!(matches!(
+        store.prepare_changeset_finalization(
+            "wrong",
+            &first.scope,
+            first.worktree.id,
+            first.worktree.version(),
+            30,
+        ),
+        Err(PersistenceError::FinalizationDigestMismatch)
+    ));
+    let mut conflicting_scope = first.scope.clone();
+    conflicting_scope.manifest_sha256 = "e".repeat(64);
+    assert!(matches!(
+        store.prepare_changeset_finalization(
+            &conflicting_scope.digest(),
+            &conflicting_scope,
+            first.worktree.id,
+            first.worktree.version(),
+            30,
+        ),
+        Err(PersistenceError::FinalizationConflict)
+    ));
+
+    let second = seed_finalization_fixture(&store, ChangesetMutationKind::Discard);
+    store
+        .prepare_changeset_finalization(
+            &second.scope.digest(),
+            &second.scope,
+            second.worktree.id,
+            second.worktree.version(),
+            10,
+        )
+        .unwrap();
+    let prepared = store.prepared_changeset_finalizations().unwrap();
+    assert_eq!(prepared.len(), 2);
+    assert_eq!(prepared[0].scope.changeset_id, second.changeset.id);
+    assert_eq!(prepared[1].scope.changeset_id, first.changeset.id);
+}
+
+#[test]
+fn prepared_finalization_recovery_detects_scalar_status_corruption() {
+    let directory = tempdir().unwrap();
+    let path = directory.path().join("finalization-corrupt-status.sqlite3");
+    let store = SqliteStore::open(&path).unwrap();
+    let fixture = seed_finalization_fixture(&store, ChangesetMutationKind::Commit);
+    let digest = fixture.scope.digest();
+    store
+        .prepare_changeset_finalization(
+            &digest,
+            &fixture.scope,
+            fixture.worktree.id,
+            fixture.worktree.version(),
+            10,
+        )
+        .unwrap();
+    Connection::open(path)
+        .unwrap()
+        .execute(
+            "UPDATE changeset_finalizations SET status = ?2 WHERE confirmation_digest = ?1",
+            params![digest, "\"completed\""],
+        )
+        .unwrap();
+
+    assert!(matches!(
+        store.prepared_changeset_finalizations(),
+        Err(PersistenceError::CorruptFinalization)
+    ));
+}
+
+#[test]
+fn commit_finalization_updates_all_records_atomically_and_replays() {
+    let directory = tempdir().unwrap();
+    let store = SqliteStore::open(directory.path().join("finalization-commit.sqlite3")).unwrap();
+    let fixture = seed_finalization_fixture(&store, ChangesetMutationKind::Commit);
+    let digest = fixture.scope.digest();
+    store
+        .prepare_changeset_finalization(
+            &digest,
+            &fixture.scope,
+            fixture.worktree.id,
+            fixture.worktree.version(),
+            10,
+        )
+        .unwrap();
+    assert!(matches!(
+        store.complete_changeset_finalization(&digest, ChangesetFinalizationResult::Discard, 20,),
+        Err(PersistenceError::FinalizationKindMismatch)
+    ));
+
+    let result = ChangesetFinalizationResult::Commit {
+        resulting_head_sha: "b".repeat(40),
+        app_ref: format!("refs/jet-black/changesets/{}", fixture.changeset.id),
+    };
+    assert!(matches!(
+        store.complete_changeset_finalization(
+            &digest,
+            ChangesetFinalizationResult::Commit {
+                resulting_head_sha: "b".repeat(40),
+                app_ref: "refs/jet-black/changesets/wrong".to_owned(),
+            },
+            30,
+        ),
+        Err(PersistenceError::InvalidFinalizationInput("commit result"))
+    ));
+    let completed = store
+        .complete_changeset_finalization(&digest, result.clone(), 30)
+        .unwrap();
+    assert_eq!(
+        completed.finalization.state,
+        ChangesetFinalizationState::Completed
+    );
+    assert_eq!(completed.finalization.result, Some(result.clone()));
+    assert_eq!(
+        completed.changeset.state(),
+        domain::ChangesetState::Committed
+    );
+    assert_eq!(completed.changeset.head_sha(), "b".repeat(40));
+    assert_eq!(completed.worktree.state(), WorktreeState::Removed);
+    assert_eq!(
+        store
+            .complete_changeset_finalization(&digest, result, 40)
+            .unwrap(),
+        completed
+    );
+    assert_eq!(
+        store
+            .prepare_changeset_finalization(
+                &digest,
+                &fixture.scope,
+                fixture.worktree.id,
+                fixture.worktree.version(),
+                50,
+            )
+            .unwrap(),
+        completed.finalization
+    );
+    assert_eq!(
+        store.changeset(fixture.changeset.id).unwrap(),
+        Some(completed.changeset)
+    );
+    assert_eq!(
+        store.worktree_for_changeset(fixture.changeset.id).unwrap(),
+        Some(completed.worktree)
+    );
+}
+
+#[test]
+fn discard_and_divergent_finalizations_persist_terminal_aggregate_states() {
+    let directory = tempdir().unwrap();
+    let store = SqliteStore::open(directory.path().join("finalization-terminal.sqlite3")).unwrap();
+    let discard = seed_finalization_fixture(&store, ChangesetMutationKind::Discard);
+    let discard_digest = discard.scope.digest();
+    store
+        .prepare_changeset_finalization(
+            &discard_digest,
+            &discard.scope,
+            discard.worktree.id,
+            discard.worktree.version(),
+            10,
+        )
+        .unwrap();
+    let discarded = store
+        .complete_changeset_finalization(&discard_digest, ChangesetFinalizationResult::Discard, 20)
+        .unwrap();
+    assert_eq!(
+        discarded.changeset.state(),
+        domain::ChangesetState::Discarded
+    );
+    assert_eq!(discarded.worktree.state(), WorktreeState::Removed);
+
+    let divergent = seed_finalization_fixture(&store, ChangesetMutationKind::Commit);
+    let divergent_digest = divergent.scope.digest();
+    store
+        .prepare_changeset_finalization(
+            &divergent_digest,
+            &divergent.scope,
+            divergent.worktree.id,
+            divergent.worktree.version(),
+            30,
+        )
+        .unwrap();
+    let detail = "application ref points to a different commit".to_owned();
+    assert!(matches!(
+        store.mark_changeset_finalization_divergent(
+            &divergent_digest,
+            "not-a-sha".to_owned(),
+            detail.clone(),
+            40,
+        ),
+        Err(PersistenceError::InvalidFinalizationInput(
+            "observed head sha"
+        ))
+    ));
+    let marked = store
+        .mark_changeset_finalization_divergent(
+            &divergent_digest,
+            "c".repeat(40),
+            detail.clone(),
+            40,
+        )
+        .unwrap();
+    assert_eq!(
+        marked.finalization.state,
+        ChangesetFinalizationState::Divergent
+    );
+    assert_eq!(marked.changeset.state(), domain::ChangesetState::Divergent);
+    assert_eq!(marked.changeset.head_sha(), "c".repeat(40));
+    assert_eq!(marked.worktree.state(), WorktreeState::Quarantined);
+    assert_eq!(
+        store
+            .mark_changeset_finalization_divergent(
+                &divergent_digest,
+                "c".repeat(40),
+                detail.clone(),
+                50,
+            )
+            .unwrap(),
+        marked
+    );
+
+    let mut resolved = marked.changeset.clone();
+    resolved.discard().unwrap();
+    store.persist_changeset_transition(&resolved).unwrap();
+    assert!(matches!(
+        store.mark_changeset_finalization_divergent(&divergent_digest, "c".repeat(40), detail, 60,),
+        Err(PersistenceError::FinalizationConflict)
+    ));
 }

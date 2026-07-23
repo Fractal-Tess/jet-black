@@ -6,8 +6,9 @@ pub use artifacts::{
 };
 
 use domain::{
-    ActionProposal, Approval, ApprovalScope, ApprovedAction, Changeset, ChangesetState, Checkpoint,
-    Finding, Repository, Run, RunState, Worktree,
+    ActionProposal, Approval, ApprovalScope, ApprovedAction, Changeset, ChangesetMutationKind,
+    ChangesetMutationScope, ChangesetState, Checkpoint, Finding, Repository, Run, RunState,
+    Worktree, WorktreeState,
 };
 use execution::{SupervisionMetadata, SupervisionState};
 use fs2::FileExt;
@@ -23,7 +24,7 @@ use std::{
 use thiserror::Error;
 use uuid::Uuid;
 
-const CURRENT_SCHEMA_VERSION: u32 = 4;
+const CURRENT_SCHEMA_VERSION: u32 = 5;
 
 #[derive(Debug, Clone)]
 pub struct SqliteStore {
@@ -39,6 +40,45 @@ pub struct StoredRunSnapshot {
     pub checkpoint: Option<Checkpoint>,
     pub findings: Vec<Finding>,
     pub events: Vec<OrderedRunEvent>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ChangesetFinalizationState {
+    Prepared,
+    Completed,
+    Divergent,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum ChangesetFinalizationResult {
+    Commit {
+        resulting_head_sha: String,
+        app_ref: String,
+    },
+    Discard,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ChangesetFinalization {
+    pub confirmation_digest: String,
+    pub scope: ChangesetMutationScope,
+    pub worktree_id: Uuid,
+    pub expected_worktree_version: u64,
+    pub state: ChangesetFinalizationState,
+    pub result: Option<ChangesetFinalizationResult>,
+    pub divergence_detail: Option<String>,
+    pub version: u64,
+    pub created_at_unix_ms: i64,
+    pub updated_at_unix_ms: i64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CompletedChangesetFinalization {
+    pub finalization: ChangesetFinalization,
+    pub changeset: Changeset,
+    pub worktree: Worktree,
 }
 
 pub struct RecoveryLock {
@@ -199,10 +239,12 @@ impl SqliteStore {
     pub fn save_worktree(&self, worktree: &Worktree) -> Result<(), PersistenceError> {
         self.with_connection(|connection| {
             connection.execute(
-                "INSERT INTO worktrees (id, changeset_id, body) VALUES (?1, ?2, ?3)",
+                "INSERT INTO worktrees (id, changeset_id, state, version, body) VALUES (?1, ?2, ?3, ?4, ?5)",
                 params![
                     worktree.id.to_string(),
                     worktree.changeset_id().to_string(),
+                    state_json(&worktree.state())?,
+                    worktree.version(),
                     encode(worktree)?
                 ],
             )?;
@@ -214,21 +256,34 @@ impl SqliteStore {
         &self,
         changeset_id: Uuid,
     ) -> Result<Option<Worktree>, PersistenceError> {
-        self.with_connection(|connection| {
-            let body = connection.query_row("SELECT body FROM worktrees WHERE changeset_id = ?1 ORDER BY rowid DESC LIMIT 1", [changeset_id.to_string()], |row| row.get::<_, String>(0)).optional()?;
-            body.map(|value| decode(&value)).transpose()
-        })
+        self.with_connection(|connection| load_latest_worktree(connection, changeset_id))
     }
 
     pub fn update_worktree(&self, worktree: &Worktree) -> Result<(), PersistenceError> {
         self.with_connection(|connection| {
-            let changed = connection.execute(
-                "UPDATE worktrees SET body = ?2 WHERE id = ?1",
-                params![worktree.id.to_string(), encode(worktree)?],
-            )?;
-            if changed != 1 {
-                return Err(PersistenceError::NotFound("worktree"));
+            let transaction =
+                connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+            let (stored, stored_version) = load_worktree(&transaction, worktree.id)?;
+            if stored == *worktree {
+                return Ok(());
             }
+            validate_worktree_transition(&stored, worktree)?;
+            if worktree.version() == stored_version.saturating_add(2) {
+                let mut removing = stored;
+                removing.begin_removal()?;
+                update_worktree(&transaction, &removing, stored_version)?;
+                append_aggregate_event(&transaction, "worktree", removing.id, "removing")?;
+                update_worktree(&transaction, worktree, removing.version())?;
+            } else {
+                update_worktree(&transaction, worktree, stored_version)?;
+            }
+            append_aggregate_event(
+                &transaction,
+                "worktree",
+                worktree.id,
+                &format!("{:?}", worktree.state()).to_lowercase(),
+            )?;
+            transaction.commit()?;
             Ok(())
         })
     }
@@ -714,6 +769,292 @@ impl SqliteStore {
         self.with_connection(|connection| {
             let body = connection.query_row("SELECT checkpoints.body FROM checkpoints JOIN runs ON runs.id = checkpoints.owner WHERE runs.changeset_id = ?1 ORDER BY checkpoints.rowid DESC LIMIT 1", [changeset_id.to_string()], |row| row.get::<_, String>(0)).optional()?;
             body.map(|value| decode(&value)).transpose()
+        })
+    }
+
+    pub fn prepare_changeset_finalization(
+        &self,
+        confirmation_digest: &str,
+        scope: &ChangesetMutationScope,
+        worktree_id: Uuid,
+        expected_worktree_version: u64,
+        now_unix_ms: i64,
+    ) -> Result<ChangesetFinalization, PersistenceError> {
+        if !is_sha256_digest(confirmation_digest) || confirmation_digest != scope.digest() {
+            return Err(PersistenceError::FinalizationDigestMismatch);
+        }
+        validate_finalization_scope(scope)?;
+        self.with_connection(|connection| {
+            let transaction =
+                connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+            if let Some(stored) =
+                load_changeset_finalization_for_changeset(&transaction, scope.changeset_id)?
+            {
+                return if finalization_matches_request(
+                    &stored,
+                    confirmation_digest,
+                    scope,
+                    worktree_id,
+                    expected_worktree_version,
+                ) {
+                    Ok(stored)
+                } else {
+                    Err(PersistenceError::FinalizationConflict)
+                };
+            }
+
+            let (changeset, stored_changeset_version) =
+                load_changeset(&transaction, scope.changeset_id)?;
+            let (worktree, stored_worktree_version) = load_worktree(&transaction, worktree_id)?;
+            let checkpoint = load_checkpoint_for_changeset(
+                &transaction,
+                scope.checkpoint_id,
+                scope.changeset_id,
+            )?;
+            if stored_changeset_version != scope.expected_version {
+                return Err(PersistenceError::VersionConflict {
+                    aggregate: "changeset",
+                    id: changeset.id,
+                    expected: scope.expected_version,
+                    actual: stored_changeset_version,
+                });
+            }
+            if stored_worktree_version != expected_worktree_version {
+                return Err(PersistenceError::VersionConflict {
+                    aggregate: "worktree",
+                    id: worktree.id,
+                    expected: expected_worktree_version,
+                    actual: stored_worktree_version,
+                });
+            }
+            if changeset.repository_id() != scope.repository_id
+                || changeset.state() != ChangesetState::Reviewable
+                || changeset.base_sha() != scope.base_sha
+                || changeset.head_sha() != scope.expected_head_sha
+                || worktree.changeset_id() != scope.changeset_id
+                || worktree.state() != WorktreeState::Ready
+                || worktree.base_sha != scope.base_sha
+                || checkpoint.base_sha != scope.base_sha
+                || checkpoint.head_sha != scope.expected_head_sha
+            {
+                return Err(PersistenceError::InvalidPersistedTransition(
+                    "changeset finalization preparation",
+                ));
+            }
+
+            let finalization = prepared_finalization(
+                confirmation_digest,
+                scope,
+                worktree_id,
+                expected_worktree_version,
+                now_unix_ms,
+            );
+            insert_changeset_finalization(&transaction, &finalization)?;
+            transaction.commit()?;
+            Ok(finalization)
+        })
+    }
+
+    pub fn changeset_finalization(
+        &self,
+        confirmation_digest: &str,
+    ) -> Result<Option<ChangesetFinalization>, PersistenceError> {
+        self.with_connection(|connection| {
+            load_changeset_finalization(connection, confirmation_digest)
+        })
+    }
+
+    pub fn prepared_changeset_finalizations(
+        &self,
+    ) -> Result<Vec<ChangesetFinalization>, PersistenceError> {
+        self.with_connection(|connection| {
+            let mut statement = connection.prepare(
+                "SELECT confirmation_digest, changeset_id, repository_id, checkpoint_id, worktree_id, kind, status, version, created_at_unix_ms, updated_at_unix_ms, body
+                 FROM changeset_finalizations
+                 WHERE status = ?1 OR json_extract(body, '$.state') = ?2
+                 ORDER BY created_at_unix_ms, rowid
+                 LIMIT ?3",
+            )?;
+            let rows = statement.query_map(
+                params![
+                    state_json(&ChangesetFinalizationState::Prepared)?,
+                    "prepared",
+                    domain::limits::MAX_RECOVERY_ACTIONS as i64,
+                ],
+                changeset_finalization_row,
+            )?;
+            rows.map(|row| validate_changeset_finalization(row?)).collect()
+        })
+    }
+
+    pub fn complete_changeset_finalization(
+        &self,
+        confirmation_digest: &str,
+        result: ChangesetFinalizationResult,
+        now_unix_ms: i64,
+    ) -> Result<CompletedChangesetFinalization, PersistenceError> {
+        self.with_connection(|connection| {
+            let transaction =
+                connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+            let mut finalization = load_changeset_finalization(&transaction, confirmation_digest)?
+                .ok_or(PersistenceError::NotFound("changeset finalization"))?;
+            if finalization.state == ChangesetFinalizationState::Completed {
+                if finalization.result.as_ref() != Some(&result) {
+                    return Err(PersistenceError::FinalizationConflict);
+                }
+                let (changeset, changeset_version) =
+                    load_changeset(&transaction, finalization.scope.changeset_id)?;
+                let (worktree, worktree_version) =
+                    load_worktree(&transaction, finalization.worktree_id)?;
+                validate_completed_finalization_replay(
+                    &finalization,
+                    &changeset,
+                    changeset_version,
+                    &worktree,
+                    worktree_version,
+                )?;
+                return Ok(CompletedChangesetFinalization {
+                    finalization,
+                    changeset,
+                    worktree,
+                });
+            }
+            if finalization.state != ChangesetFinalizationState::Prepared {
+                return Err(PersistenceError::FinalizationConflict);
+            }
+            validate_finalization_result(&finalization.scope, &result)?;
+
+            let (mut changeset, stored_changeset_version) =
+                load_changeset(&transaction, finalization.scope.changeset_id)?;
+            let (mut worktree, stored_worktree_version) =
+                load_worktree(&transaction, finalization.worktree_id)?;
+            validate_prepared_finalization_aggregates(
+                &finalization,
+                &changeset,
+                stored_changeset_version,
+                &worktree,
+                stored_worktree_version,
+            )?;
+            if now_unix_ms < finalization.created_at_unix_ms {
+                return Err(PersistenceError::InvalidFinalizationInput("timestamp"));
+            }
+
+            match &result {
+                ChangesetFinalizationResult::Commit {
+                    resulting_head_sha, ..
+                } => changeset.commit(resulting_head_sha.clone())?,
+                ChangesetFinalizationResult::Discard => changeset.discard()?,
+            }
+            worktree.begin_removal()?;
+            update_changeset(&transaction, &changeset, stored_changeset_version)?;
+            update_worktree(&transaction, &worktree, stored_worktree_version)?;
+            append_aggregate_event(
+                &transaction,
+                "changeset",
+                changeset.id,
+                &format!("{:?}", changeset.state()).to_lowercase(),
+            )?;
+            append_aggregate_event(&transaction, "worktree", worktree.id, "removing")?;
+            let removing_version = worktree.version();
+            worktree.removed()?;
+            update_worktree(&transaction, &worktree, removing_version)?;
+            append_aggregate_event(&transaction, "worktree", worktree.id, "removed")?;
+
+            finalization.state = ChangesetFinalizationState::Completed;
+            finalization.result = Some(result);
+            finalization.version = finalization.version.saturating_add(1);
+            finalization.updated_at_unix_ms = now_unix_ms;
+            update_changeset_finalization(&transaction, &finalization, 0)?;
+            transaction.commit()?;
+            Ok(CompletedChangesetFinalization {
+                finalization,
+                changeset,
+                worktree,
+            })
+        })
+    }
+
+    pub fn mark_changeset_finalization_divergent(
+        &self,
+        confirmation_digest: &str,
+        observed_head_sha: String,
+        detail: String,
+        now_unix_ms: i64,
+    ) -> Result<CompletedChangesetFinalization, PersistenceError> {
+        if detail.is_empty() || detail.len() > domain::limits::MAX_SEMANTIC_TEXT_BYTES {
+            return Err(PersistenceError::ResourceLimit(
+                "finalization divergence detail",
+            ));
+        }
+        if !is_git_object_id(&observed_head_sha) {
+            return Err(PersistenceError::InvalidFinalizationInput(
+                "observed head sha",
+            ));
+        }
+        self.with_connection(|connection| {
+            let transaction =
+                connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+            let mut finalization = load_changeset_finalization(&transaction, confirmation_digest)?
+                .ok_or(PersistenceError::NotFound("changeset finalization"))?;
+            if finalization.state == ChangesetFinalizationState::Divergent {
+                let (changeset, changeset_version) =
+                    load_changeset(&transaction, finalization.scope.changeset_id)?;
+                let (worktree, worktree_version) =
+                    load_worktree(&transaction, finalization.worktree_id)?;
+                if finalization.divergence_detail.as_deref() != Some(&detail)
+                    || changeset.head_sha() != observed_head_sha
+                {
+                    return Err(PersistenceError::FinalizationConflict);
+                }
+                validate_divergent_finalization_replay(
+                    &finalization,
+                    &changeset,
+                    changeset_version,
+                    &worktree,
+                    worktree_version,
+                )?;
+                return Ok(CompletedChangesetFinalization {
+                    finalization,
+                    changeset,
+                    worktree,
+                });
+            }
+            if finalization.state != ChangesetFinalizationState::Prepared {
+                return Err(PersistenceError::FinalizationConflict);
+            }
+
+            let (mut changeset, stored_changeset_version) =
+                load_changeset(&transaction, finalization.scope.changeset_id)?;
+            let (mut worktree, stored_worktree_version) =
+                load_worktree(&transaction, finalization.worktree_id)?;
+            validate_prepared_finalization_aggregates(
+                &finalization,
+                &changeset,
+                stored_changeset_version,
+                &worktree,
+                stored_worktree_version,
+            )?;
+            if now_unix_ms < finalization.created_at_unix_ms {
+                return Err(PersistenceError::InvalidFinalizationInput("timestamp"));
+            }
+            changeset.mark_divergent(observed_head_sha)?;
+            worktree.quarantine()?;
+            update_changeset(&transaction, &changeset, stored_changeset_version)?;
+            update_worktree(&transaction, &worktree, stored_worktree_version)?;
+            append_aggregate_event(&transaction, "changeset", changeset.id, "divergent")?;
+            append_aggregate_event(&transaction, "worktree", worktree.id, "quarantined")?;
+
+            finalization.state = ChangesetFinalizationState::Divergent;
+            finalization.divergence_detail = Some(detail);
+            finalization.version = finalization.version.saturating_add(1);
+            finalization.updated_at_unix_ms = now_unix_ms;
+            update_changeset_finalization(&transaction, &finalization, 0)?;
+            transaction.commit()?;
+            Ok(CompletedChangesetFinalization {
+                finalization,
+                changeset,
+                worktree,
+            })
         })
     }
 
@@ -1451,6 +1792,7 @@ fn migrate(connection: &mut Connection) -> Result<(), PersistenceError> {
             2 => migrate_to_version_2(&transaction)?,
             3 => migrate_to_version_3(&transaction)?,
             4 => migrate_to_version_4(&transaction)?,
+            5 => migrate_to_version_5(&transaction)?,
             _ => unreachable!("all schema migrations are explicitly ordered"),
         }
         transaction.pragma_update(None, "user_version", target_version)?;
@@ -1520,6 +1862,47 @@ fn migrate_to_version_4(transaction: &Transaction<'_>) -> Result<(), Persistence
     transaction.execute_batch(
         "CREATE INDEX IF NOT EXISTS artifacts_by_status ON artifacts(status, updated_at_unix_ms);
          CREATE INDEX IF NOT EXISTS artifacts_by_expiry ON artifacts(expires_at_unix_ms, status);",
+    )?;
+    Ok(())
+}
+
+fn migrate_to_version_5(transaction: &Transaction<'_>) -> Result<(), PersistenceError> {
+    add_column_if_missing(
+        transaction,
+        "worktrees",
+        "state",
+        "ALTER TABLE worktrees ADD COLUMN state TEXT NOT NULL DEFAULT '\"creating\"'",
+    )?;
+    add_column_if_missing(
+        transaction,
+        "worktrees",
+        "version",
+        "ALTER TABLE worktrees ADD COLUMN version INTEGER NOT NULL DEFAULT 0",
+    )?;
+    transaction.execute(
+        "UPDATE worktrees
+         SET state = json_quote(json_extract(body, '$.state')),
+             version = COALESCE(CAST(json_extract(body, '$.version') AS INTEGER), 0)",
+        [],
+    )?;
+    transaction.execute_batch(
+        "CREATE TABLE IF NOT EXISTS changeset_finalizations (
+             confirmation_digest TEXT PRIMARY KEY,
+             changeset_id TEXT NOT NULL UNIQUE REFERENCES changesets(id),
+             repository_id TEXT NOT NULL REFERENCES repositories(id),
+             checkpoint_id TEXT NOT NULL REFERENCES checkpoints(id),
+             worktree_id TEXT NOT NULL REFERENCES worktrees(id),
+             kind TEXT NOT NULL,
+             status TEXT NOT NULL,
+             version INTEGER NOT NULL,
+             created_at_unix_ms INTEGER NOT NULL,
+             updated_at_unix_ms INTEGER NOT NULL,
+             body TEXT NOT NULL
+         );
+         CREATE INDEX IF NOT EXISTS changeset_finalizations_by_status
+             ON changeset_finalizations(status, created_at_unix_ms);
+         CREATE INDEX IF NOT EXISTS changeset_finalizations_by_worktree
+             ON changeset_finalizations(worktree_id);",
     )?;
     Ok(())
 }
@@ -1702,21 +2085,61 @@ fn load_latest_worktree(
 ) -> Result<Option<Worktree>, PersistenceError> {
     let row = connection
         .query_row(
-            "SELECT changeset_id, body FROM worktrees WHERE changeset_id = ?1 ORDER BY rowid DESC LIMIT 1",
+            "SELECT id, changeset_id, state, version, body
+             FROM worktrees
+             WHERE changeset_id = ?1
+             ORDER BY rowid DESC
+             LIMIT 1",
             [changeset_id.to_string()],
-            |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
+            worktree_row,
         )
         .optional()?;
-    row.map(|(scalar_changeset_id, body)| {
-        let worktree: Worktree = decode(&body)?;
-        if scalar_changeset_id != changeset_id.to_string()
-            || worktree.changeset_id() != changeset_id
-        {
-            return Err(PersistenceError::CorruptOwnership("worktree"));
-        }
-        Ok(worktree)
-    })
-    .transpose()
+    row.map(validate_worktree).transpose()
+}
+
+fn load_worktree(
+    connection: &Connection,
+    worktree_id: Uuid,
+) -> Result<(Worktree, u64), PersistenceError> {
+    let row = connection.query_row(
+        "SELECT id, changeset_id, state, version, body FROM worktrees WHERE id = ?1",
+        [worktree_id.to_string()],
+        worktree_row,
+    )?;
+    let worktree = validate_worktree(row)?;
+    let version = worktree.version();
+    Ok((worktree, version))
+}
+
+type WorktreeRow = (String, String, String, u64, String);
+
+fn worktree_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<WorktreeRow> {
+    Ok((
+        row.get(0)?,
+        row.get(1)?,
+        row.get(2)?,
+        row.get(3)?,
+        row.get(4)?,
+    ))
+}
+
+fn validate_worktree(
+    (id, changeset_id, state, version, body): WorktreeRow,
+) -> Result<Worktree, PersistenceError> {
+    let scalar_id =
+        Uuid::parse_str(&id).map_err(|_| PersistenceError::CorruptIdentifier("worktree id"))?;
+    let scalar_changeset_id = Uuid::parse_str(&changeset_id)
+        .map_err(|_| PersistenceError::CorruptIdentifier("worktree changeset id"))?;
+    let scalar_state: WorktreeState = decode(&state)?;
+    let worktree: Worktree = decode(&body)?;
+    if worktree.id != scalar_id
+        || worktree.changeset_id() != scalar_changeset_id
+        || worktree.state() != scalar_state
+    {
+        return Err(PersistenceError::CorruptOwnership("worktree"));
+    }
+    ensure_version_agreement("worktree", worktree.id, version, worktree.version())?;
+    Ok(worktree)
 }
 
 fn load_latest_checkpoint(
@@ -1738,6 +2161,35 @@ fn load_latest_checkpoint(
         Ok(checkpoint)
     })
     .transpose()
+}
+
+fn load_checkpoint_for_changeset(
+    connection: &Connection,
+    checkpoint_id: Uuid,
+    changeset_id: Uuid,
+) -> Result<Checkpoint, PersistenceError> {
+    let (scalar_checkpoint_id, scalar_run_id, scalar_changeset_id, body): (
+        String,
+        String,
+        String,
+        String,
+    ) = connection.query_row(
+        "SELECT checkpoints.id, checkpoints.owner, runs.changeset_id, checkpoints.body
+         FROM checkpoints
+         JOIN runs ON runs.id = checkpoints.owner
+         WHERE checkpoints.id = ?1",
+        [checkpoint_id.to_string()],
+        |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+    )?;
+    let checkpoint: Checkpoint = decode(&body)?;
+    if scalar_checkpoint_id != checkpoint_id.to_string()
+        || checkpoint.id != checkpoint_id
+        || scalar_run_id != checkpoint.run_id.to_string()
+        || scalar_changeset_id != changeset_id.to_string()
+    {
+        return Err(PersistenceError::CorruptOwnership("checkpoint"));
+    }
+    Ok(checkpoint)
 }
 
 fn load_findings(
@@ -1894,6 +2346,62 @@ fn validate_versioned_transition<State: Copy + PartialEq>(
     Ok(())
 }
 
+fn validate_worktree_transition(
+    stored: &Worktree,
+    proposed: &Worktree,
+) -> Result<(), PersistenceError> {
+    if stored.id != proposed.id || stored.changeset_id() != proposed.changeset_id() {
+        return Err(PersistenceError::CorruptOwnership("worktree"));
+    }
+    let expected_version = if stored.state() == proposed.state() {
+        proposed.version()
+    } else if proposed.state() == WorktreeState::Removed
+        && matches!(stored.state(), WorktreeState::Ready | WorktreeState::Failed)
+    {
+        proposed.version().saturating_sub(2)
+    } else {
+        proposed.version().saturating_sub(1)
+    };
+    if stored.version() != expected_version {
+        return Err(PersistenceError::VersionConflict {
+            aggregate: "worktree",
+            id: proposed.id,
+            expected: expected_version,
+            actual: stored.version(),
+        });
+    }
+    let version_delta = proposed.version().saturating_sub(stored.version());
+    let valid = if stored.state() == proposed.state() {
+        false
+    } else if proposed.state() == WorktreeState::Removed
+        && matches!(stored.state(), WorktreeState::Ready | WorktreeState::Failed)
+    {
+        version_delta == 2
+    } else {
+        version_delta == 1
+            && matches!(
+                (stored.state(), proposed.state()),
+                (
+                    WorktreeState::Creating,
+                    WorktreeState::Ready | WorktreeState::Failed
+                ) | (
+                    WorktreeState::Ready,
+                    WorktreeState::Removing | WorktreeState::Failed | WorktreeState::Quarantined
+                ) | (
+                    WorktreeState::Removing,
+                    WorktreeState::Removed | WorktreeState::Ready | WorktreeState::Failed
+                ) | (
+                    WorktreeState::Failed,
+                    WorktreeState::Removing | WorktreeState::Quarantined
+                )
+            )
+    };
+    if !valid {
+        return Err(PersistenceError::InvalidPersistedTransition("worktree"));
+    }
+    Ok(())
+}
+
 fn update_run(
     transaction: &Transaction<'_>,
     run: &Run,
@@ -1939,6 +2447,31 @@ fn update_changeset(
         "changesets",
         "changeset",
         changeset.id,
+        expected_version,
+        changed,
+    )
+}
+
+fn update_worktree(
+    transaction: &Transaction<'_>,
+    worktree: &Worktree,
+    expected_version: u64,
+) -> Result<(), PersistenceError> {
+    let changed = transaction.execute(
+        "UPDATE worktrees SET state = ?2, version = ?3, body = ?4 WHERE id = ?1 AND version = ?5",
+        params![
+            worktree.id.to_string(),
+            state_json(&worktree.state())?,
+            worktree.version(),
+            encode(worktree)?,
+            expected_version
+        ],
+    )?;
+    check_versioned_update(
+        transaction,
+        "worktrees",
+        "worktree",
+        worktree.id,
         expected_version,
         changed,
     )
@@ -2143,6 +2676,372 @@ fn load_mutation_lease_from(
         .transpose()
 }
 
+type ChangesetFinalizationRow = (
+    String,
+    String,
+    String,
+    String,
+    String,
+    String,
+    String,
+    u64,
+    i64,
+    i64,
+    String,
+);
+
+fn changeset_finalization_row(
+    row: &rusqlite::Row<'_>,
+) -> rusqlite::Result<ChangesetFinalizationRow> {
+    Ok((
+        row.get(0)?,
+        row.get(1)?,
+        row.get(2)?,
+        row.get(3)?,
+        row.get(4)?,
+        row.get(5)?,
+        row.get(6)?,
+        row.get(7)?,
+        row.get(8)?,
+        row.get(9)?,
+        row.get(10)?,
+    ))
+}
+
+fn prepared_finalization(
+    confirmation_digest: &str,
+    scope: &ChangesetMutationScope,
+    worktree_id: Uuid,
+    expected_worktree_version: u64,
+    now_unix_ms: i64,
+) -> ChangesetFinalization {
+    ChangesetFinalization {
+        confirmation_digest: confirmation_digest.to_owned(),
+        scope: scope.clone(),
+        worktree_id,
+        expected_worktree_version,
+        state: ChangesetFinalizationState::Prepared,
+        result: None,
+        divergence_detail: None,
+        version: 0,
+        created_at_unix_ms: now_unix_ms,
+        updated_at_unix_ms: now_unix_ms,
+    }
+}
+
+fn finalization_matches_request(
+    stored: &ChangesetFinalization,
+    confirmation_digest: &str,
+    scope: &ChangesetMutationScope,
+    worktree_id: Uuid,
+    expected_worktree_version: u64,
+) -> bool {
+    stored.confirmation_digest == confirmation_digest
+        && stored.scope == *scope
+        && stored.worktree_id == worktree_id
+        && stored.expected_worktree_version == expected_worktree_version
+}
+
+fn validate_finalization_scope(scope: &ChangesetMutationScope) -> Result<(), PersistenceError> {
+    if !is_git_object_id(&scope.base_sha)
+        || !is_git_object_id(&scope.expected_head_sha)
+        || !is_sha256_digest(&scope.manifest_sha256)
+    {
+        return Err(PersistenceError::InvalidFinalizationInput("mutation scope"));
+    }
+    Ok(())
+}
+
+fn validate_prepared_finalization_aggregates(
+    finalization: &ChangesetFinalization,
+    changeset: &Changeset,
+    changeset_version: u64,
+    worktree: &Worktree,
+    worktree_version: u64,
+) -> Result<(), PersistenceError> {
+    if changeset.state() != ChangesetState::Reviewable
+        || changeset_version != finalization.scope.expected_version
+        || changeset.repository_id() != finalization.scope.repository_id
+        || changeset.base_sha() != finalization.scope.base_sha
+        || changeset.head_sha() != finalization.scope.expected_head_sha
+        || worktree.changeset_id() != changeset.id
+        || worktree.state() != WorktreeState::Ready
+        || worktree_version != finalization.expected_worktree_version
+        || worktree.base_sha != finalization.scope.base_sha
+    {
+        return Err(PersistenceError::FinalizationConflict);
+    }
+    Ok(())
+}
+
+fn validate_completed_finalization_replay(
+    finalization: &ChangesetFinalization,
+    changeset: &Changeset,
+    changeset_version: u64,
+    worktree: &Worktree,
+    worktree_version: u64,
+) -> Result<(), PersistenceError> {
+    let expected_changeset_version = finalization.scope.expected_version.saturating_add(1);
+    let expected_worktree_version = finalization.expected_worktree_version.saturating_add(2);
+    let aggregate_identity_matches = changeset.repository_id() == finalization.scope.repository_id
+        && changeset.base_sha() == finalization.scope.base_sha
+        && worktree.changeset_id() == changeset.id
+        && worktree.base_sha == finalization.scope.base_sha
+        && changeset_version == expected_changeset_version
+        && worktree_version == expected_worktree_version
+        && worktree.state() == WorktreeState::Removed;
+    let result_matches = match finalization.result.as_ref() {
+        Some(ChangesetFinalizationResult::Commit {
+            resulting_head_sha,
+            app_ref,
+        }) => {
+            changeset.state() == ChangesetState::Committed
+                && changeset.head_sha() == resulting_head_sha
+                && app_ref == &expected_changeset_ref(changeset.id)
+        }
+        Some(ChangesetFinalizationResult::Discard) => {
+            changeset.state() == ChangesetState::Discarded
+                && changeset.head_sha() == finalization.scope.expected_head_sha
+        }
+        None => false,
+    };
+    if !aggregate_identity_matches || !result_matches {
+        return Err(PersistenceError::FinalizationConflict);
+    }
+    Ok(())
+}
+
+fn validate_divergent_finalization_replay(
+    finalization: &ChangesetFinalization,
+    changeset: &Changeset,
+    changeset_version: u64,
+    worktree: &Worktree,
+    worktree_version: u64,
+) -> Result<(), PersistenceError> {
+    if changeset.state() != ChangesetState::Divergent
+        || changeset.repository_id() != finalization.scope.repository_id
+        || changeset.base_sha() != finalization.scope.base_sha
+        || changeset_version != finalization.scope.expected_version.saturating_add(1)
+        || worktree.state() != WorktreeState::Quarantined
+        || worktree.changeset_id() != changeset.id
+        || worktree.base_sha != finalization.scope.base_sha
+        || worktree_version != finalization.expected_worktree_version.saturating_add(1)
+    {
+        return Err(PersistenceError::FinalizationConflict);
+    }
+    Ok(())
+}
+
+fn expected_changeset_ref(changeset_id: Uuid) -> String {
+    format!("refs/jet-black/changesets/{changeset_id}")
+}
+
+fn is_sha256_digest(value: &str) -> bool {
+    value.len() == 64 && value.bytes().all(|byte| byte.is_ascii_hexdigit())
+}
+
+fn is_git_object_id(value: &str) -> bool {
+    matches!(value.len(), 40 | 64) && value.bytes().all(|byte| byte.is_ascii_hexdigit())
+}
+
+fn validate_changeset_finalization(
+    row: ChangesetFinalizationRow,
+) -> Result<ChangesetFinalization, PersistenceError> {
+    let (
+        confirmation_digest,
+        changeset_id,
+        repository_id,
+        checkpoint_id,
+        worktree_id,
+        kind,
+        status,
+        version,
+        created_at_unix_ms,
+        updated_at_unix_ms,
+        body,
+    ) = row;
+    let finalization: ChangesetFinalization = decode(&body)?;
+    let scalar_changeset_id = Uuid::parse_str(&changeset_id)
+        .map_err(|_| PersistenceError::CorruptIdentifier("finalization changeset id"))?;
+    let scalar_repository_id = Uuid::parse_str(&repository_id)
+        .map_err(|_| PersistenceError::CorruptIdentifier("finalization repository id"))?;
+    let scalar_checkpoint_id = Uuid::parse_str(&checkpoint_id)
+        .map_err(|_| PersistenceError::CorruptIdentifier("finalization checkpoint id"))?;
+    let scalar_worktree_id = Uuid::parse_str(&worktree_id)
+        .map_err(|_| PersistenceError::CorruptIdentifier("finalization worktree id"))?;
+    let scalar_kind: ChangesetMutationKind = decode(&kind)?;
+    let scalar_status: ChangesetFinalizationState = decode(&status)?;
+    if finalization.confirmation_digest != confirmation_digest
+        || finalization.scope.changeset_id != scalar_changeset_id
+        || finalization.scope.repository_id != scalar_repository_id
+        || finalization.scope.checkpoint_id != scalar_checkpoint_id
+        || finalization.worktree_id != scalar_worktree_id
+        || finalization.scope.kind != scalar_kind
+        || finalization.state != scalar_status
+        || finalization.version != version
+        || finalization.created_at_unix_ms != created_at_unix_ms
+        || finalization.updated_at_unix_ms != updated_at_unix_ms
+        || finalization.updated_at_unix_ms < finalization.created_at_unix_ms
+        || finalization.confirmation_digest != finalization.scope.digest()
+        || validate_finalization_scope(&finalization.scope).is_err()
+    {
+        return Err(PersistenceError::CorruptFinalization);
+    }
+    let valid_state = match finalization.state {
+        ChangesetFinalizationState::Prepared => {
+            finalization.version == 0
+                && finalization.result.is_none()
+                && finalization.divergence_detail.is_none()
+                && finalization.updated_at_unix_ms == finalization.created_at_unix_ms
+        }
+        ChangesetFinalizationState::Completed => {
+            finalization.version == 1
+                && finalization.divergence_detail.is_none()
+                && finalization.result.as_ref().is_some_and(|result| {
+                    validate_finalization_result(&finalization.scope, result).is_ok()
+                })
+        }
+        ChangesetFinalizationState::Divergent => {
+            finalization.version == 1
+                && finalization.result.is_none()
+                && finalization
+                    .divergence_detail
+                    .as_ref()
+                    .is_some_and(|detail| {
+                        !detail.is_empty()
+                            && detail.len() <= domain::limits::MAX_SEMANTIC_TEXT_BYTES
+                    })
+        }
+    };
+    if !valid_state {
+        return Err(PersistenceError::CorruptFinalization);
+    }
+    Ok(finalization)
+}
+
+fn load_changeset_finalization(
+    connection: &Connection,
+    confirmation_digest: &str,
+) -> Result<Option<ChangesetFinalization>, PersistenceError> {
+    connection
+        .query_row(
+            "SELECT confirmation_digest, changeset_id, repository_id, checkpoint_id, worktree_id, kind, status, version, created_at_unix_ms, updated_at_unix_ms, body
+             FROM changeset_finalizations
+             WHERE confirmation_digest = ?1",
+            [confirmation_digest],
+            changeset_finalization_row,
+        )
+        .optional()?
+        .map(validate_changeset_finalization)
+        .transpose()
+}
+
+fn load_changeset_finalization_for_changeset(
+    connection: &Connection,
+    changeset_id: Uuid,
+) -> Result<Option<ChangesetFinalization>, PersistenceError> {
+    connection
+        .query_row(
+            "SELECT confirmation_digest, changeset_id, repository_id, checkpoint_id, worktree_id, kind, status, version, created_at_unix_ms, updated_at_unix_ms, body
+             FROM changeset_finalizations
+             WHERE changeset_id = ?1",
+            [changeset_id.to_string()],
+            changeset_finalization_row,
+        )
+        .optional()?
+        .map(validate_changeset_finalization)
+        .transpose()
+}
+
+fn insert_changeset_finalization(
+    transaction: &Transaction<'_>,
+    finalization: &ChangesetFinalization,
+) -> Result<(), PersistenceError> {
+    transaction.execute(
+        "INSERT INTO changeset_finalizations (
+             confirmation_digest, changeset_id, repository_id, checkpoint_id, worktree_id,
+             kind, status, version, created_at_unix_ms, updated_at_unix_ms, body
+         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+        params![
+            finalization.confirmation_digest,
+            finalization.scope.changeset_id.to_string(),
+            finalization.scope.repository_id.to_string(),
+            finalization.scope.checkpoint_id.to_string(),
+            finalization.worktree_id.to_string(),
+            state_json(&finalization.scope.kind)?,
+            state_json(&finalization.state)?,
+            finalization.version,
+            finalization.created_at_unix_ms,
+            finalization.updated_at_unix_ms,
+            encode(finalization)?,
+        ],
+    )?;
+    Ok(())
+}
+
+fn update_changeset_finalization(
+    transaction: &Transaction<'_>,
+    finalization: &ChangesetFinalization,
+    expected_version: u64,
+) -> Result<(), PersistenceError> {
+    let changed = transaction.execute(
+        "UPDATE changeset_finalizations
+         SET status = ?2, version = ?3, updated_at_unix_ms = ?4, body = ?5
+         WHERE confirmation_digest = ?1 AND version = ?6",
+        params![
+            finalization.confirmation_digest,
+            state_json(&finalization.state)?,
+            finalization.version,
+            finalization.updated_at_unix_ms,
+            encode(finalization)?,
+            expected_version,
+        ],
+    )?;
+    if changed == 1 {
+        return Ok(());
+    }
+    let actual = transaction
+        .query_row(
+            "SELECT version FROM changeset_finalizations WHERE confirmation_digest = ?1",
+            [finalization.confirmation_digest.as_str()],
+            |row| row.get::<_, u64>(0),
+        )
+        .optional()?;
+    match actual {
+        Some(actual) => Err(PersistenceError::VersionConflict {
+            aggregate: "changeset finalization",
+            id: finalization.scope.changeset_id,
+            expected: expected_version,
+            actual,
+        }),
+        None => Err(PersistenceError::NotFound("changeset finalization")),
+    }
+}
+
+fn validate_finalization_result(
+    scope: &ChangesetMutationScope,
+    result: &ChangesetFinalizationResult,
+) -> Result<(), PersistenceError> {
+    match (scope.kind, result) {
+        (
+            ChangesetMutationKind::Commit,
+            ChangesetFinalizationResult::Commit {
+                resulting_head_sha,
+                app_ref,
+            },
+        ) if is_git_object_id(resulting_head_sha)
+            && app_ref == &expected_changeset_ref(scope.changeset_id) =>
+        {
+            Ok(())
+        }
+        (ChangesetMutationKind::Commit, ChangesetFinalizationResult::Commit { .. }) => {
+            Err(PersistenceError::InvalidFinalizationInput("commit result"))
+        }
+        (ChangesetMutationKind::Discard, ChangesetFinalizationResult::Discard) => Ok(()),
+        _ => Err(PersistenceError::FinalizationKindMismatch),
+    }
+}
+
 fn validate_semantic_event(event: &SemanticEventKind) -> Result<(), PersistenceError> {
     if matches!(event, SemanticEventKind::Text { text } if text.len() > domain::limits::MAX_SEMANTIC_TEXT_BYTES)
     {
@@ -2252,6 +3151,16 @@ pub enum PersistenceError {
     RecoveryActionConflict,
     #[error("stored recovery action scalar fields do not match its serialized body")]
     CorruptRecoveryAction,
+    #[error("changeset finalization confirmation digest does not match its scope")]
+    FinalizationDigestMismatch,
+    #[error("invalid changeset finalization input: {0}")]
+    InvalidFinalizationInput(&'static str),
+    #[error("changeset finalization conflicts with an existing operation or aggregate state")]
+    FinalizationConflict,
+    #[error("changeset finalization result does not match the prepared operation")]
+    FinalizationKindMismatch,
+    #[error("stored changeset finalization scalar fields do not match its serialized body")]
+    CorruptFinalization,
     #[error("artifact policy limits or retention are invalid")]
     InvalidArtifactPolicy,
     #[error("artifact root must be absolute")]
