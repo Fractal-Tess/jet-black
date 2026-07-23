@@ -339,6 +339,30 @@ impl GitService {
         self.git_text(&worktree.path, ["rev-parse", "HEAD"])
     }
 
+    pub fn provider_read_only_paths(
+        &self,
+        repository: &Repository,
+        worktree: &Worktree,
+    ) -> Result<Vec<PathBuf>, GitError> {
+        let repository_path = self.validate_worktree_identity(repository, worktree)?;
+        let common_git_directory = fs::canonicalize(repository_path.join(".git"))?;
+        let worktree_git_directory =
+            PathBuf::from(self.git_text(&worktree.path, ["rev-parse", "--git-dir"])?);
+        let worktree_git_directory = if worktree_git_directory.is_absolute() {
+            worktree_git_directory
+        } else {
+            worktree.path.join(worktree_git_directory)
+        };
+        let worktree_git_directory = fs::canonicalize(worktree_git_directory)?;
+        if worktree_git_directory != common_git_directory {
+            ensure_canonical_child(
+                &common_git_directory.join("worktrees"),
+                &worktree_git_directory,
+            )?;
+        }
+        Ok(vec![common_git_directory])
+    }
+
     pub fn status_snapshot(
         &self,
         repository: &Repository,

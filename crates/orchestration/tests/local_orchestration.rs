@@ -5,8 +5,8 @@ use domain::{
     RunState, WorktreeState, limits,
 };
 use execution::{
-    CancellationToken, ProcessResult, ProcessSpec, ProcessStartIdentity, ProcessSupervisor,
-    SupervisionState, TerminationReason,
+    CancellationToken, LinuxFilesystemConfinement, ProcessConfinement, ProcessResult, ProcessSpec,
+    ProcessStartIdentity, ProcessSupervisor, SupervisionState, TerminationReason,
 };
 use git::GitService;
 use orchestration::{CommandOutcome, LocalOrchestrator, OrchestrationError};
@@ -22,7 +22,7 @@ use review::ReviewOptions;
 use std::{
     collections::HashMap,
     fs,
-    path::Path,
+    path::{Path, PathBuf},
     process::Command,
     sync::{Arc, Barrier},
     thread,
@@ -166,6 +166,10 @@ impl AgentProvider for NeverInvokedProvider {
         "never-invoked"
     }
 
+    fn requires_process_confinement(&self) -> bool {
+        false
+    }
+
     fn process_spec(&self, _: &Path) -> Option<ProcessSpec> {
         panic!("begin_run must not invoke the provider")
     }
@@ -187,6 +191,10 @@ struct BlockingProposalProvider {
 impl AgentProvider for BlockingProposalProvider {
     fn name(&self) -> &'static str {
         "blocking-proposal"
+    }
+
+    fn requires_process_confinement(&self) -> bool {
+        false
     }
 
     fn propose(
@@ -217,6 +225,10 @@ impl AgentProvider for BlockingEventsProvider {
         "blocking-events"
     }
 
+    fn requires_process_confinement(&self) -> bool {
+        false
+    }
+
     fn propose(
         &self,
         process_result: Option<&ProcessResult>,
@@ -241,6 +253,9 @@ impl AgentProvider for NoProposalProvider {
     fn name(&self) -> &'static str {
         "no-proposal"
     }
+    fn requires_process_confinement(&self) -> bool {
+        false
+    }
     fn propose(&self, _: Option<&ProcessResult>) -> Result<ProposedFileChange, ProviderError> {
         panic!("approval resume must use the persisted proposal")
     }
@@ -254,6 +269,9 @@ struct MissingProposalEventProvider;
 impl AgentProvider for MissingProposalEventProvider {
     fn name(&self) -> &'static str {
         "missing-proposal-event"
+    }
+    fn requires_process_confinement(&self) -> bool {
+        false
     }
     fn propose(
         &self,
@@ -273,6 +291,9 @@ struct OversizedProposalProvider;
 impl AgentProvider for OversizedProposalProvider {
     fn name(&self) -> &'static str {
         "oversized-proposal"
+    }
+    fn requires_process_confinement(&self) -> bool {
+        false
     }
     fn propose(
         &self,
@@ -297,6 +318,10 @@ impl AgentProvider for LongRunningProcessProvider {
         "long-running-process"
     }
 
+    fn requires_process_confinement(&self) -> bool {
+        false
+    }
+
     fn process_spec(&self, worktree_path: &Path) -> Option<ProcessSpec> {
         Some(ProcessSpec {
             program: "/bin/sh".to_owned(),
@@ -309,6 +334,7 @@ impl AgentProvider for LongRunningProcessProvider {
             current_dir: Some(worktree_path.to_path_buf()),
             timeout: Duration::from_secs(60),
             output_limit: 1024,
+            confinement: execution::ProcessConfinement::Unconfined,
         })
     }
 
@@ -335,6 +361,10 @@ impl AgentProvider for ShortProcessProvider {
         "short-process"
     }
 
+    fn requires_process_confinement(&self) -> bool {
+        false
+    }
+
     fn process_spec(&self, _: &Path) -> Option<ProcessSpec> {
         Some(ProcessSpec {
             program: "/bin/sh".to_owned(),
@@ -344,6 +374,61 @@ impl AgentProvider for ShortProcessProvider {
             current_dir: None,
             timeout: Duration::from_secs(5),
             output_limit: 1024,
+            confinement: execution::ProcessConfinement::Unconfined,
+        })
+    }
+
+    fn propose(
+        &self,
+        process_result: Option<&ProcessResult>,
+    ) -> Result<ProposedFileChange, ProviderError> {
+        MockProvider::deterministic().propose(process_result)
+    }
+
+    fn normalized_events(
+        &self,
+        change: &ProposedFileChange,
+        digest: &str,
+    ) -> Vec<SemanticEventKind> {
+        MockProvider::deterministic().normalized_events(change, digest)
+    }
+}
+
+struct RequiredConfinementProvider {
+    workspace_override: Option<PathBuf>,
+}
+
+impl AgentProvider for RequiredConfinementProvider {
+    fn name(&self) -> &'static str {
+        "required-confinement"
+    }
+
+    fn requires_process_confinement(&self) -> bool {
+        true
+    }
+
+    fn process_spec(&self, worktree_path: &Path) -> Option<ProcessSpec> {
+        let confinement =
+            self.workspace_override
+                .as_ref()
+                .map_or(ProcessConfinement::Unconfined, |workspace| {
+                    ProcessConfinement::LinuxFilesystem(LinuxFilesystemConfinement {
+                        workspace: workspace.clone(),
+                        writable_state: worktree_path.join("provider-state"),
+                        runtime_read_execute: vec![PathBuf::from("/bin")],
+                        runtime_read_only: Vec::new(),
+                        runtime_read_write: Vec::new(),
+                    })
+                });
+        Some(ProcessSpec {
+            program: "/bin/sh".to_owned(),
+            arguments: vec!["-c".to_owned(), "exit 99".to_owned()],
+            environment: HashMap::new(),
+            sensitive_environment_keys: Vec::new(),
+            current_dir: Some(worktree_path.to_path_buf()),
+            timeout: Duration::from_secs(5),
+            output_limit: 1024,
+            confinement,
         })
     }
 
@@ -417,6 +502,10 @@ impl AgentProvider for ArtifactFailureProvider {
         "artifact-failure"
     }
 
+    fn requires_process_confinement(&self) -> bool {
+        false
+    }
+
     fn process_spec(&self, _: &Path) -> Option<ProcessSpec> {
         Some(ProcessSpec {
             program: "/bin/sh".to_owned(),
@@ -426,6 +515,7 @@ impl AgentProvider for ArtifactFailureProvider {
             current_dir: None,
             timeout: Duration::from_secs(5),
             output_limit: self.mode.output_limit(),
+            confinement: execution::ProcessConfinement::Unconfined,
         })
     }
 
@@ -455,6 +545,10 @@ impl AgentProvider for SensitiveOutputProvider {
         "sensitive-output"
     }
 
+    fn requires_process_confinement(&self) -> bool {
+        false
+    }
+
     fn process_spec(&self, _: &Path) -> Option<ProcessSpec> {
         Some(ProcessSpec {
             program: "/bin/sh".to_owned(),
@@ -471,6 +565,7 @@ impl AgentProvider for SensitiveOutputProvider {
             current_dir: None,
             timeout: Duration::from_secs(5),
             output_limit: 1024,
+            confinement: execution::ProcessConfinement::Unconfined,
         })
     }
 
@@ -2344,6 +2439,7 @@ fn startup_reconciliation_terminates_a_surviving_persisted_process_tree() {
         current_dir: Some(worktree_path.clone()),
         timeout: Duration::from_secs(60),
         output_limit: 1024,
+        confinement: execution::ProcessConfinement::Unconfined,
     };
     let (prepared, prepared_metadata) = supervisor.prepare(&spec).unwrap();
     store
@@ -2419,6 +2515,7 @@ fn startup_reconciliation_terminates_a_prepared_process_before_release() {
         current_dir: None,
         timeout: Duration::from_secs(60),
         output_limit: 1024,
+        confinement: execution::ProcessConfinement::Unconfined,
     };
     let (prepared, metadata) = supervisor.prepare(&spec).unwrap();
     store
@@ -2468,6 +2565,7 @@ fn startup_reconciliation_terminalizes_an_already_exited_process_record() {
         current_dir: None,
         timeout: Duration::from_secs(5),
         output_limit: 1024,
+        confinement: execution::ProcessConfinement::Unconfined,
     };
     let (prepared, prepared_metadata) = supervisor.prepare(&spec).unwrap();
     store
@@ -2520,6 +2618,7 @@ fn startup_reconciliation_does_not_signal_a_pid_with_mismatched_identity() {
         current_dir: None,
         timeout: Duration::from_secs(60),
         output_limit: 1024,
+        confinement: execution::ProcessConfinement::Unconfined,
     };
     let (prepared, mut metadata) = supervisor.prepare(&spec).unwrap();
     let pid = metadata.pid;
@@ -2633,12 +2732,54 @@ fn startup_reconciliation_quarantines_unapproved_worktree_changes() {
 
 #[cfg(unix)]
 #[test]
+fn required_provider_confinement_cannot_be_downgraded_or_rebound() {
+    for mismatched_workspace in [false, true] {
+        let directory = tempdir().unwrap();
+        let repository_path = fixture_repository(directory.path());
+        let provider = RequiredConfinementProvider {
+            workspace_override: mismatched_workspace.then(|| repository_path.clone()),
+        };
+        let store = SqliteStore::open(directory.path().join("state.sqlite3")).unwrap();
+        let runtime = LocalOrchestrator::new(
+            store,
+            GitService::new(
+                vec![directory.path().to_path_buf()],
+                directory.path().join("worktrees"),
+            )
+            .unwrap(),
+            provider,
+            Duration::from_secs(60),
+        );
+        let repository = runtime.register_repository(&repository_path).unwrap();
+        let changeset = runtime
+            .create_changeset(repository.id, &repository.base_sha, None)
+            .unwrap();
+
+        let error = runtime.start_run(changeset.id).unwrap_err();
+        if mismatched_workspace {
+            assert!(matches!(
+                error,
+                OrchestrationError::ProviderConfinementMismatch
+            ));
+        } else {
+            assert!(matches!(
+                error,
+                OrchestrationError::ProviderProcessUnconfined
+            ));
+        }
+    }
+}
+
+#[cfg(unix)]
+#[test]
 fn fake_claude_provider_completes_the_approved_orchestration_flow() {
     use std::os::unix::fs::PermissionsExt;
 
     let directory = tempdir().unwrap();
     let repository_path = fixture_repository(directory.path());
-    let executable = directory.path().join("claude");
+    let binary_directory = directory.path().join("bin");
+    fs::create_dir_all(&binary_directory).unwrap();
+    let executable = binary_directory.join("claude");
     fs::write(
         &executable,
         r#"#!/bin/sh
@@ -2650,7 +2791,7 @@ printf '%s' '{"is_error":false,"structured_output":{"content":"generated read-on
     permissions.set_mode(0o700);
     fs::set_permissions(&executable, permissions).unwrap();
     let provider = ClaudeCodeProvider::discover(
-        &directory.path().to_string_lossy(),
+        &binary_directory.to_string_lossy(),
         Some("fixture-key".to_owned()),
         &directory.path().join("claude-state"),
         None,

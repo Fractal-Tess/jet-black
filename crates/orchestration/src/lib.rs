@@ -5,8 +5,8 @@ use domain::{
     ChangesetState, Checkpoint, Id, Repository, Run, RunState, TicketRef, Worktree, WorktreeState,
 };
 use execution::{
-    CancellationToken, ProcessResult, ProcessSpec, ProcessSupervisor, SupervisionState,
-    TerminalOutcome, TerminationReason, TerminationStatus,
+    CancellationToken, ProcessConfinement, ProcessResult, ProcessSpec, ProcessSupervisor,
+    SupervisionState, TerminalOutcome, TerminationReason, TerminationStatus,
 };
 use git::GitService;
 use persistence::{
@@ -22,7 +22,7 @@ use protocol::{
     RunArtifactsResponse, RunCompletedResponse, RunSnapshot, RunStartedResponse, SemanticEventKind,
 };
 use review::{ReviewOptions, ReviewService};
-use std::{path::Path, sync::Mutex, time::Duration};
+use std::{fs, path::Path, sync::Mutex, time::Duration};
 use thiserror::Error;
 use uuid::Uuid;
 
@@ -1364,7 +1364,7 @@ impl<P: AgentProvider> LocalOrchestrator<P> {
         worktree: &Worktree,
         run: &mut Run,
     ) -> Result<RunStarted, OrchestrationError> {
-        let process_result = self.execute_provider_process(run.id, worktree)?;
+        let process_result = self.execute_provider_process(run.id, repository, worktree)?;
         if self.run(run.id)?.state() != RunState::Running {
             return Err(OrchestrationError::RunInterruptedDuringExecution);
         }
@@ -1445,6 +1445,7 @@ impl<P: AgentProvider> LocalOrchestrator<P> {
     fn execute_provider_process(
         &self,
         run_id: Id,
+        repository: &Repository,
         worktree: &Worktree,
     ) -> Result<Option<ProcessResult>, OrchestrationError> {
         let preparation_guard = self
@@ -1458,7 +1459,7 @@ impl<P: AgentProvider> LocalOrchestrator<P> {
             drop(preparation_guard);
             return Ok(None);
         };
-        self.bind_process_to_worktree(&mut spec, worktree)?;
+        self.bind_process_to_worktree(&mut spec, repository, worktree)?;
         let mut sensitive_values = spec
             .sensitive_environment_keys
             .iter()
@@ -1585,18 +1586,37 @@ impl<P: AgentProvider> LocalOrchestrator<P> {
     fn bind_process_to_worktree(
         &self,
         spec: &mut ProcessSpec,
+        repository: &Repository,
         worktree: &Worktree,
     ) -> Result<(), OrchestrationError> {
         match &spec.current_dir {
             Some(current_dir) if current_dir != &worktree.path => {
-                Err(OrchestrationError::ProviderProcessOutsideWorktree)
+                return Err(OrchestrationError::ProviderProcessOutsideWorktree);
             }
-            Some(_) => Ok(()),
-            None => {
-                spec.current_dir = Some(worktree.path.clone());
-                Ok(())
-            }
+            Some(_) => {}
+            None => spec.current_dir = Some(worktree.path.clone()),
         }
+
+        if !self.provider.requires_process_confinement() {
+            return Ok(());
+        }
+        let ProcessConfinement::LinuxFilesystem(confinement) = &mut spec.confinement else {
+            return Err(OrchestrationError::ProviderProcessUnconfined);
+        };
+        if confinement.workspace != worktree.path {
+            return Err(OrchestrationError::ProviderConfinementMismatch);
+        }
+        let canonical_worktree = fs::canonicalize(&worktree.path)
+            .map_err(|_| OrchestrationError::ProviderConfinementMismatch)?;
+        let canonical_workspace = fs::canonicalize(&confinement.workspace)
+            .map_err(|_| OrchestrationError::ProviderConfinementMismatch)?;
+        if canonical_worktree != worktree.path || canonical_workspace != canonical_worktree {
+            return Err(OrchestrationError::ProviderConfinementMismatch);
+        }
+        confinement
+            .runtime_read_only
+            .extend(self.git.provider_read_only_paths(repository, worktree)?);
+        Ok(())
     }
 
     fn compensate_failed_start(
@@ -2008,6 +2028,10 @@ pub enum OrchestrationError {
     Provider(#[from] agents::ProviderError),
     #[error("provider process current directory does not match the registered worktree")]
     ProviderProcessOutsideWorktree,
+    #[error("provider requires operating-system process confinement")]
+    ProviderProcessUnconfined,
+    #[error("provider confinement does not match the canonical registered worktree")]
+    ProviderConfinementMismatch,
     #[error("provider process supervision identity did not match the persisted record")]
     ProcessSupervisionMismatch,
     #[error("provider process termination could not be verified")]

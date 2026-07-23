@@ -1,6 +1,6 @@
 use crate::{ProposedFileChange, ProviderError};
 use domain::RelativePath;
-use execution::ProcessResult;
+use execution::{LinuxFilesystemConfinement, ProcessConfinement, ProcessResult};
 use protocol::SemanticEventKind;
 use serde::Deserialize;
 use std::{
@@ -24,6 +24,27 @@ struct ContentOutput {
 pub(crate) struct ProviderDiscovery {
     pub executable: PathBuf,
     pub environment: HashMap<String, String>,
+    pub confinement: ProviderConfinement,
+}
+
+#[derive(Clone)]
+pub(crate) struct ProviderConfinement {
+    writable_state: PathBuf,
+    runtime_read_execute: Vec<PathBuf>,
+    runtime_read_only: Vec<PathBuf>,
+    runtime_read_write: Vec<PathBuf>,
+}
+
+impl ProviderConfinement {
+    pub fn for_worktree(&self, worktree: &Path) -> ProcessConfinement {
+        ProcessConfinement::LinuxFilesystem(LinuxFilesystemConfinement {
+            workspace: worktree.to_path_buf(),
+            writable_state: self.writable_state.clone(),
+            runtime_read_execute: self.runtime_read_execute.clone(),
+            runtime_read_only: self.runtime_read_only.clone(),
+            runtime_read_write: self.runtime_read_write.clone(),
+        })
+    }
 }
 
 pub(crate) fn discover_provider(
@@ -40,6 +61,12 @@ pub(crate) fn discover_provider(
     fs::create_dir_all(state_dir).map_err(ProviderError::DiscoveryIo)?;
     secure_directory(state_dir)?;
     let state_dir = fs::canonicalize(state_dir).map_err(ProviderError::DiscoveryIo)?;
+    for directory in ["config", "data", "cache", "state", "tmp"] {
+        let directory = state_dir.join(directory);
+        fs::create_dir_all(&directory).map_err(ProviderError::DiscoveryIo)?;
+        secure_directory(&directory)?;
+    }
+    let temporary_directory = path_string(&state_dir.join("tmp"))?;
     let environment = HashMap::from([
         ("PATH".to_owned(), search_path.clone()),
         ("HOME".to_owned(), path_string(&state_dir)?),
@@ -59,6 +86,9 @@ pub(crate) fn discover_provider(
             "XDG_STATE_HOME".to_owned(),
             path_string(&state_dir.join("state"))?,
         ),
+        ("TMPDIR".to_owned(), temporary_directory.clone()),
+        ("TMP".to_owned(), temporary_directory.clone()),
+        ("TEMP".to_owned(), temporary_directory),
         ("LC_ALL".to_owned(), "C".to_owned()),
         ("GIT_TERMINAL_PROMPT".to_owned(), "0".to_owned()),
         ("GIT_CONFIG_NOSYSTEM".to_owned(), "1".to_owned()),
@@ -66,10 +96,80 @@ pub(crate) fn discover_provider(
         ("GIT_ATTR_NOSYSTEM".to_owned(), "1".to_owned()),
         ("GIT_OPTIONAL_LOCKS".to_owned(), "0".to_owned()),
     ]);
+    let confinement = provider_confinement(&search_path, &executable, state_dir);
     Ok(ProviderDiscovery {
         executable,
         environment,
+        confinement,
     })
+}
+
+fn provider_confinement(
+    search_path: &str,
+    executable: &Path,
+    writable_state: PathBuf,
+) -> ProviderConfinement {
+    let executable_is_in_search_path = std::env::split_paths(search_path).any(|directory| {
+        fs::canonicalize(directory).is_ok_and(|directory| executable.starts_with(directory))
+    });
+    let mut runtime_read_execute = vec![executable.to_path_buf()];
+    if !executable_is_in_search_path
+        && let Some(installation_root) = executable.parent().and_then(Path::parent)
+    {
+        runtime_read_execute.push(installation_root.to_path_buf());
+    }
+    let shell_uses_nix_store =
+        fs::canonicalize("/bin/sh").is_ok_and(|path| path.starts_with("/nix/store"));
+    if shell_uses_nix_store
+        || executable.starts_with("/nix/store")
+        || runtime_read_execute
+            .iter()
+            .any(|path| path.starts_with("/nix/store"))
+    {
+        runtime_read_execute.retain(|path| !path.starts_with("/nix/store"));
+        runtime_read_execute.push(PathBuf::from("/nix/store"));
+    } else {
+        runtime_read_execute.extend(
+            [
+                "/bin",
+                "/lib",
+                "/lib64",
+                "/usr/bin",
+                "/usr/lib",
+                "/usr/lib64",
+            ]
+            .into_iter()
+            .map(PathBuf::from)
+            .filter(|path| path.exists()),
+        );
+    }
+    runtime_read_execute.sort_unstable();
+    runtime_read_execute.dedup();
+
+    let mut runtime_read_only = [
+        "/etc/hosts",
+        "/etc/ld.so.cache",
+        "/etc/nsswitch.conf",
+        "/etc/resolv.conf",
+        "/etc/ssl/certs",
+    ]
+    .into_iter()
+    .map(PathBuf::from)
+    .filter(|path| path.exists())
+    .filter(|path| {
+        !shell_uses_nix_store
+            || fs::canonicalize(path).is_ok_and(|path| !path.starts_with("/nix/store"))
+    })
+    .collect::<Vec<_>>();
+    runtime_read_only.sort_unstable();
+    runtime_read_only.dedup();
+
+    ProviderConfinement {
+        writable_state,
+        runtime_read_execute,
+        runtime_read_only,
+        runtime_read_write: vec![PathBuf::from("/dev/null")],
+    }
 }
 
 pub(crate) fn parse_content_json(

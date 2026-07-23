@@ -25,6 +25,7 @@ const PROVIDER_CREDENTIALS: &[(&str, &[&str])] = &[
 pub struct OpenCodeProvider {
     executable: PathBuf,
     environment: HashMap<String, String>,
+    confinement: common::ProviderConfinement,
     credential_name: String,
     model: Option<String>,
     timeout: Duration,
@@ -43,13 +44,17 @@ impl OpenCodeProvider {
         }
         let model = model.filter(|value| !value.is_empty());
         let (credential_name, credential) = select_credential(credentials, model.as_deref())?;
-        let discovery = common::discover_provider(search_path, "opencode", state_dir)?;
-        let mut environment = discovery.environment;
+        let common::ProviderDiscovery {
+            executable,
+            mut environment,
+            confinement,
+        } = common::discover_provider(search_path, "opencode", state_dir)?;
         environment.insert(credential_name.clone(), credential);
         environment.insert("OPENCODE_CONFIG_CONTENT".to_owned(), CONFIG.to_owned());
         Ok(Self {
-            executable: discovery.executable,
+            executable,
             environment,
+            confinement,
             credential_name,
             model,
             timeout,
@@ -101,6 +106,10 @@ impl AgentProvider for OpenCodeProvider {
         PROVIDER_NAME
     }
 
+    fn requires_process_confinement(&self) -> bool {
+        true
+    }
+
     fn process_spec(&self, worktree_path: &Path) -> Option<ProcessSpec> {
         let mut arguments = vec![
             "run".to_owned(),
@@ -122,6 +131,7 @@ impl AgentProvider for OpenCodeProvider {
             current_dir: Some(worktree_path.to_path_buf()),
             timeout: self.timeout,
             output_limit: common::PROVIDER_OUTPUT_LIMIT_BYTES,
+            confinement: self.confinement.for_worktree(worktree_path),
         })
     }
 
@@ -354,12 +364,16 @@ mod tests {
     #[test]
     fn fake_opencode_process_completes_under_supervision() {
         let directory = tempdir().unwrap();
+        let binary_directory = directory.path().join("bin");
+        let worktree = directory.path().join("worktree");
+        fs::create_dir_all(&binary_directory).unwrap();
+        fs::create_dir_all(&worktree).unwrap();
         write_executable(
-            &directory.path().join("opencode"),
+            &binary_directory.join("opencode"),
             "#!/bin/sh\nprintf '%s\\n' '{\"type\":\"text\",\"part\":{\"text\":\"{\\\"content\\\":\\\"generated read-only\\\\n\\\"}\"}}' '{\"type\":\"step_finish\",\"part\":{\"reason\":\"stop\"}}'\n",
         );
         let provider = OpenCodeProvider::discover(
-            &directory.path().to_string_lossy(),
+            &binary_directory.to_string_lossy(),
             &HashMap::from([("OPENAI_API_KEY".to_owned(), "key".to_owned())]),
             &directory.path().join("state"),
             None,
@@ -367,11 +381,16 @@ mod tests {
         )
         .unwrap();
         let result = execution::supervise(
-            &provider.process_spec(directory.path()).unwrap(),
+            &provider.process_spec(&worktree).unwrap(),
             &CancellationToken::default(),
         )
         .unwrap();
-        assert_eq!(result.outcome, TerminalOutcome::Completed(0));
+        assert_eq!(
+            result.outcome,
+            TerminalOutcome::Completed(0),
+            "{}",
+            String::from_utf8_lossy(&result.stderr)
+        );
         assert_eq!(
             provider.propose(Some(&result)).unwrap().content,
             b"generated read-only\n"

@@ -4,8 +4,8 @@ use domain::{
     WorktreeState, limits,
 };
 use execution::{
-    ExecutableIdentity, ProcessGroupIdentity, ProcessStartIdentity, SupervisionMetadata,
-    SupervisionState, TerminationReason,
+    ExecutableIdentity, ProcessConfinementReport, ProcessGroupIdentity, ProcessStartIdentity,
+    SupervisionMetadata, SupervisionState, TerminationReason,
 };
 use persistence::{
     ChangesetFinalizationResult, ChangesetFinalizationState, MutationLease, PersistenceError,
@@ -44,6 +44,7 @@ fn supervision_metadata(state: SupervisionState) -> SupervisionMetadata {
         },
         command_digest: "command".to_owned(),
         environment_digest: "environment".to_owned(),
+        confinement: ProcessConfinementReport::default(),
         supervision_token: "nonsecret-token".to_owned(),
         state,
         termination_reason: None,

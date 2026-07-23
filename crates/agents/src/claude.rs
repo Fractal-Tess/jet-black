@@ -14,6 +14,7 @@ const TARGET_PATH: &str = "jet-black-claude-approved.txt";
 pub struct ClaudeCodeProvider {
     executable: PathBuf,
     environment: HashMap<String, String>,
+    confinement: common::ProviderConfinement,
     model: Option<String>,
     timeout: Duration,
 }
@@ -32,16 +33,20 @@ impl ClaudeCodeProvider {
         let api_key = api_key
             .filter(|value| !value.is_empty())
             .ok_or(ProviderError::MissingCredential)?;
-        let discovery = common::discover_provider(search_path, "claude", state_dir)?;
-        let mut environment = discovery.environment;
+        let common::ProviderDiscovery {
+            executable,
+            mut environment,
+            confinement,
+        } = common::discover_provider(search_path, "claude", state_dir)?;
         environment.insert("ANTHROPIC_API_KEY".to_owned(), api_key);
         environment.insert(
             "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC".to_owned(),
             "1".to_owned(),
         );
         Ok(Self {
-            executable: discovery.executable,
+            executable,
             environment,
+            confinement,
             model: model.filter(|value| !value.is_empty()),
             timeout,
         })
@@ -53,8 +58,11 @@ impl AgentProvider for ClaudeCodeProvider {
         PROVIDER_NAME
     }
 
+    fn requires_process_confinement(&self) -> bool {
+        true
+    }
+
     fn process_spec(&self, worktree_path: &Path) -> Option<ProcessSpec> {
-        // TODO(security): add OS-level repository-only read confinement before hardened release use.
         let mut arguments = vec![
             "--bare".to_owned(),
             "--print".to_owned(),
@@ -85,6 +93,7 @@ impl AgentProvider for ClaudeCodeProvider {
             current_dir: Some(worktree_path.to_path_buf()),
             timeout: self.timeout,
             output_limit: common::PROVIDER_OUTPUT_LIMIT_BYTES,
+            confinement: self.confinement.for_worktree(worktree_path),
         })
     }
 
@@ -282,6 +291,9 @@ mod tests {
                 "XDG_DATA_HOME",
                 "XDG_CACHE_HOME",
                 "XDG_STATE_HOME",
+                "TMPDIR",
+                "TMP",
+                "TEMP",
                 "LC_ALL",
                 "GIT_TERMINAL_PROMPT",
                 "GIT_CONFIG_NOSYSTEM",
@@ -347,16 +359,32 @@ mod tests {
     #[test]
     fn fake_claude_process_runs_under_supervision() {
         let directory = tempdir().unwrap();
-        let executable = directory.path().join("claude");
+        use std::os::unix::fs::symlink;
+
+        let binary_directory = directory.path().join("bin");
+        let installation_directory = directory.path().join("package");
+        let installation_bin = installation_directory.join("bin");
+        let worktree = directory.path().join("worktree");
+        fs::create_dir_all(&binary_directory).unwrap();
+        fs::create_dir_all(&installation_bin).unwrap();
+        fs::create_dir_all(&worktree).unwrap();
+        fs::write(installation_directory.join("runtime.txt"), "runtime\n").unwrap();
+        let executable = installation_bin.join("claude");
         write_executable(
             &executable,
             &format!(
-                "#!/bin/sh\nprintf '%s' '{}'\n",
+                "#!/bin/sh\nIFS= read -r runtime < \"${{0%/*}}/../runtime.txt\" || exit 9\n[ \"$runtime\" = runtime ] || exit 10\nprintf '%s' '{}'\n",
                 String::from_utf8(valid_response("generated read-only\n")).unwrap()
             ),
         );
+        symlink(&executable, binary_directory.join("claude")).unwrap();
+        let search_path = std::env::join_paths([
+            directory.path().join("missing-bin"),
+            binary_directory.clone(),
+        ])
+        .unwrap();
         let provider = ClaudeCodeProvider::discover(
-            &directory.path().to_string_lossy(),
+            &search_path.to_string_lossy(),
             Some("key".to_owned()),
             &directory.path().join("state"),
             None,
@@ -364,12 +392,17 @@ mod tests {
         )
         .unwrap();
         let result = execution::supervise(
-            &provider.process_spec(directory.path()).unwrap(),
+            &provider.process_spec(&worktree).unwrap(),
             &CancellationToken::default(),
         )
         .unwrap();
 
-        assert_eq!(result.outcome, TerminalOutcome::Completed(0));
+        assert_eq!(
+            result.outcome,
+            TerminalOutcome::Completed(0),
+            "{}",
+            String::from_utf8_lossy(&result.stderr)
+        );
         assert_eq!(
             provider.propose(Some(&result)).unwrap().content,
             b"generated read-only\n"

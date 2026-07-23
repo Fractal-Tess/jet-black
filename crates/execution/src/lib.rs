@@ -45,6 +45,21 @@ pub struct ProcessResult {
     pub stderr_truncated: bool,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ProcessConfinement {
+    Unconfined,
+    LinuxFilesystem(LinuxFilesystemConfinement),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LinuxFilesystemConfinement {
+    pub workspace: PathBuf,
+    pub writable_state: PathBuf,
+    pub runtime_read_execute: Vec<PathBuf>,
+    pub runtime_read_only: Vec<PathBuf>,
+    pub runtime_read_write: Vec<PathBuf>,
+}
+
 #[derive(Clone)]
 pub struct ProcessSpec {
     pub program: String,
@@ -54,6 +69,7 @@ pub struct ProcessSpec {
     pub current_dir: Option<PathBuf>,
     pub timeout: Duration,
     pub output_limit: usize,
+    pub confinement: ProcessConfinement,
 }
 
 impl fmt::Debug for ProcessSpec {
@@ -72,6 +88,7 @@ impl fmt::Debug for ProcessSpec {
             .field("current_dir", &self.current_dir)
             .field("timeout", &self.timeout)
             .field("output_limit", &self.output_limit)
+            .field("confinement", &self.confinement)
             .finish()
     }
 }
@@ -131,6 +148,33 @@ pub struct ExecutableIdentity {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum FilesystemConfinementReport {
+    LegacyUnconfined,
+    Unconfined,
+    Landlock { policy_sha256: String, abi: u8 },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum NetworkConfinementReport {
+    NotOsConfined,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ProcessConfinementReport {
+    pub filesystem: FilesystemConfinementReport,
+    pub network: NetworkConfinementReport,
+}
+
+impl Default for ProcessConfinementReport {
+    fn default() -> Self {
+        Self {
+            filesystem: FilesystemConfinementReport::LegacyUnconfined,
+            network: NetworkConfinementReport::NotOsConfined,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SupervisionMetadata {
     pub supervision_id: Uuid,
     pub pid: u32,
@@ -139,6 +183,8 @@ pub struct SupervisionMetadata {
     pub executable: ExecutableIdentity,
     pub command_digest: String,
     pub environment_digest: String,
+    #[serde(default)]
+    pub confinement: ProcessConfinementReport,
     pub supervision_token: String,
     pub state: SupervisionState,
     pub termination_reason: Option<TerminationReason>,
@@ -226,7 +272,11 @@ pub fn supervise(
     Ok(supervisor.wait(running, cancellation)?.result)
 }
 
-fn command_digest(spec: &ProcessSpec, executable: &Path) -> String {
+fn command_digest(
+    spec: &ProcessSpec,
+    executable: &Path,
+    confinement: &ProcessConfinementReport,
+) -> String {
     let mut digest = Sha256::new();
     update_digest_field(&mut digest, executable.as_os_str().as_encoded_bytes());
     for argument in &spec.arguments {
@@ -234,6 +284,24 @@ fn command_digest(spec: &ProcessSpec, executable: &Path) -> String {
     }
     if let Some(current_dir) = &spec.current_dir {
         update_digest_field(&mut digest, current_dir.as_os_str().as_encoded_bytes());
+    }
+    match &confinement.filesystem {
+        FilesystemConfinementReport::LegacyUnconfined => {
+            update_digest_field(&mut digest, b"legacy-unconfined");
+        }
+        FilesystemConfinementReport::Unconfined => {
+            update_digest_field(&mut digest, b"unconfined");
+        }
+        FilesystemConfinementReport::Landlock { policy_sha256, abi } => {
+            update_digest_field(&mut digest, b"landlock");
+            update_digest_field(&mut digest, &[*abi]);
+            update_digest_field(&mut digest, policy_sha256.as_bytes());
+        }
+    }
+    match confinement.network {
+        NetworkConfinementReport::NotOsConfined => {
+            update_digest_field(&mut digest, b"network-not-os-confined");
+        }
     }
     hex_digest(digest.finalize())
 }
@@ -278,6 +346,12 @@ pub enum ExecutionError {
     ExecutableNotFound(String),
     #[error("prepared process setup failed")]
     ChildSetupFailed,
+    #[error("process confinement is invalid: {0}")]
+    InvalidConfinement(&'static str),
+    #[error("process confinement is unsafe: {0}")]
+    UnsafeConfinement(&'static str),
+    #[error("process confinement setup failed")]
+    ConfinementSetupFailed,
     #[error("process output pipe was unavailable")]
     MissingPipe,
     #[error("process output reader panicked")]
@@ -291,12 +365,16 @@ pub enum ExecutionError {
 #[cfg(target_os = "linux")]
 mod platform {
     use super::*;
+    use landlock::{
+        ABI, Access, AccessFs, CompatLevel, Compatible, PathBeneath, PathFd, Ruleset, RulesetAttr,
+        RulesetCreatedAttr, make_bitflags,
+    };
     use std::{
         ffi::{CString, OsStr},
         fs::File,
         io::{Read, Write},
         os::{
-            fd::{AsRawFd, FromRawFd, OwnedFd, RawFd},
+            fd::{AsFd, AsRawFd, FromRawFd, OwnedFd, RawFd},
             unix::{ffi::OsStrExt, fs::MetadataExt},
         },
         ptr,
@@ -469,6 +547,233 @@ mod platform {
         }
     }
 
+    struct CompiledConfinement {
+        ruleset: Option<OwnedFd>,
+        report: ProcessConfinementReport,
+    }
+
+    struct CanonicalFilesystemPolicy {
+        workspace: PathBuf,
+        writable_state: PathBuf,
+        runtime_read_execute: Vec<PathBuf>,
+        runtime_read_only: Vec<PathBuf>,
+        runtime_read_write: Vec<PathBuf>,
+    }
+
+    fn compile_confinement(
+        confinement: &ProcessConfinement,
+    ) -> Result<CompiledConfinement, ExecutionError> {
+        match confinement {
+            ProcessConfinement::Unconfined => Ok(CompiledConfinement {
+                ruleset: None,
+                report: ProcessConfinementReport {
+                    filesystem: FilesystemConfinementReport::Unconfined,
+                    network: NetworkConfinementReport::NotOsConfined,
+                },
+            }),
+            ProcessConfinement::LinuxFilesystem(policy) => compile_linux_filesystem(policy),
+        }
+    }
+
+    fn compile_linux_filesystem(
+        policy: &LinuxFilesystemConfinement,
+    ) -> Result<CompiledConfinement, ExecutionError> {
+        let policy = canonicalize_policy(policy)?;
+        validate_policy(&policy)?;
+        let policy_sha256 = policy_digest(&policy);
+        let abi = ABI::V3;
+        let all_access = AccessFs::from_all(abi);
+        let read_only = make_bitflags!(AccessFs::{ReadFile | ReadDir});
+        let read_execute = make_bitflags!(AccessFs::{ReadFile | ReadDir | Execute});
+        let read_write = make_bitflags!(AccessFs::{ReadFile | WriteFile | Truncate});
+        let writable = all_access & !AccessFs::Execute;
+        let mut ruleset = Ruleset::default()
+            .set_compatibility(CompatLevel::HardRequirement)
+            .handle_access(all_access)
+            .and_then(Ruleset::create)
+            .map_err(|_| ExecutionError::ConfinementSetupFailed)?;
+        add_path_rule(&mut ruleset, &policy.workspace, read_only)?;
+        add_path_rule(&mut ruleset, &policy.writable_state, writable)?;
+        for path in &policy.runtime_read_execute {
+            add_path_rule(&mut ruleset, path, read_execute)?;
+        }
+        for path in &policy.runtime_read_only {
+            add_path_rule(&mut ruleset, path, read_only)?;
+        }
+        for path in &policy.runtime_read_write {
+            add_path_rule(&mut ruleset, path, read_write)?;
+        }
+        let ruleset: Option<OwnedFd> = ruleset.into();
+        let ruleset = ruleset.ok_or(ExecutionError::ConfinementSetupFailed)?;
+        Ok(CompiledConfinement {
+            ruleset: Some(ruleset),
+            report: ProcessConfinementReport {
+                filesystem: FilesystemConfinementReport::Landlock {
+                    policy_sha256,
+                    abi: 3,
+                },
+                network: NetworkConfinementReport::NotOsConfined,
+            },
+        })
+    }
+
+    fn add_path_rule(
+        ruleset: &mut landlock::RulesetCreated,
+        path: &Path,
+        access: landlock::BitFlags<AccessFs>,
+    ) -> Result<(), ExecutionError> {
+        let path_fd = PathFd::new(path).map_err(|_| ExecutionError::ConfinementSetupFailed)?;
+        let mut metadata = std::mem::MaybeUninit::<libc::stat>::uninit();
+        if unsafe { libc::fstat(path_fd.as_fd().as_raw_fd(), metadata.as_mut_ptr()) } != 0 {
+            return Err(ExecutionError::ConfinementSetupFailed);
+        }
+        let metadata = unsafe { metadata.assume_init() };
+        let is_directory = metadata.st_mode & libc::S_IFMT == libc::S_IFDIR;
+        let access = if is_directory {
+            access
+        } else {
+            access & !make_bitflags!(AccessFs::{ReadDir})
+        };
+        ruleset
+            .add_rule(PathBeneath::new(path_fd, access))
+            .map_err(|_| ExecutionError::ConfinementSetupFailed)?;
+        Ok(())
+    }
+
+    fn canonicalize_policy(
+        policy: &LinuxFilesystemConfinement,
+    ) -> Result<CanonicalFilesystemPolicy, ExecutionError> {
+        Ok(CanonicalFilesystemPolicy {
+            workspace: canonicalize_directory(&policy.workspace, "workspace path is unavailable")?,
+            writable_state: canonicalize_directory(
+                &policy.writable_state,
+                "writable state path is unavailable",
+            )?,
+            runtime_read_execute: canonicalize_paths(&policy.runtime_read_execute)?,
+            runtime_read_only: canonicalize_paths(&policy.runtime_read_only)?,
+            runtime_read_write: canonicalize_paths(&policy.runtime_read_write)?,
+        })
+    }
+
+    fn canonicalize_directory(
+        path: &Path,
+        unavailable_message: &'static str,
+    ) -> Result<PathBuf, ExecutionError> {
+        let canonical = std::fs::canonicalize(path)
+            .map_err(|_| ExecutionError::InvalidConfinement(unavailable_message))?;
+        if !canonical.is_dir() {
+            return Err(ExecutionError::InvalidConfinement(
+                "workspace and writable state must be directories",
+            ));
+        }
+        Ok(canonical)
+    }
+
+    fn canonicalize_paths(paths: &[PathBuf]) -> Result<Vec<PathBuf>, ExecutionError> {
+        let mut canonical = Vec::with_capacity(paths.len());
+        for path in paths {
+            canonical.push(
+                std::fs::canonicalize(path).map_err(|_| {
+                    ExecutionError::InvalidConfinement("runtime path is unavailable")
+                })?,
+            );
+        }
+        canonical.sort_unstable();
+        canonical.dedup();
+        Ok(canonical)
+    }
+
+    fn validate_policy(policy: &CanonicalFilesystemPolicy) -> Result<(), ExecutionError> {
+        let root = Path::new("/");
+        let all_paths = std::iter::once(&policy.workspace)
+            .chain(std::iter::once(&policy.writable_state))
+            .chain(policy.runtime_read_execute.iter())
+            .chain(policy.runtime_read_only.iter())
+            .chain(policy.runtime_read_write.iter());
+        if all_paths.into_iter().any(|path| path == root) {
+            return Err(ExecutionError::UnsafeConfinement(
+                "filesystem root cannot be granted",
+            ));
+        }
+        if paths_overlap(&policy.workspace, &policy.writable_state) {
+            return Err(ExecutionError::UnsafeConfinement(
+                "workspace and writable state must not overlap",
+            ));
+        }
+        for runtime in policy
+            .runtime_read_execute
+            .iter()
+            .chain(policy.runtime_read_only.iter())
+            .chain(policy.runtime_read_write.iter())
+        {
+            if paths_overlap(runtime, &policy.workspace)
+                || paths_overlap(runtime, &policy.writable_state)
+            {
+                return Err(ExecutionError::UnsafeConfinement(
+                    "runtime paths cannot overlap workspace or writable state",
+                ));
+            }
+        }
+        ensure_permission_classes_do_not_overlap(
+            &policy.runtime_read_execute,
+            &policy.runtime_read_only,
+        )?;
+        ensure_permission_classes_do_not_overlap(
+            &policy.runtime_read_execute,
+            &policy.runtime_read_write,
+        )?;
+        ensure_permission_classes_do_not_overlap(
+            &policy.runtime_read_only,
+            &policy.runtime_read_write,
+        )?;
+        Ok(())
+    }
+
+    fn ensure_permission_classes_do_not_overlap(
+        left: &[PathBuf],
+        right: &[PathBuf],
+    ) -> Result<(), ExecutionError> {
+        if left
+            .iter()
+            .any(|left| right.iter().any(|right| paths_overlap(left, right)))
+        {
+            return Err(ExecutionError::UnsafeConfinement(
+                "runtime permission classes must not overlap",
+            ));
+        }
+        Ok(())
+    }
+
+    fn paths_overlap(left: &Path, right: &Path) -> bool {
+        left.starts_with(right) || right.starts_with(left)
+    }
+
+    fn policy_digest(policy: &CanonicalFilesystemPolicy) -> String {
+        let mut digest = Sha256::new();
+        update_digest_field(&mut digest, b"jet-black-landlock-filesystem-v3");
+        update_policy_path(&mut digest, b"workspace-read-only", &policy.workspace);
+        update_policy_path(
+            &mut digest,
+            b"writable-state-all-except-execute",
+            &policy.writable_state,
+        );
+        for path in &policy.runtime_read_execute {
+            update_policy_path(&mut digest, b"runtime-read-execute", path);
+        }
+        for path in &policy.runtime_read_only {
+            update_policy_path(&mut digest, b"runtime-read-only", path);
+        }
+        for path in &policy.runtime_read_write {
+            update_policy_path(&mut digest, b"runtime-read-write", path);
+        }
+        hex_digest(digest.finalize())
+    }
+
+    fn update_policy_path(digest: &mut Sha256, kind: &[u8], path: &Path) {
+        update_digest_field(digest, kind);
+        update_digest_field(digest, path.as_os_str().as_bytes());
+    }
+
     pub fn prepare(
         spec: &ProcessSpec,
     ) -> Result<(PreparedProcess, SupervisionMetadata), ExecutionError> {
@@ -480,7 +785,11 @@ mod platform {
             inode: executable_metadata.ino(),
         };
         let token = Uuid::new_v4().to_string();
-        let child_state = ChildState::new(spec, &executable_path, &token)?;
+        let CompiledConfinement {
+            ruleset,
+            report: confinement_report,
+        } = compile_confinement(&spec.confinement)?;
+        let child_state = ChildState::new(spec, &executable_path, &token, ruleset)?;
 
         let (release_reader, release_writer) = pipe()?;
         let (ready_reader, ready_writer) = pipe()?;
@@ -516,8 +825,13 @@ mod platform {
         drop(null);
 
         match wait_until_ready(ready_reader) {
-            Ok(true) => {}
-            Ok(false) => {
+            Ok(ChildReadyStatus::Ready) => {}
+            Ok(ChildReadyStatus::ConfinementFailed) => {
+                drop(release_writer);
+                let _ = reap_blocking(pid);
+                return Err(ExecutionError::ConfinementSetupFailed);
+            }
+            Ok(ChildReadyStatus::SetupFailed) => {
                 drop(release_writer);
                 let _ = reap_blocking(pid);
                 return Err(ExecutionError::ChildSetupFailed);
@@ -541,8 +855,9 @@ mod platform {
             process_group: ProcessGroupIdentity::UnixProcessGroup { pgid: pid },
             process_start,
             executable,
-            command_digest: command_digest(spec, &executable_path),
+            command_digest: command_digest(spec, &executable_path, &confinement_report),
             environment_digest: environment_digest(&spec.environment),
+            confinement: confinement_report,
             supervision_token: token,
             state: SupervisionState::Prepared,
             termination_reason: None,
@@ -582,10 +897,16 @@ mod platform {
         environment: Vec<CString>,
         environment_pointers: Vec<*const libc::c_char>,
         current_dir: Option<CString>,
+        confinement_ruleset: Option<OwnedFd>,
     }
 
     impl ChildState {
-        fn new(spec: &ProcessSpec, executable: &Path, token: &str) -> Result<Self, ExecutionError> {
+        fn new(
+            spec: &ProcessSpec,
+            executable: &Path,
+            token: &str,
+            confinement_ruleset: Option<OwnedFd>,
+        ) -> Result<Self, ExecutionError> {
             let executable = os_string_to_cstring(executable.as_os_str())?;
             let mut arguments = Vec::with_capacity(spec.arguments.len() + 1);
             arguments.push(executable.clone());
@@ -630,6 +951,7 @@ mod platform {
                 environment,
                 environment_pointers,
                 current_dir,
+                confinement_ruleset,
             })
         }
     }
@@ -661,9 +983,19 @@ mod platform {
             libc::close(stdout_writer);
             libc::close(stderr_writer);
         }
+        let ruleset_fd = state.confinement_ruleset.as_ref().map(AsRawFd::as_raw_fd);
+        if !close_unlisted_fds(release_reader, ready_writer, ruleset_fd) {
+            unsafe { libc::_exit(126) };
+        }
         if let Some(current_dir) = &state.current_dir
             && unsafe { libc::chdir(current_dir.as_ptr()) } != 0
         {
+            unsafe { libc::_exit(126) };
+        }
+        if let Some(ruleset) = &state.confinement_ruleset
+            && !apply_landlock(ruleset.as_raw_fd())
+        {
+            let _ = write_child_byte(ready_writer, 2);
             unsafe { libc::_exit(126) };
         }
         if !write_child_byte(ready_writer, 1) {
@@ -684,6 +1016,47 @@ mod platform {
             );
             libc::_exit(127);
         }
+    }
+
+    fn close_unlisted_fds(
+        release_reader: RawFd,
+        ready_writer: RawFd,
+        ruleset_fd: Option<RawFd>,
+    ) -> bool {
+        let mut retained = [release_reader, ready_writer, ruleset_fd.unwrap_or(-1)];
+        retained.sort_unstable();
+        let mut first = 3_u32;
+        for fd in retained {
+            let Ok(fd) = u32::try_from(fd) else {
+                continue;
+            };
+            if fd < first {
+                continue;
+            }
+            if first < fd && !close_fd_range(first, fd - 1) {
+                return false;
+            }
+            first = fd.saturating_add(1);
+        }
+        first == u32::MAX || close_fd_range(first, u32::MAX)
+    }
+
+    fn close_fd_range(first: u32, last: u32) -> bool {
+        loop {
+            if unsafe { libc::syscall(libc::SYS_close_range, first, last, 0_u32) } == 0 {
+                return true;
+            }
+            if std::io::Error::last_os_error().raw_os_error() != Some(libc::EINTR) {
+                return false;
+            }
+        }
+    }
+
+    fn apply_landlock(ruleset_fd: RawFd) -> bool {
+        if unsafe { libc::prctl(libc::PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0) } != 0 {
+            return false;
+        }
+        unsafe { libc::syscall(libc::SYS_landlock_restrict_self, ruleset_fd, 0_u32) == 0 }
     }
 
     fn read_child_release(fd: RawFd) -> bool {
@@ -714,13 +1087,20 @@ mod platform {
         }
     }
 
-    fn wait_until_ready(reader: OwnedFd) -> Result<bool, ExecutionError> {
+    enum ChildReadyStatus {
+        Ready,
+        ConfinementFailed,
+        SetupFailed,
+    }
+
+    fn wait_until_ready(reader: OwnedFd) -> Result<ChildReadyStatus, ExecutionError> {
         let mut reader = File::from(reader);
         let mut byte = [0_u8; 1];
         loop {
             match reader.read(&mut byte) {
-                Ok(1) => return Ok(byte[0] == 1),
-                Ok(_) => return Ok(false),
+                Ok(1) if byte[0] == 1 => return Ok(ChildReadyStatus::Ready),
+                Ok(1) if byte[0] == 2 => return Ok(ChildReadyStatus::ConfinementFailed),
+                Ok(_) => return Ok(ChildReadyStatus::SetupFailed),
                 Err(error) if error.kind() == std::io::ErrorKind::Interrupted => {}
                 Err(error) => return Err(error.into()),
             }
@@ -1224,10 +1604,40 @@ mod tests {
             current_dir: None,
             timeout: Duration::from_secs(1),
             output_limit: 1024,
+            confinement: ProcessConfinement::Unconfined,
         };
 
         let debug = format!("{spec:?}");
         assert!(debug.contains("PROVIDER_API_KEY"));
         assert!(!debug.contains("top-secret"));
+    }
+
+    #[test]
+    fn legacy_metadata_defaults_to_unconfined_report() {
+        let metadata = SupervisionMetadata {
+            supervision_id: Uuid::nil(),
+            pid: 1,
+            process_group: ProcessGroupIdentity::UnixProcessGroup { pgid: 1 },
+            process_start: ProcessStartIdentity::Platform {
+                identity: "legacy".to_owned(),
+            },
+            executable: ExecutableIdentity {
+                path: PathBuf::from("/legacy"),
+                device: 0,
+                inode: 0,
+            },
+            command_digest: "command".to_owned(),
+            environment_digest: "environment".to_owned(),
+            confinement: ProcessConfinementReport::default(),
+            supervision_token: "token".to_owned(),
+            state: SupervisionState::Terminated,
+            termination_reason: None,
+        };
+        let mut serialized = serde_json::to_value(metadata).unwrap();
+        serialized.as_object_mut().unwrap().remove("confinement");
+
+        let restored: SupervisionMetadata = serde_json::from_value(serialized).unwrap();
+
+        assert_eq!(restored.confinement, ProcessConfinementReport::default());
     }
 }

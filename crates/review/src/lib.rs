@@ -289,6 +289,7 @@ impl ReviewService {
             current_dir: Some(worktree.to_path_buf()),
             timeout: self.options.timeout,
             output_limit: self.options.output_limit,
+            confinement: execution::ProcessConfinement::Unconfined,
         })
     }
 }

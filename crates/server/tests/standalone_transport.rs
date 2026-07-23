@@ -698,8 +698,7 @@ async fn serves_static_assets_only_for_the_local_authority() {
     fs::create_dir(directory.path().join("api")).unwrap();
     fs::write(directory.path().join("api/missing"), "not the API").unwrap();
     let static_assets = StaticAssets::open(directory.path()).unwrap();
-    let server =
-        test_server(Arc::new(FixtureRuntime::default())).with_static_assets(static_assets);
+    let server = test_server(Arc::new(FixtureRuntime::default())).with_static_assets(static_assets);
     let router = server.router();
 
     let index = router

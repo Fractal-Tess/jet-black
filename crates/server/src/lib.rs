@@ -105,13 +105,14 @@ pub struct StaticAssets {
 
 impl StaticAssets {
     pub fn open(directory: impl AsRef<FilePath>) -> Result<Self, ServerError> {
-        let directory = directory
-            .as_ref()
-            .canonicalize()
-            .map_err(|source| ServerError::StaticAssets {
-                path: directory.as_ref().to_path_buf(),
-                source,
-            })?;
+        let directory =
+            directory
+                .as_ref()
+                .canonicalize()
+                .map_err(|source| ServerError::StaticAssets {
+                    path: directory.as_ref().to_path_buf(),
+                    source,
+                })?;
         let index_path = directory.join("index.html");
         if !index_path.is_file() {
             return Err(ServerError::MissingStaticIndex(index_path));
@@ -175,9 +176,7 @@ impl StandaloneServer {
             .layer(DefaultBodyLimit::max(MAX_COMMAND_BODY_BYTES))
             .with_state(self.state.clone());
         let router = match &self.static_assets {
-            Some(static_assets) => {
-                router.fallback_service(ServeDir::new(&static_assets.directory))
-            }
+            Some(static_assets) => router.fallback_service(ServeDir::new(&static_assets.directory)),
             None => router,
         };
         router.layer(middleware::from_fn_with_state(
@@ -209,9 +208,7 @@ struct BootstrapResponse {
     session_required: bool,
 }
 
-async fn bootstrap(
-    State(state): State<ServerState>,
-) -> Result<Json<BootstrapResponse>, ApiError> {
+async fn bootstrap(State(state): State<ServerState>) -> Result<Json<BootstrapResponse>, ApiError> {
     Ok(Json(BootstrapResponse {
         bootstrap: (*state.bootstrap).clone(),
         session_required: true,

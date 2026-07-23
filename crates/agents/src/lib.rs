@@ -40,6 +40,7 @@ impl ProposedFileChange {
 
 pub trait AgentProvider {
     fn name(&self) -> &'static str;
+    fn requires_process_confinement(&self) -> bool;
     fn process_spec(&self, _worktree_path: &Path) -> Option<ProcessSpec> {
         None
     }
@@ -112,6 +113,11 @@ impl AgentProvider for MockProvider {
     fn name(&self) -> &'static str {
         "mock"
     }
+
+    fn requires_process_confinement(&self) -> bool {
+        false
+    }
+
     fn propose(
         &self,
         _process_result: Option<&ProcessResult>,
@@ -145,6 +151,15 @@ impl AgentProvider for LocalProvider {
             Self::ClaudeCode(provider) => provider.name(),
             Self::Codex(provider) => provider.name(),
             Self::OpenCode(provider) => provider.name(),
+        }
+    }
+
+    fn requires_process_confinement(&self) -> bool {
+        match self {
+            Self::Mock(provider) => provider.requires_process_confinement(),
+            Self::ClaudeCode(provider) => provider.requires_process_confinement(),
+            Self::Codex(provider) => provider.requires_process_confinement(),
+            Self::OpenCode(provider) => provider.requires_process_confinement(),
         }
     }
 

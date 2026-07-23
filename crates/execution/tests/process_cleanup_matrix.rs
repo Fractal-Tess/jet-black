@@ -1,6 +1,7 @@
 use execution::{
-    CancellationToken, ProcessSpec, ProcessStartIdentity, ProcessSupervisor, SupervisionState,
-    TerminalOutcome, TerminationStatus, supervise,
+    CancellationToken, FilesystemConfinementReport, NetworkConfinementReport, ProcessConfinement,
+    ProcessConfinementReport, ProcessSpec, ProcessStartIdentity, ProcessSupervisor,
+    SupervisionState, TerminalOutcome, TerminationStatus, supervise,
 };
 use std::{
     collections::HashMap,
@@ -17,6 +18,7 @@ fn spec(_seconds: u64) -> ProcessSpec {
         current_dir: None,
         timeout: Duration::from_millis(200),
         output_limit: 32,
+        confinement: ProcessConfinement::Unconfined,
     }
 }
 
@@ -187,6 +189,13 @@ fn metadata_contains_digests_without_raw_arguments_or_environment() {
     assert!(!serialized.contains(environment_secret));
     assert!(!serialized.contains("JET_BLACK_TEST_SECRET"));
     assert!(metadata.executable.path.is_absolute());
+    assert_eq!(
+        metadata.confinement,
+        ProcessConfinementReport {
+            filesystem: FilesystemConfinementReport::Unconfined,
+            network: NetworkConfinementReport::NotOsConfined,
+        }
+    );
     drop(prepared);
 }
 

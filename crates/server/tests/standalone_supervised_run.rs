@@ -1,4 +1,4 @@
-#![cfg(unix)]
+#![cfg(target_os = "linux")]
 
 use agents::{AgentProvider, MockProvider, ProposedFileChange, ProviderError};
 use axum::{
@@ -9,7 +9,10 @@ use axum::{
 use base64::{Engine as _, engine::general_purpose::STANDARD};
 use config::{ProviderKind, PublicBootstrap};
 use domain::{ChangesetState, Id, RunState, WorktreeState, limits::MAX_COMMAND_BODY_BYTES};
-use execution::{ProcessResult, ProcessSpec, SupervisionState, TerminationReason};
+use execution::{
+    LinuxFilesystemConfinement, ProcessConfinement, ProcessResult, ProcessSpec, SupervisionState,
+    TerminationReason,
+};
 use git::GitService;
 use orchestration::LocalOrchestrator;
 use persistence::{ArtifactPolicy, LocalArtifactStore, SqliteStore};
@@ -36,27 +39,49 @@ const AUTHORITY: &str = "127.0.0.1:43171";
 const ORIGIN: &str = "http://127.0.0.1:43171";
 const PROVIDER_OUTPUT: &str = "supervised-provider-output";
 
-struct StandaloneGateProvider;
+struct StandaloneGateProvider {
+    state_directory: PathBuf,
+    outside_read_path: PathBuf,
+    outside_write_path: PathBuf,
+}
 
 impl AgentProvider for StandaloneGateProvider {
     fn name(&self) -> &'static str {
         "standalone-gate"
     }
 
-    fn process_spec(&self, _: &Path) -> Option<ProcessSpec> {
+    fn requires_process_confinement(&self) -> bool {
+        true
+    }
+
+    fn process_spec(&self, worktree_path: &Path) -> Option<ProcessSpec> {
         Some(ProcessSpec {
             program: "/bin/sh".to_owned(),
             arguments: vec![
                 "-c".to_owned(),
-                "printf %s \"$1\"".to_owned(),
+                "if IFS= read -r value < \"$1\"; then exit 81; fi; if (printf blocked > \"$2\") 2>/dev/null; then exit 82; fi; printf state > \"$3\"; \"$5\" --version >/dev/null 2>&1 || exit 84; \"$5\" rev-parse --git-common-dir > \"$3.git-common\" 2>/dev/null || exit 83; printf %s \"$4\"".to_owned(),
                 "jet-black-gate".to_owned(),
+                self.outside_read_path.to_string_lossy().into_owned(),
+                self.outside_write_path.to_string_lossy().into_owned(),
+                self.state_directory
+                    .join("provider-marker")
+                    .to_string_lossy()
+                    .into_owned(),
                 PROVIDER_OUTPUT.to_owned(),
+                command_path("git").to_string_lossy().into_owned(),
             ],
             environment: HashMap::new(),
             sensitive_environment_keys: Vec::new(),
             current_dir: None,
             timeout: Duration::from_secs(5),
             output_limit: 1024,
+            confinement: ProcessConfinement::LinuxFilesystem(LinuxFilesystemConfinement {
+                workspace: worktree_path.to_path_buf(),
+                writable_state: self.state_directory.clone(),
+                runtime_read_execute: runtime_read_execute_paths(),
+                runtime_read_only: Vec::new(),
+                runtime_read_write: vec![PathBuf::from("/dev/null")],
+            }),
         })
     }
 
@@ -112,10 +137,38 @@ fn fixture_repository(root: &Path) -> (PathBuf, String) {
     (repository, base_sha)
 }
 
+fn command_path(name: &str) -> PathBuf {
+    std::env::split_paths(&std::env::var_os("PATH").unwrap())
+        .map(|directory| directory.join(name))
+        .find(|candidate| candidate.is_file())
+        .and_then(|candidate| fs::canonicalize(candidate).ok())
+        .unwrap()
+}
+
+fn runtime_read_execute_paths() -> Vec<PathBuf> {
+    if fs::canonicalize("/bin/sh").is_ok_and(|path| path.starts_with("/nix/store")) {
+        return vec![PathBuf::from("/nix/store")];
+    }
+    [
+        "/bin",
+        "/lib",
+        "/lib64",
+        "/usr/bin",
+        "/usr/lib",
+        "/usr/lib64",
+    ]
+    .into_iter()
+    .map(PathBuf::from)
+    .filter(|path| path.exists())
+    .collect()
+}
+
 fn compose_runtime(
     root: &Path,
     database_path: &Path,
 ) -> (Arc<LocalOrchestrator<StandaloneGateProvider>>, SqliteStore) {
+    let state_directory = root.join("provider-state");
+    fs::create_dir_all(&state_directory).unwrap();
     let store = SqliteStore::open(database_path).unwrap();
     let git = GitService::new(vec![root.to_path_buf()], root.join("worktrees")).unwrap();
     let artifact_store = LocalArtifactStore::new(
@@ -127,7 +180,11 @@ fn compose_runtime(
     let runtime = LocalOrchestrator::new(
         store.clone(),
         git,
-        StandaloneGateProvider,
+        StandaloneGateProvider {
+            state_directory,
+            outside_read_path: root.join("outside-secret"),
+            outside_write_path: root.join("outside-write"),
+        },
         Duration::from_secs(60),
     )
     .with_artifact_store(artifact_store)
@@ -237,7 +294,11 @@ async fn wait_for_approval(
         {
             return *snapshot;
         }
-        assert!(Instant::now() < deadline, "run did not reach approval");
+        assert!(
+            Instant::now() < deadline,
+            "run did not reach approval: {:?}",
+            snapshot.run
+        );
         sleep(poll_interval).await;
         poll_interval = (poll_interval * 2).min(Duration::from_millis(250));
     }
@@ -279,6 +340,7 @@ async fn replay_events(router: &Router, cookie: &str, run_id: Id) -> Vec<Ordered
 async fn standalone_supervised_run_survives_restart_and_finalizes_exact_revision() {
     let directory = tempfile::tempdir().unwrap();
     let root = directory.path();
+    fs::write(root.join("outside-secret"), "must remain inaccessible\n").unwrap();
     let database_path = root.join("standalone.sqlite3");
     let (repository_path, base_sha) = fixture_repository(root);
     let (runtime, store) = compose_runtime(root, &database_path);
@@ -335,7 +397,6 @@ async fn standalone_supervised_run_survives_restart_and_finalizes_exact_revision
 
     let approval_snapshot = wait_for_approval(&router, &cookie, &csrf, started.run_id).await;
     let worktree_path = approval_snapshot.worktree.as_ref().unwrap().path.clone();
-    let approval = approval_snapshot.pending_approval.clone().unwrap();
 
     let supervision = store
         .latest_process_supervision_for_run(started.run_id)
@@ -345,6 +406,30 @@ async fn standalone_supervised_run_survives_restart_and_finalizes_exact_revision
     assert_eq!(
         supervision.metadata.termination_reason,
         Some(TerminationReason::Exited { code: 0 })
+    );
+    let approval = approval_snapshot.pending_approval.clone().unwrap();
+    assert!(matches!(
+        supervision.metadata.confinement.filesystem,
+        execution::FilesystemConfinementReport::Landlock { abi: 3, .. }
+    ));
+    assert_eq!(
+        supervision.metadata.confinement.network,
+        execution::NetworkConfinementReport::NotOsConfined
+    );
+    assert_eq!(
+        fs::read(root.join("outside-secret")).unwrap(),
+        b"must remain inaccessible\n"
+    );
+    assert!(!root.join("outside-write").exists());
+    assert_eq!(
+        fs::read(root.join("provider-state/provider-marker")).unwrap(),
+        b"state"
+    );
+    let git_common_directory =
+        fs::read_to_string(root.join("provider-state/provider-marker.git-common")).unwrap();
+    assert_eq!(
+        fs::canonicalize(git_common_directory.trim()).unwrap(),
+        fs::canonicalize(repository_path.join(".git")).unwrap()
     );
 
     let response = authenticated_command(

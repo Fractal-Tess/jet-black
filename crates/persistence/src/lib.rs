@@ -2741,6 +2741,7 @@ fn same_process_supervision_identity(
         && stored.executable == proposed.executable
         && stored.command_digest == proposed.command_digest
         && stored.environment_digest == proposed.environment_digest
+        && stored.confinement == proposed.confinement
         && stored.supervision_token == proposed.supervision_token
 }
 

@@ -36,6 +36,12 @@ fn worktree_and_file_operations_are_bounded() {
     assert_eq!(registered.base_sha.len(), 40);
     let changeset_id = uuid::Uuid::new_v4();
     let mut worktree = service.create_worktree(&registered, changeset_id).unwrap();
+    assert_eq!(
+        service
+            .provider_read_only_paths(&registered, &worktree)
+            .unwrap(),
+        vec![fs::canonicalize(repo.join(".git")).unwrap()]
+    );
     let scope = ApprovalScope {
         repository_id: registered.id,
         changeset_id,
@@ -97,6 +103,52 @@ fn worktree_and_file_operations_are_bounded() {
         .cleanup_worktree(&registered, &mut worktree)
         .unwrap();
     assert!(!worktree_path.exists());
+}
+
+#[test]
+#[serial_test::serial]
+fn provider_paths_reject_a_git_directory_outside_registered_metadata() {
+    let directory = tempdir().unwrap();
+    let repo = directory.path().join("repo");
+    fs::create_dir(&repo).unwrap();
+    git(&repo, &["init", "-q"]);
+    git(&repo, &["config", "user.email", "test@example.com"]);
+    git(&repo, &["config", "user.name", "Test"]);
+    fs::write(repo.join("README.md"), "fixture\n").unwrap();
+    git(&repo, &["add", "."]);
+    git(&repo, &["commit", "-qm", "fixture"]);
+    let service = GitService::new(
+        vec![directory.path().to_path_buf()],
+        directory.path().join("worktrees"),
+    )
+    .unwrap();
+    let registered = service.register(&repo).unwrap();
+    let worktree = service
+        .create_worktree(&registered, uuid::Uuid::new_v4())
+        .unwrap();
+    let git_file = fs::read_to_string(worktree.path.join(".git")).unwrap();
+    let original_git_directory = git_file.trim().strip_prefix("gitdir: ").unwrap();
+    let original_git_directory = fs::canonicalize(original_git_directory).unwrap();
+    let outside_git_directory = directory.path().join("outside-git-directory");
+    fs::rename(&original_git_directory, &outside_git_directory).unwrap();
+    fs::write(
+        outside_git_directory.join("commondir"),
+        format!(
+            "{}\n",
+            fs::canonicalize(repo.join(".git")).unwrap().display()
+        ),
+    )
+    .unwrap();
+    fs::write(
+        worktree.path.join(".git"),
+        format!("gitdir: {}\n", outside_git_directory.display()),
+    )
+    .unwrap();
+
+    assert!(matches!(
+        service.provider_read_only_paths(&registered, &worktree),
+        Err(GitError::SymlinkEscape)
+    ));
 }
 
 #[test]

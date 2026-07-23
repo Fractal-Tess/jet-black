@@ -73,6 +73,7 @@ fn supervised_local_run_survives_restart() {
             current_dir: Some(worktree.path.clone()),
             timeout: std::time::Duration::from_secs(2),
             output_limit: 1024,
+            confinement: execution::ProcessConfinement::Unconfined,
         },
         &execution::CancellationToken::default(),
     )

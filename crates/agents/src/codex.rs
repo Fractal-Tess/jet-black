@@ -14,6 +14,7 @@ const TARGET_PATH: &str = "jet-black-codex-approved.txt";
 pub struct CodexProvider {
     executable: PathBuf,
     environment: HashMap<String, String>,
+    confinement: common::ProviderConfinement,
     model: Option<String>,
     timeout: Duration,
 }
@@ -32,16 +33,20 @@ impl CodexProvider {
         let api_key = api_key
             .filter(|value| !value.is_empty())
             .ok_or(ProviderError::MissingCredential)?;
-        let discovery = common::discover_provider(search_path, "codex", state_dir)?;
-        let mut environment = discovery.environment;
+        let common::ProviderDiscovery {
+            executable,
+            mut environment,
+            confinement,
+        } = common::discover_provider(search_path, "codex", state_dir)?;
         environment.insert("OPENAI_API_KEY".to_owned(), api_key);
         environment.insert(
             "CODEX_HOME".to_owned(),
             state_dir.to_string_lossy().into_owned(),
         );
         Ok(Self {
-            executable: discovery.executable,
+            executable,
             environment,
+            confinement,
             model: model.filter(|value| !value.is_empty()),
             timeout,
         })
@@ -51,6 +56,10 @@ impl CodexProvider {
 impl AgentProvider for CodexProvider {
     fn name(&self) -> &'static str {
         PROVIDER_NAME
+    }
+
+    fn requires_process_confinement(&self) -> bool {
+        true
     }
 
     fn process_spec(&self, worktree_path: &Path) -> Option<ProcessSpec> {
@@ -84,6 +93,7 @@ impl AgentProvider for CodexProvider {
             current_dir: Some(worktree_path.to_path_buf()),
             timeout: self.timeout,
             output_limit: common::PROVIDER_OUTPUT_LIMIT_BYTES,
+            confinement: self.confinement.for_worktree(worktree_path),
         })
     }
 
@@ -283,12 +293,16 @@ mod tests {
     #[test]
     fn fake_codex_process_completes_under_supervision() {
         let directory = tempdir().unwrap();
+        let binary_directory = directory.path().join("bin");
+        let worktree = directory.path().join("worktree");
+        fs::create_dir_all(&binary_directory).unwrap();
+        fs::create_dir_all(&worktree).unwrap();
         write_executable(
-            &directory.path().join("codex"),
+            &binary_directory.join("codex"),
             "#!/bin/sh\nprintf '%s\\n' '{\"type\":\"item.completed\",\"item\":{\"type\":\"agent_message\",\"text\":\"{\\\"content\\\":\\\"generated read-only\\\\n\\\"}\"}}' '{\"type\":\"turn.completed\"}'\n",
         );
         let provider = CodexProvider::discover(
-            &directory.path().to_string_lossy(),
+            &binary_directory.to_string_lossy(),
             Some("key".to_owned()),
             &directory.path().join("state"),
             None,
@@ -296,11 +310,16 @@ mod tests {
         )
         .unwrap();
         let result = execution::supervise(
-            &provider.process_spec(directory.path()).unwrap(),
+            &provider.process_spec(&worktree).unwrap(),
             &CancellationToken::default(),
         )
         .unwrap();
-        assert_eq!(result.outcome, TerminalOutcome::Completed(0));
+        assert_eq!(
+            result.outcome,
+            TerminalOutcome::Completed(0),
+            "{}",
+            String::from_utf8_lossy(&result.stderr)
+        );
         assert_eq!(
             provider.propose(Some(&result)).unwrap().content,
             b"generated read-only\n"
