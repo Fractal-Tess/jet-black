@@ -1,7 +1,8 @@
 mod artifacts;
 
 pub use artifacts::{
-    ArtifactPolicy, ArtifactState, ArtifactStream, LocalArtifactStore, RunArtifact,
+    ArtifactPolicy, ArtifactSegment, ArtifactState, ArtifactStream, LocalArtifactStore,
+    RunArtifact, VerifiedArtifactSegment,
 };
 
 use domain::{
@@ -2005,6 +2006,8 @@ pub enum PersistenceError {
     InvalidArtifactRoot,
     #[error("stored artifact metadata is corrupt")]
     ArtifactMetadataCorrupt,
+    #[error("artifact content failed integrity verification")]
+    ArtifactIntegrityMismatch,
     #[error("stored {0} is not a valid UUID")]
     CorruptIdentifier(&'static str),
 }

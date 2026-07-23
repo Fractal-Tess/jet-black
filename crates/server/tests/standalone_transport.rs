@@ -8,7 +8,9 @@ use domain::{Id, RunState, limits::MAX_COMMAND_BODY_BYTES};
 use futures_util::StreamExt;
 use protocol::{
     CommandResult, Envelope, EventCursor, EventPage, LocalCommand, LocalCommandResponse,
-    OrderedRunEvent, RecoveryResponse, ResponseEnvelope, SemanticEventKind, StructuredError,
+    OrderedRunEvent, RecoveryResponse, ResponseEnvelope, RunArtifactSegmentMetadata,
+    RunArtifactSegmentResponse, RunArtifactStream, RunArtifactSummary, RunArtifactsDeletedResponse,
+    RunArtifactsResponse, SemanticEventKind, StructuredError,
 };
 use serde::Deserialize;
 use server::{Runtime, StandaloneServer};
@@ -33,6 +35,71 @@ impl Runtime for FixtureRuntime {
             LocalCommand::GetRecovery => Ok(LocalCommandResponse::Recovery(RecoveryResponse {
                 actions: Vec::new(),
             })),
+            LocalCommand::GetRunArtifacts { run_id } => {
+                Ok(LocalCommandResponse::RunArtifacts(RunArtifactsResponse {
+                    run_id,
+                    artifacts: vec![RunArtifactSummary {
+                        artifact_id: Id::new_v4(),
+                        changeset_id: Id::new_v4(),
+                        run_id,
+                        supervision_id: Id::new_v4(),
+                        stream: RunArtifactStream::Stdout,
+                        source_bytes: 4,
+                        stored_bytes: 4,
+                        segments: vec![RunArtifactSegmentMetadata {
+                            sequence: 0,
+                            stored_bytes: 4,
+                            sha256: "segment-sha".to_owned(),
+                        }],
+                        sha256: "artifact-sha".to_owned(),
+                        redacted: true,
+                        process_truncated: false,
+                        quota_limited: false,
+                        created_at_unix_ms: 100,
+                        updated_at_unix_ms: 101,
+                        expires_at_unix_ms: 200,
+                    }],
+                }))
+            }
+            LocalCommand::ReadRunArtifactSegment {
+                segment_sequence: u32::MAX,
+                ..
+            } => Err(StructuredError {
+                code: "artifact_integrity_failed".to_owned(),
+                message: "artifact content failed integrity verification".to_owned(),
+                retryable: false,
+            }),
+            LocalCommand::ReadRunArtifactSegment {
+                run_id,
+                artifact_id,
+                segment_sequence,
+            } => Ok(LocalCommandResponse::RunArtifactSegment(
+                RunArtifactSegmentResponse {
+                    run_id,
+                    artifact_id,
+                    stream: RunArtifactStream::Stdout,
+                    segment: RunArtifactSegmentMetadata {
+                        sequence: segment_sequence,
+                        stored_bytes: 4,
+                        sha256: "segment-sha".to_owned(),
+                    },
+                    artifact_sha256: "artifact-sha".to_owned(),
+                    content_base64: "ZGF0YQ==".to_owned(),
+                },
+            )),
+            LocalCommand::DeleteRunArtifacts { run_id } if run_id.is_nil() => {
+                Err(StructuredError {
+                    code: "artifact_run_active".to_owned(),
+                    message: "run artifacts cannot be deleted while the run is active".to_owned(),
+                    retryable: false,
+                })
+            }
+            LocalCommand::DeleteRunArtifacts { run_id } => Ok(
+                LocalCommandResponse::RunArtifactsDeleted(RunArtifactsDeletedResponse {
+                    run_id,
+                    deleted_count: 1,
+                }),
+            ),
             _ => Err(StructuredError {
                 code: "unsupported".to_owned(),
                 message: "unsupported fixture command".to_owned(),
@@ -120,6 +187,37 @@ async fn exchange(server: &StandaloneServer) -> (Router, String, String) {
         .unwrap();
     let exchange: ExchangeResponse = serde_json::from_slice(&body).unwrap();
     (router, session_cookie, exchange.csrf_token)
+}
+
+async fn authenticated_command(
+    router: &Router,
+    cookie: &str,
+    csrf: &str,
+    command: LocalCommand,
+) -> (String, ResponseEnvelope<LocalCommandResponse>) {
+    let response = router
+        .clone()
+        .oneshot(
+            Request::post("/api/commands")
+                .header(header::HOST, AUTHORITY)
+                .header(header::ORIGIN, ORIGIN)
+                .header(header::COOKIE, cookie)
+                .header("x-csrf-token", csrf)
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(
+                    serde_json::to_vec(&Envelope::new(command)).unwrap(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = to_bytes(response.into_body(), MAX_COMMAND_BODY_BYTES)
+        .await
+        .unwrap();
+    let text = String::from_utf8(body.to_vec()).unwrap();
+    let envelope = serde_json::from_str(&text).unwrap();
+    (text, envelope)
 }
 
 #[tokio::test]
@@ -231,8 +329,39 @@ async fn exchange_is_same_origin_single_use_and_body_limited() {
 async fn commands_require_session_origin_and_csrf() {
     let server = fixture_server(Arc::new(FixtureRuntime::default()));
     let (router, cookie, csrf) = exchange(&server).await;
-    let envelope = Envelope::new(LocalCommand::GetRecovery);
+    let run_id = Id::new_v4();
+    let envelope = Envelope::new(LocalCommand::GetRunArtifacts { run_id });
     let body = serde_json::to_vec(&envelope).unwrap();
+
+    let missing_session = router
+        .clone()
+        .oneshot(
+            Request::post("/api/commands")
+                .header(header::HOST, AUTHORITY)
+                .header(header::ORIGIN, ORIGIN)
+                .header("x-csrf-token", &csrf)
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(body.clone()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(missing_session.status(), StatusCode::UNAUTHORIZED);
+
+    let missing_origin = router
+        .clone()
+        .oneshot(
+            Request::post("/api/commands")
+                .header(header::HOST, AUTHORITY)
+                .header(header::COOKIE, &cookie)
+                .header("x-csrf-token", &csrf)
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(body.clone()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(missing_origin.status(), StatusCode::FORBIDDEN);
 
     let missing_csrf = router
         .clone()
@@ -249,27 +378,108 @@ async fn commands_require_session_origin_and_csrf() {
         .unwrap();
     assert_eq!(missing_csrf.status(), StatusCode::UNAUTHORIZED);
 
-    let response = router
-        .oneshot(
-            Request::post("/api/commands")
-                .header(header::HOST, AUTHORITY)
-                .header(header::ORIGIN, ORIGIN)
-                .header(header::COOKIE, cookie)
-                .header("x-csrf-token", csrf)
-                .header(header::CONTENT_TYPE, "application/json")
-                .body(Body::from(body))
-                .unwrap(),
-        )
-        .await
-        .unwrap();
-    assert_eq!(response.status(), StatusCode::OK);
-    let body = to_bytes(response.into_body(), MAX_COMMAND_BODY_BYTES)
-        .await
-        .unwrap();
-    let response: ResponseEnvelope<LocalCommandResponse> = serde_json::from_slice(&body).unwrap();
+    let (_, response) = authenticated_command(
+        &router,
+        &cookie,
+        &csrf,
+        LocalCommand::GetRunArtifacts { run_id },
+    )
+    .await;
     assert!(matches!(
         response.result,
-        CommandResult::Ok(LocalCommandResponse::Recovery(_))
+        CommandResult::Ok(LocalCommandResponse::RunArtifacts(RunArtifactsResponse {
+            run_id: response_run_id,
+            ..
+        })) if response_run_id == run_id
+    ));
+}
+
+#[tokio::test]
+async fn authenticated_artifact_commands_return_path_free_typed_responses() {
+    let server = fixture_server(Arc::new(FixtureRuntime::default()));
+    let (router, cookie, csrf) = exchange(&server).await;
+    let run_id = Id::new_v4();
+
+    let (list_json, listed) = authenticated_command(
+        &router,
+        &cookie,
+        &csrf,
+        LocalCommand::GetRunArtifacts { run_id },
+    )
+    .await;
+    assert!(!list_json.contains("\"path\""));
+    assert!(!list_json.contains("\"root\""));
+    assert!(!list_json.contains("\"filename\""));
+    let artifact_id = match listed.result {
+        CommandResult::Ok(LocalCommandResponse::RunArtifacts(response)) => {
+            assert_eq!(response.run_id, run_id);
+            assert_eq!(response.artifacts.len(), 1);
+            response.artifacts[0].artifact_id
+        }
+        result => panic!("unexpected result: {result:?}"),
+    };
+
+    let (_, segment) = authenticated_command(
+        &router,
+        &cookie,
+        &csrf,
+        LocalCommand::ReadRunArtifactSegment {
+            run_id,
+            artifact_id,
+            segment_sequence: 0,
+        },
+    )
+    .await;
+    assert!(matches!(
+        segment.result,
+        CommandResult::Ok(LocalCommandResponse::RunArtifactSegment(response))
+            if response.run_id == run_id
+                && response.artifact_id == artifact_id
+                && response.content_base64 == "ZGF0YQ=="
+    ));
+
+    let (_, deleted) = authenticated_command(
+        &router,
+        &cookie,
+        &csrf,
+        LocalCommand::DeleteRunArtifacts { run_id },
+    )
+    .await;
+    assert!(matches!(
+        deleted.result,
+        CommandResult::Ok(LocalCommandResponse::RunArtifactsDeleted(response))
+            if response.run_id == run_id && response.deleted_count == 1
+    ));
+
+    let (integrity_json, integrity) = authenticated_command(
+        &router,
+        &cookie,
+        &csrf,
+        LocalCommand::ReadRunArtifactSegment {
+            run_id,
+            artifact_id,
+            segment_sequence: u32::MAX,
+        },
+    )
+    .await;
+    assert!(!integrity_json.contains('/'));
+    assert!(matches!(
+        integrity.result,
+        CommandResult::Error(StructuredError { code, retryable: false, .. })
+            if code == "artifact_integrity_failed"
+    ));
+
+    let (_, active_delete) = authenticated_command(
+        &router,
+        &cookie,
+        &csrf,
+        LocalCommand::DeleteRunArtifacts { run_id: Id::nil() },
+    )
+    .await;
+    assert!(matches!(
+        active_delete.result,
+        CommandResult::Error(StructuredError { code, retryable: false, .. })
+            if code == "artifact_run_active"
     ));
 }
 

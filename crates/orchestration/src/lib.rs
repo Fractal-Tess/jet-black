@@ -1,4 +1,5 @@
 use agents::AgentProvider;
+use base64::{Engine as _, engine::general_purpose::STANDARD};
 use domain::{
     Approval, ApprovalScope, Changeset, ChangesetState, Checkpoint, Id, Repository, Run, RunState,
     TicketRef, Worktree, WorktreeState,
@@ -8,11 +9,15 @@ use execution::{
     TerminalOutcome, TerminationReason, TerminationStatus,
 };
 use git::GitService;
-use persistence::{LocalArtifactStore, MutationLease, RecoveryReport, SqliteStore};
+use persistence::{
+    ArtifactSegment, ArtifactStream, LocalArtifactStore, MutationLease, RecoveryReport,
+    RunArtifact, SqliteStore, VerifiedArtifactSegment,
+};
 use protocol::{
     ApprovalRequest, CheckpointResponse, DiffResponse, EventCursor, EventPage, FindingsResponse,
-    LocalCommand, OrderedRunEvent, RecoveryAction, RecoveryResponse, RunCompletedResponse,
-    RunStartedResponse, SemanticEventKind,
+    LocalCommand, OrderedRunEvent, RecoveryAction, RecoveryResponse, RunArtifactSegmentMetadata,
+    RunArtifactSegmentResponse, RunArtifactStream, RunArtifactSummary, RunArtifactsDeletedResponse,
+    RunArtifactsResponse, RunCompletedResponse, RunStartedResponse, SemanticEventKind,
 };
 use std::{path::Path, sync::Mutex, time::Duration};
 use thiserror::Error;
@@ -137,6 +142,19 @@ impl<P: AgentProvider> LocalOrchestrator<P> {
                     findings: self.store.findings_for_changeset(changeset_id)?,
                 }))
             }
+            LocalCommand::GetRunArtifacts { run_id } => {
+                Ok(CommandOutcome::RunArtifacts(self.run_artifacts(run_id)?))
+            }
+            LocalCommand::ReadRunArtifactSegment {
+                run_id,
+                artifact_id,
+                segment_sequence,
+            } => Ok(CommandOutcome::RunArtifactSegment(
+                self.read_run_artifact_segment(run_id, artifact_id, segment_sequence)?,
+            )),
+            LocalCommand::DeleteRunArtifacts { run_id } => Ok(CommandOutcome::RunArtifactsDeleted(
+                self.delete_run_artifacts(run_id)?,
+            )),
             LocalCommand::GetEvents { .. }
             | LocalCommand::GetSnapshot { .. }
             | LocalCommand::GetHistory { .. }
@@ -435,6 +453,54 @@ impl<P: AgentProvider> LocalOrchestrator<P> {
                 run_id,
                 after_sequence: next_sequence,
             },
+        })
+    }
+
+    pub fn run_artifacts(&self, run_id: Id) -> Result<RunArtifactsResponse, OrchestrationError> {
+        self.run(run_id)?;
+        let artifacts = self
+            .artifact_store()?
+            .complete_artifacts_for_run(run_id)
+            .map_err(map_artifact_error)?
+            .iter()
+            .map(artifact_summary)
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(RunArtifactsResponse { run_id, artifacts })
+    }
+
+    pub fn read_run_artifact_segment(
+        &self,
+        run_id: Id,
+        artifact_id: Id,
+        segment_sequence: u32,
+    ) -> Result<RunArtifactSegmentResponse, OrchestrationError> {
+        self.run(run_id)?;
+        let verified = self
+            .artifact_store()?
+            .read_verified_segment(run_id, artifact_id, segment_sequence)
+            .map_err(map_artifact_error)?;
+        artifact_segment_response(verified)
+    }
+
+    pub fn delete_run_artifacts(
+        &self,
+        run_id: Id,
+    ) -> Result<RunArtifactsDeletedResponse, OrchestrationError> {
+        let run = self.run(run_id)?;
+        if !matches!(
+            run.state(),
+            RunState::Completed | RunState::Interrupted | RunState::Failed
+        ) {
+            return Err(OrchestrationError::ArtifactDeletionRequiresTerminalRun);
+        }
+        let deleted_count = self
+            .artifact_store()?
+            .delete_run_artifacts(run_id)
+            .map_err(map_artifact_error)?;
+        Ok(RunArtifactsDeletedResponse {
+            run_id,
+            deleted_count: u32::try_from(deleted_count)
+                .map_err(|_| OrchestrationError::ResourceLimit("artifact count"))?,
         })
     }
 
@@ -1127,10 +1193,85 @@ impl<P: AgentProvider> LocalOrchestrator<P> {
             .approval_for_run(run_id)?
             .ok_or(OrchestrationError::NotFound("approval"))
     }
+
+    fn artifact_store(&self) -> Result<&LocalArtifactStore, OrchestrationError> {
+        self.artifact_store
+            .as_ref()
+            .ok_or(OrchestrationError::ArtifactStoreUnavailable)
+    }
 }
 
 pub type RunStarted = RunStartedResponse;
 pub type RunCompleted = RunCompletedResponse;
+
+fn artifact_summary(artifact: &RunArtifact) -> Result<RunArtifactSummary, OrchestrationError> {
+    Ok(RunArtifactSummary {
+        artifact_id: artifact.id,
+        changeset_id: artifact.changeset_id,
+        run_id: artifact.run_id,
+        supervision_id: artifact.supervision_id,
+        stream: artifact_stream(artifact.stream),
+        source_bytes: artifact_byte_count(artifact.source_bytes)?,
+        stored_bytes: artifact_byte_count(artifact.stored_bytes)?,
+        segments: artifact
+            .segments
+            .iter()
+            .map(artifact_segment_metadata)
+            .collect::<Result<Vec<_>, _>>()?,
+        sha256: artifact.sha256.clone(),
+        redacted: artifact.redacted,
+        process_truncated: artifact.process_truncated,
+        quota_limited: artifact.quota_limited,
+        created_at_unix_ms: artifact.created_at_unix_ms,
+        updated_at_unix_ms: artifact.updated_at_unix_ms,
+        expires_at_unix_ms: artifact.expires_at_unix_ms,
+    })
+}
+
+fn artifact_segment_response(
+    verified: VerifiedArtifactSegment,
+) -> Result<RunArtifactSegmentResponse, OrchestrationError> {
+    Ok(RunArtifactSegmentResponse {
+        run_id: verified.artifact.run_id,
+        artifact_id: verified.artifact.id,
+        stream: artifact_stream(verified.artifact.stream),
+        segment: artifact_segment_metadata(&verified.segment)?,
+        artifact_sha256: verified.artifact.sha256,
+        content_base64: STANDARD.encode(verified.bytes),
+    })
+}
+
+fn artifact_segment_metadata(
+    segment: &ArtifactSegment,
+) -> Result<RunArtifactSegmentMetadata, OrchestrationError> {
+    Ok(RunArtifactSegmentMetadata {
+        sequence: segment.sequence,
+        stored_bytes: artifact_byte_count(segment.stored_bytes)?,
+        sha256: segment.sha256.clone(),
+    })
+}
+
+const fn artifact_stream(stream: ArtifactStream) -> RunArtifactStream {
+    match stream {
+        ArtifactStream::Stdout => RunArtifactStream::Stdout,
+        ArtifactStream::Stderr => RunArtifactStream::Stderr,
+    }
+}
+
+fn artifact_byte_count(value: usize) -> Result<u64, OrchestrationError> {
+    u64::try_from(value).map_err(|_| OrchestrationError::ResourceLimit("artifact byte count"))
+}
+
+fn map_artifact_error(error: persistence::PersistenceError) -> OrchestrationError {
+    match error {
+        persistence::PersistenceError::NotFound(resource) => OrchestrationError::NotFound(resource),
+        persistence::PersistenceError::ArtifactMetadataCorrupt
+        | persistence::PersistenceError::ArtifactIntegrityMismatch => {
+            OrchestrationError::ArtifactIntegrity
+        }
+        error => OrchestrationError::Persistence(error),
+    }
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CommandOutcome {
@@ -1144,6 +1285,9 @@ pub enum CommandOutcome {
     Diff(DiffResponse),
     Recovery(RecoveryResponse),
     Findings(FindingsResponse),
+    RunArtifacts(RunArtifactsResponse),
+    RunArtifactSegment(RunArtifactSegmentResponse),
+    RunArtifactsDeleted(RunArtifactsDeletedResponse),
 }
 
 fn current_unix_ms() -> i64 {
@@ -1167,6 +1311,12 @@ pub enum OrchestrationError {
     ProviderContract(&'static str),
     #[error("resource limit exceeded for {0}")]
     ResourceLimit(&'static str),
+    #[error("run artifacts are unavailable in this runtime")]
+    ArtifactStoreUnavailable,
+    #[error("run artifacts can only be deleted after the run reaches a terminal state")]
+    ArtifactDeletionRequiresTerminalRun,
+    #[error("artifact content failed integrity verification")]
+    ArtifactIntegrity,
     #[error("provider process execution failed")]
     Execution(#[source] execution::ExecutionError),
     #[error("provider process exited without a successful status: {0:?}")]

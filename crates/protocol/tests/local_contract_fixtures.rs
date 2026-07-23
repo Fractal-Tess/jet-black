@@ -4,8 +4,10 @@ use domain::{
 };
 use protocol::{
     ApprovalRequest, ApprovalResponse, CommandResult, DiffResponse, Envelope, LocalCommand,
-    OrderedRunEvent, PROTOCOL_VERSION, RecoveryAction, RecoveryResponse, ResponseEnvelope,
-    SemanticEventKind, StructuredError,
+    LocalCommandResponse, OrderedRunEvent, PROTOCOL_VERSION, RecoveryAction, RecoveryResponse,
+    ResponseEnvelope, RunArtifactSegmentMetadata, RunArtifactSegmentResponse, RunArtifactStream,
+    RunArtifactSummary, RunArtifactsDeletedResponse, RunArtifactsResponse, SemanticEventKind,
+    StructuredError,
 };
 use std::path::PathBuf;
 
@@ -102,6 +104,56 @@ fn all_local_message_shapes_round_trip() {
         actions: vec![recovery_action.clone()],
     };
     let recovery_command = LocalCommand::GetRecovery;
+    let artifact_id = uuid::Uuid::new_v4();
+    let segment = RunArtifactSegmentMetadata {
+        sequence: 0,
+        stored_bytes: 4,
+        sha256: "segment-sha".into(),
+    };
+    let artifact = RunArtifactSummary {
+        artifact_id,
+        changeset_id: changeset.id,
+        run_id: run.id,
+        supervision_id: uuid::Uuid::new_v4(),
+        stream: RunArtifactStream::Stdout,
+        source_bytes: 4,
+        stored_bytes: 4,
+        segments: vec![segment.clone()],
+        sha256: "artifact-sha".into(),
+        redacted: true,
+        process_truncated: false,
+        quota_limited: false,
+        created_at_unix_ms: 100,
+        updated_at_unix_ms: 101,
+        expires_at_unix_ms: 200,
+    };
+    let artifact_commands = [
+        LocalCommand::GetRunArtifacts { run_id: run.id },
+        LocalCommand::ReadRunArtifactSegment {
+            run_id: run.id,
+            artifact_id,
+            segment_sequence: 0,
+        },
+        LocalCommand::DeleteRunArtifacts { run_id: run.id },
+    ];
+    let artifact_responses = [
+        LocalCommandResponse::RunArtifacts(RunArtifactsResponse {
+            run_id: run.id,
+            artifacts: vec![artifact.clone()],
+        }),
+        LocalCommandResponse::RunArtifactSegment(RunArtifactSegmentResponse {
+            run_id: run.id,
+            artifact_id,
+            stream: RunArtifactStream::Stdout,
+            segment: segment.clone(),
+            artifact_sha256: artifact.sha256.clone(),
+            content_base64: "ZGF0YQ==".into(),
+        }),
+        LocalCommandResponse::RunArtifactsDeleted(RunArtifactsDeletedResponse {
+            run_id: run.id,
+            deleted_count: 1,
+        }),
+    ];
     let values = vec![
         serde_json::to_value(repository.clone()).unwrap(),
         serde_json::to_value(changeset.clone()).unwrap(),
@@ -169,4 +221,22 @@ fn all_local_message_shapes_round_trip() {
         serde_json::from_value::<LocalCommand>(values[12].clone()).unwrap(),
         recovery_command
     );
+    for command in artifact_commands {
+        let value = serde_json::to_value(&command).unwrap();
+        assert_eq!(
+            serde_json::from_value::<LocalCommand>(value).unwrap(),
+            command
+        );
+    }
+    for response in artifact_responses {
+        let value = serde_json::to_value(&response).unwrap();
+        assert_eq!(
+            serde_json::from_value::<LocalCommandResponse>(value).unwrap(),
+            response
+        );
+    }
+    let public_artifact_json = serde_json::to_string(&artifact).unwrap();
+    assert!(!public_artifact_json.contains("\"path\""));
+    assert!(!public_artifact_json.contains("\"root\""));
+    assert!(!public_artifact_json.contains("\"filename\""));
 }

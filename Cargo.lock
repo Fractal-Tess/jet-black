@@ -579,6 +579,7 @@ name = "orchestration"
 version = "0.1.0"
 dependencies = [
  "agents",
+ "base64",
  "domain",
  "execution",
  "git",

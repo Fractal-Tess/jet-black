@@ -1,19 +1,20 @@
 use super::{PersistenceError, SqliteStore, decode, encode};
 use execution::ProcessResult;
 use fs2::FileExt;
-use rusqlite::{TransactionBehavior, params};
+use rusqlite::{OptionalExtension, TransactionBehavior, params};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::{
     cmp::min,
     fs::{self, File, OpenOptions},
-    io::Write,
+    io::{Read, Write},
     path::{Path, PathBuf},
     time::Duration,
 };
 use uuid::Uuid;
 
 const REDACTION_MARKER: &[u8] = b"[REDACTED]";
+const ARTIFACT_COLUMNS: &str = "id, changeset_id, run_id, kind, created_at_unix_ms, body, status, stored_bytes, updated_at_unix_ms, expires_at_unix_ms";
 const DEFAULT_SEGMENT_BYTES: usize = 256 * 1024;
 const DEFAULT_RETENTION: Duration = Duration::from_secs(7 * 24 * 60 * 60);
 
@@ -130,6 +131,13 @@ pub struct RunArtifact {
     pub expires_at_unix_ms: i64,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct VerifiedArtifactSegment {
+    pub artifact: RunArtifact,
+    pub segment: ArtifactSegment,
+    pub bytes: Vec<u8>,
+}
+
 #[derive(Debug, Clone)]
 pub struct LocalArtifactStore {
     store: SqliteStore,
@@ -240,11 +248,75 @@ impl LocalArtifactStore {
 
     pub fn artifacts_for_run(&self, run_id: Uuid) -> Result<Vec<RunArtifact>, PersistenceError> {
         self.store.with_connection(|connection| {
-            let mut statement = connection.prepare(
-                "SELECT id, changeset_id, run_id, kind, created_at_unix_ms, body, status, stored_bytes, updated_at_unix_ms, expires_at_unix_ms FROM artifacts WHERE run_id = ?1 ORDER BY created_at_unix_ms, rowid",
-            )?;
+            let mut statement = connection.prepare(&format!(
+                "SELECT {ARTIFACT_COLUMNS} FROM artifacts WHERE run_id = ?1 ORDER BY created_at_unix_ms, rowid"
+            ))?;
             let rows = statement.query_map([run_id.to_string()], artifact_row)?;
             rows.map(|row| validate_artifact_row(row?)).collect()
+        })
+    }
+
+    pub fn complete_artifacts_for_run(
+        &self,
+        run_id: Uuid,
+    ) -> Result<Vec<RunArtifact>, PersistenceError> {
+        let _operation_lock = self.lock_shared_operation()?;
+        let artifacts = self.store.with_connection(|connection| {
+            let mut statement = connection.prepare(&format!(
+                "SELECT {ARTIFACT_COLUMNS} FROM artifacts WHERE run_id = ?1 AND status = ?2 ORDER BY created_at_unix_ms, rowid"
+            ))?;
+            let rows = statement.query_map(
+                params![run_id.to_string(), ArtifactState::Complete.as_str()],
+                artifact_row,
+            )?;
+            rows.map(|row| validate_artifact_row(row?))
+                .collect::<Result<Vec<_>, PersistenceError>>()
+        })?;
+        for artifact in &artifacts {
+            validate_artifact_layout(artifact)?;
+        }
+        Ok(artifacts)
+    }
+
+    pub fn read_verified_segment(
+        &self,
+        run_id: Uuid,
+        artifact_id: Uuid,
+        segment_sequence: u32,
+    ) -> Result<VerifiedArtifactSegment, PersistenceError> {
+        let _operation_lock = self.lock_shared_operation()?;
+        let artifact = self
+            .store
+            .with_connection(|connection| {
+                connection
+                    .query_row(
+                        &format!(
+                            "SELECT {ARTIFACT_COLUMNS} FROM artifacts WHERE run_id = ?1 AND id = ?2 AND status = ?3"
+                        ),
+                        params![
+                            run_id.to_string(),
+                            artifact_id.to_string(),
+                            ArtifactState::Complete.as_str()
+                        ],
+                        artifact_row,
+                    )
+                    .optional()?
+                    .map(validate_artifact_row)
+                    .transpose()
+            })?
+            .ok_or(PersistenceError::NotFound("artifact"))?;
+        validate_artifact_layout(&artifact)?;
+        let requested = artifact
+            .segments
+            .iter()
+            .find(|segment| segment.sequence == segment_sequence)
+            .cloned()
+            .ok_or(PersistenceError::NotFound("artifact segment"))?;
+        let bytes = self.verify_artifact_content(&artifact, segment_sequence)?;
+        Ok(VerifiedArtifactSegment {
+            artifact,
+            segment: requested,
+            bytes,
         })
     }
 
@@ -260,10 +332,13 @@ impl LocalArtifactStore {
     pub fn prune_expired(&self, now_unix_ms: i64) -> Result<usize, PersistenceError> {
         let _operation_lock = self.lock_operation()?;
         let artifacts = self.store.with_connection(|connection| {
-            let mut statement = connection.prepare(
-                "SELECT id, changeset_id, run_id, kind, created_at_unix_ms, body, status, stored_bytes, updated_at_unix_ms, expires_at_unix_ms FROM artifacts WHERE status = 'complete' AND expires_at_unix_ms <= ?1 ORDER BY created_at_unix_ms, rowid",
+            let mut statement = connection.prepare(&format!(
+                "SELECT {ARTIFACT_COLUMNS} FROM artifacts WHERE status = ?1 AND expires_at_unix_ms <= ?2 ORDER BY created_at_unix_ms, rowid"
+            ))?;
+            let rows = statement.query_map(
+                params![ArtifactState::Complete.as_str(), now_unix_ms],
+                artifact_row,
             )?;
-            let rows = statement.query_map([now_unix_ms], artifact_row)?;
             rows.map(|row| validate_artifact_row(row?)).collect::<Result<Vec<_>, PersistenceError>>()
         })?;
         for artifact in &artifacts {
@@ -308,6 +383,12 @@ impl LocalArtifactStore {
     fn lock_operation(&self) -> Result<ArtifactOperationLock, PersistenceError> {
         let file = open_lock_file(&self.root.join(".artifact.lock"))?;
         file.lock_exclusive()?;
+        Ok(ArtifactOperationLock(file))
+    }
+
+    fn lock_shared_operation(&self) -> Result<ArtifactOperationLock, PersistenceError> {
+        let file = open_lock_file(&self.root.join(".artifact.lock"))?;
+        FileExt::lock_shared(&file)?;
         Ok(ArtifactOperationLock(file))
     }
 
@@ -386,6 +467,68 @@ impl LocalArtifactStore {
             transaction.commit()?;
             Ok(Some(artifact))
         })
+    }
+
+    fn verify_artifact_content(
+        &self,
+        artifact: &RunArtifact,
+        requested_sequence: u32,
+    ) -> Result<Vec<u8>, PersistenceError> {
+        let directory = self.root.join(artifact.id.to_string());
+        validate_artifact_directory(&directory)?;
+        let mut whole_digest = Sha256::new();
+        let mut total_bytes = 0_usize;
+        let mut requested_bytes = None;
+        let mut buffer = [0_u8; 8192];
+
+        for segment in &artifact.segments {
+            let requested = segment.sequence == requested_sequence;
+            if requested {
+                requested_bytes = Some(Vec::with_capacity(segment.stored_bytes));
+            }
+            let path = directory.join(segment_name(segment.sequence));
+            let mut file = open_artifact_segment(&path, segment.stored_bytes)?;
+            let mut segment_digest = Sha256::new();
+            let mut remaining = segment.stored_bytes;
+            while remaining > 0 {
+                let read_limit = min(remaining, buffer.len());
+                let read = file
+                    .read(&mut buffer[..read_limit])
+                    .map_err(|_| PersistenceError::ArtifactIntegrityMismatch)?;
+                if read == 0 {
+                    return Err(PersistenceError::ArtifactIntegrityMismatch);
+                }
+                let bytes = &buffer[..read];
+                segment_digest.update(bytes);
+                whole_digest.update(bytes);
+                if requested {
+                    requested_bytes
+                        .as_mut()
+                        .ok_or(PersistenceError::ArtifactIntegrityMismatch)?
+                        .extend_from_slice(bytes);
+                }
+                total_bytes = total_bytes
+                    .checked_add(read)
+                    .ok_or(PersistenceError::ArtifactMetadataCorrupt)?;
+                remaining -= read;
+            }
+            let mut trailing = [0_u8; 1];
+            if file
+                .read(&mut trailing)
+                .map_err(|_| PersistenceError::ArtifactIntegrityMismatch)?
+                != 0
+                || format!("{:x}", segment_digest.finalize()) != segment.sha256
+            {
+                return Err(PersistenceError::ArtifactIntegrityMismatch);
+            }
+        }
+
+        if total_bytes != artifact.stored_bytes
+            || format!("{:x}", whole_digest.finalize()) != artifact.sha256
+        {
+            return Err(PersistenceError::ArtifactIntegrityMismatch);
+        }
+        requested_bytes.ok_or(PersistenceError::NotFound("artifact segment"))
     }
 
     fn write_artifact(
@@ -532,6 +675,70 @@ fn validate_artifact_row(row: ArtifactRow) -> Result<RunArtifact, PersistenceErr
         return Err(PersistenceError::ArtifactMetadataCorrupt);
     }
     Ok(artifact)
+}
+
+fn validate_artifact_layout(artifact: &RunArtifact) -> Result<(), PersistenceError> {
+    if artifact.state != ArtifactState::Complete
+        || artifact.stored_bytes == 0
+        || artifact.stored_bytes > domain::limits::MAX_CAPTURED_STREAM_BYTES
+        || artifact.segments.is_empty()
+        || !is_sha256(&artifact.sha256)
+    {
+        return Err(PersistenceError::ArtifactMetadataCorrupt);
+    }
+
+    let mut stored_bytes = 0_usize;
+    for (index, segment) in artifact.segments.iter().enumerate() {
+        let expected_sequence =
+            u32::try_from(index).map_err(|_| PersistenceError::ArtifactMetadataCorrupt)?;
+        if segment.sequence != expected_sequence
+            || segment.stored_bytes == 0
+            || segment.stored_bytes > domain::limits::MAX_CAPTURED_STREAM_BYTES
+            || !is_sha256(&segment.sha256)
+        {
+            return Err(PersistenceError::ArtifactMetadataCorrupt);
+        }
+        stored_bytes = stored_bytes
+            .checked_add(segment.stored_bytes)
+            .ok_or(PersistenceError::ArtifactMetadataCorrupt)?;
+    }
+    if stored_bytes != artifact.stored_bytes {
+        return Err(PersistenceError::ArtifactMetadataCorrupt);
+    }
+    Ok(())
+}
+
+fn validate_artifact_directory(path: &Path) -> Result<(), PersistenceError> {
+    validate_private_directory(path).map_err(|_| PersistenceError::ArtifactIntegrityMismatch)
+}
+
+fn open_artifact_segment(path: &Path, expected_bytes: usize) -> Result<File, PersistenceError> {
+    let metadata =
+        fs::symlink_metadata(path).map_err(|_| PersistenceError::ArtifactIntegrityMismatch)?;
+    if metadata.file_type().is_symlink()
+        || !metadata.is_file()
+        || usize::try_from(metadata.len()).ok() != Some(expected_bytes)
+    {
+        return Err(PersistenceError::ArtifactIntegrityMismatch);
+    }
+    let file = OpenOptions::new()
+        .read(true)
+        .open(path)
+        .map_err(|_| PersistenceError::ArtifactIntegrityMismatch)?;
+    let opened = file
+        .metadata()
+        .map_err(|_| PersistenceError::ArtifactIntegrityMismatch)?;
+    if !opened.is_file() || usize::try_from(opened.len()).ok() != Some(expected_bytes) {
+        return Err(PersistenceError::ArtifactIntegrityMismatch);
+    }
+    Ok(file)
+}
+
+fn is_sha256(value: &str) -> bool {
+    value.len() == 64
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
 }
 
 fn stored_usage(
@@ -836,6 +1043,175 @@ mod tests {
         for artifact in artifacts {
             assert!(!store.root.join(artifact.id.to_string()).exists());
         }
+    }
+
+    #[test]
+    fn verified_segment_reads_are_bounded_and_verify_the_whole_artifact() {
+        let policy = ArtifactPolicy {
+            segment_bytes: 4,
+            per_run_bytes: 64,
+            total_bytes: 64,
+            retention: Duration::from_secs(60),
+        };
+        let (_directory, store, _repository_id, changeset_id, run_id) = fixture(policy);
+        let artifacts = store
+            .capture_process_result(
+                run_id,
+                changeset_id,
+                Uuid::new_v4(),
+                &process_result(b"abcdefghij", b""),
+                &[],
+                100,
+            )
+            .unwrap();
+        let artifact = &artifacts[0];
+
+        assert_eq!(store.complete_artifacts_for_run(run_id).unwrap(), artifacts);
+        let verified = store.read_verified_segment(run_id, artifact.id, 1).unwrap();
+        assert_eq!(verified.segment, artifact.segments[1]);
+        assert_eq!(verified.bytes, b"efgh");
+        assert!(verified.bytes.len() <= policy.segment_bytes);
+        assert!(matches!(
+            store.read_verified_segment(run_id, artifact.id, 99),
+            Err(PersistenceError::NotFound("artifact segment"))
+        ));
+
+        fs::write(
+            store
+                .root
+                .join(artifact.id.to_string())
+                .join(segment_name(2)),
+            b"zz",
+        )
+        .unwrap();
+        assert!(matches!(
+            store.read_verified_segment(run_id, artifact.id, 0),
+            Err(PersistenceError::ArtifactIntegrityMismatch)
+        ));
+    }
+
+    #[test]
+    fn verified_reads_accept_artifacts_created_under_an_older_policy() {
+        let original_policy = ArtifactPolicy {
+            segment_bytes: 4,
+            per_run_bytes: 64,
+            total_bytes: 64,
+            retention: Duration::from_secs(60),
+        };
+        let (directory, store, _repository_id, changeset_id, run_id) = fixture(original_policy);
+        let artifacts = store
+            .capture_process_result(
+                run_id,
+                changeset_id,
+                Uuid::new_v4(),
+                &process_result(b"abcdefghij", b""),
+                &[],
+                100,
+            )
+            .unwrap();
+        let reopened = LocalArtifactStore::new(
+            store.store.clone(),
+            directory.path().join("artifacts"),
+            ArtifactPolicy {
+                segment_bytes: 8,
+                per_run_bytes: 128,
+                total_bytes: 128,
+                retention: Duration::from_secs(120),
+            },
+        )
+        .unwrap();
+
+        assert_eq!(
+            reopened
+                .read_verified_segment(run_id, artifacts[0].id, 1)
+                .unwrap()
+                .bytes,
+            b"efgh"
+        );
+    }
+
+    #[test]
+    fn verified_segment_rejects_wrong_run_and_whole_digest_corruption() {
+        let policy = ArtifactPolicy {
+            segment_bytes: 4,
+            per_run_bytes: 64,
+            total_bytes: 64,
+            retention: Duration::from_secs(60),
+        };
+        let (_directory, store, repository_id, changeset_id, run_id) = fixture(policy);
+        let artifacts = store
+            .capture_process_result(
+                run_id,
+                changeset_id,
+                Uuid::new_v4(),
+                &process_result(b"abcdefgh", b""),
+                &[],
+                100,
+            )
+            .unwrap();
+        let artifact = &artifacts[0];
+        let (_other_changeset_id, other_run_id) = seed_run(&store.store, repository_id);
+
+        assert!(matches!(
+            store.read_verified_segment(other_run_id, artifact.id, 0),
+            Err(PersistenceError::NotFound("artifact"))
+        ));
+
+        let mut corrupt = artifact.clone();
+        corrupt.sha256 = digest(b"different content");
+        store
+            .store
+            .with_connection(|connection| {
+                connection.execute(
+                    "UPDATE artifacts SET body = ?2 WHERE id = ?1",
+                    params![artifact.id.to_string(), encode(&corrupt)?],
+                )?;
+                Ok(())
+            })
+            .unwrap();
+        assert!(matches!(
+            store.read_verified_segment(run_id, artifact.id, 0),
+            Err(PersistenceError::ArtifactIntegrityMismatch)
+        ));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn verified_segment_rejects_symlink_replacement() {
+        use std::os::unix::fs::symlink;
+
+        let policy = ArtifactPolicy {
+            segment_bytes: 8,
+            per_run_bytes: 64,
+            total_bytes: 64,
+            retention: Duration::from_secs(60),
+        };
+        let (directory, store, _repository_id, changeset_id, run_id) = fixture(policy);
+        let artifacts = store
+            .capture_process_result(
+                run_id,
+                changeset_id,
+                Uuid::new_v4(),
+                &process_result(b"stdout", b""),
+                &[],
+                100,
+            )
+            .unwrap();
+        let artifact = &artifacts[0];
+        let segment_path = store
+            .root
+            .join(artifact.id.to_string())
+            .join(segment_name(0));
+        let outside = directory.path().join("outside");
+        fs::write(&outside, b"outside").unwrap();
+        fs::remove_file(&segment_path).unwrap();
+        symlink(&outside, &segment_path).unwrap();
+
+        assert!(matches!(
+            store.read_verified_segment(run_id, artifact.id, 0),
+            Err(PersistenceError::ArtifactIntegrityMismatch)
+        ));
+        assert_eq!(fs::read(outside).unwrap(), b"outside");
     }
 
     #[test]

@@ -1,4 +1,5 @@
 use agents::{AgentProvider, ClaudeCodeProvider, MockProvider, ProposedFileChange, ProviderError};
+use base64::{Engine as _, engine::general_purpose::STANDARD};
 use domain::{ChangesetState, RelativePath, RunState, WorktreeState, limits};
 use execution::{
     CancellationToken, ProcessResult, ProcessSpec, ProcessStartIdentity, ProcessSupervisor,
@@ -844,25 +845,124 @@ fn provider_artifacts_redact_credentials_and_supervision_identity() {
     );
 
     let events = runtime.events(started.run_id).unwrap();
-    assert_eq!(
-        artifact_store.delete_run_artifacts(started.run_id).unwrap(),
-        1
-    );
-    assert_eq!(
-        artifact_store.delete_run_artifacts(started.run_id).unwrap(),
-        0
-    );
+    let summaries = match runtime
+        .handle(LocalCommand::GetRunArtifacts {
+            run_id: started.run_id,
+        })
+        .unwrap()
+    {
+        CommandOutcome::RunArtifacts(response) => response.artifacts,
+        outcome => panic!("unexpected outcome: {outcome:?}"),
+    };
+    assert_eq!(summaries.len(), 1);
+    let summary = &summaries[0];
+    assert_eq!(summary.artifact_id, artifact.id);
+    assert_eq!(summary.stored_bytes, artifact.stored_bytes as u64);
+
+    let mut downloaded = Vec::new();
+    for segment in &summary.segments {
+        let response = match runtime
+            .handle(LocalCommand::ReadRunArtifactSegment {
+                run_id: started.run_id,
+                artifact_id: summary.artifact_id,
+                segment_sequence: segment.sequence,
+            })
+            .unwrap()
+        {
+            CommandOutcome::RunArtifactSegment(response) => response,
+            outcome => panic!("unexpected outcome: {outcome:?}"),
+        };
+        assert_eq!(response.segment, *segment);
+        downloaded.extend(STANDARD.decode(response.content_base64).unwrap());
+    }
+    assert_eq!(downloaded, persisted);
+
+    let corrupt_segment = artifact_root
+        .join(artifact.id.to_string())
+        .join("00000001.segment");
+    fs::write(&corrupt_segment, b"corrupt!").unwrap();
+    assert!(matches!(
+        runtime.handle(LocalCommand::ReadRunArtifactSegment {
+            run_id: started.run_id,
+            artifact_id: artifact.id,
+            segment_sequence: 0,
+        }),
+        Err(OrchestrationError::ArtifactIntegrity)
+    ));
+
+    let other_changeset = runtime
+        .create_changeset(repository.id, &repository.base_sha, None)
+        .unwrap();
+    let other_started = runtime.start_run(other_changeset.id).unwrap();
+    assert!(matches!(
+        runtime.handle(LocalCommand::ReadRunArtifactSegment {
+            run_id: other_started.run_id,
+            artifact_id: artifact.id,
+            segment_sequence: 0,
+        }),
+        Err(OrchestrationError::NotFound("artifact"))
+    ));
+    runtime
+        .reject_approval(other_started.run_id, &other_started.approval_request.scope)
+        .unwrap();
+    runtime.delete_run_artifacts(other_started.run_id).unwrap();
+
+    assert!(matches!(
+        runtime.handle(LocalCommand::DeleteRunArtifacts {
+            run_id: started.run_id,
+        }),
+        Err(OrchestrationError::ArtifactDeletionRequiresTerminalRun)
+    ));
+    assert_eq!(runtime.events(started.run_id).unwrap(), events);
+
+    runtime
+        .reject_approval(started.run_id, &started.approval_request.scope)
+        .unwrap();
+    let deleted = match runtime
+        .handle(LocalCommand::DeleteRunArtifacts {
+            run_id: started.run_id,
+        })
+        .unwrap()
+    {
+        CommandOutcome::RunArtifactsDeleted(response) => response.deleted_count,
+        outcome => panic!("unexpected outcome: {outcome:?}"),
+    };
+    assert_eq!(deleted, 1);
+    let deleted_again = match runtime
+        .handle(LocalCommand::DeleteRunArtifacts {
+            run_id: started.run_id,
+        })
+        .unwrap()
+    {
+        CommandOutcome::RunArtifactsDeleted(response) => response.deleted_count,
+        outcome => panic!("unexpected outcome: {outcome:?}"),
+    };
+    assert_eq!(deleted_again, 0);
     assert!(
         artifact_store
             .artifacts_for_run(started.run_id)
             .unwrap()
             .is_empty()
     );
-    assert_eq!(
-        runtime.run_state(started.run_id).unwrap(),
-        RunState::AwaitingApproval
-    );
-    assert_eq!(runtime.events(started.run_id).unwrap(), events);
+}
+
+#[test]
+fn artifact_commands_require_a_configured_store() {
+    let directory = tempdir().unwrap();
+    let repository_path = fixture_repository(directory.path());
+    let runtime = build_runtime(directory.path());
+    let repository = runtime.register_repository(&repository_path).unwrap();
+    let changeset = runtime
+        .create_changeset(repository.id, &repository.base_sha, None)
+        .unwrap();
+    let started = runtime.start_run(changeset.id).unwrap();
+
+    assert!(matches!(
+        runtime.handle(LocalCommand::GetRunArtifacts {
+            run_id: started.run_id,
+        }),
+        Err(OrchestrationError::ArtifactStoreUnavailable)
+    ));
 
     runtime
         .reject_approval(started.run_id, &started.approval_request.scope)

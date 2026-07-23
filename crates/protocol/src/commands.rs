@@ -52,6 +52,17 @@ pub enum LocalCommand {
     GetFindings {
         changeset_id: Id,
     },
+    GetRunArtifacts {
+        run_id: Id,
+    },
+    ReadRunArtifactSegment {
+        run_id: Id,
+        artifact_id: Id,
+        segment_sequence: u32,
+    },
+    DeleteRunArtifacts {
+        run_id: Id,
+    },
     PreviewCommit {
         changeset_id: Id,
         #[ts(type = "number")]
@@ -112,6 +123,9 @@ pub enum LocalCommandResponse {
     History(HistoryResponse),
     Recovery(RecoveryResponse),
     Findings(FindingsResponse),
+    RunArtifacts(RunArtifactsResponse),
+    RunArtifactSegment(RunArtifactSegmentResponse),
+    RunArtifactsDeleted(RunArtifactsDeletedResponse),
     MutationPreview(MutationPreview),
 }
 
@@ -174,6 +188,67 @@ pub struct RecoveryAction {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
 pub struct RecoveryResponse {
     pub actions: Vec<RecoveryAction>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "snake_case")]
+pub enum RunArtifactStream {
+    Stdout,
+    Stderr,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+pub struct RunArtifactSegmentMetadata {
+    pub sequence: u32,
+    #[ts(type = "number")]
+    pub stored_bytes: u64,
+    pub sha256: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+pub struct RunArtifactSummary {
+    pub artifact_id: Id,
+    pub changeset_id: Id,
+    pub run_id: Id,
+    pub supervision_id: Id,
+    pub stream: RunArtifactStream,
+    #[ts(type = "number")]
+    pub source_bytes: u64,
+    #[ts(type = "number")]
+    pub stored_bytes: u64,
+    pub segments: Vec<RunArtifactSegmentMetadata>,
+    pub sha256: String,
+    pub redacted: bool,
+    pub process_truncated: bool,
+    pub quota_limited: bool,
+    #[ts(type = "number")]
+    pub created_at_unix_ms: i64,
+    #[ts(type = "number")]
+    pub updated_at_unix_ms: i64,
+    #[ts(type = "number")]
+    pub expires_at_unix_ms: i64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+pub struct RunArtifactsResponse {
+    pub run_id: Id,
+    pub artifacts: Vec<RunArtifactSummary>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+pub struct RunArtifactSegmentResponse {
+    pub run_id: Id,
+    pub artifact_id: Id,
+    pub stream: RunArtifactStream,
+    pub segment: RunArtifactSegmentMetadata,
+    pub artifact_sha256: String,
+    pub content_base64: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+pub struct RunArtifactsDeletedResponse {
+    pub run_id: Id,
+    pub deleted_count: u32,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]

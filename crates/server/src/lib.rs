@@ -350,6 +350,13 @@ fn command_response(outcome: CommandOutcome) -> LocalCommandResponse {
         CommandOutcome::Diff(diff) => LocalCommandResponse::Diff(diff),
         CommandOutcome::Recovery(recovery) => LocalCommandResponse::Recovery(recovery),
         CommandOutcome::Findings(findings) => LocalCommandResponse::Findings(findings),
+        CommandOutcome::RunArtifacts(artifacts) => LocalCommandResponse::RunArtifacts(artifacts),
+        CommandOutcome::RunArtifactSegment(segment) => {
+            LocalCommandResponse::RunArtifactSegment(segment)
+        }
+        CommandOutcome::RunArtifactsDeleted(deleted) => {
+            LocalCommandResponse::RunArtifactsDeleted(deleted)
+        }
     }
 }
 
@@ -368,6 +375,21 @@ fn structured_orchestration_error(error: OrchestrationError) -> StructuredError 
         OrchestrationError::ResourceLimit(_) => {
             ("resource_limit", "resource limit exceeded", false)
         }
+        OrchestrationError::ArtifactStoreUnavailable => (
+            "artifact_store_unavailable",
+            "run artifacts are unavailable",
+            false,
+        ),
+        OrchestrationError::ArtifactDeletionRequiresTerminalRun => (
+            "artifact_run_active",
+            "run artifacts cannot be deleted while the run is active",
+            false,
+        ),
+        OrchestrationError::ArtifactIntegrity => (
+            "artifact_integrity_failed",
+            "artifact content failed integrity verification",
+            false,
+        ),
         OrchestrationError::MutationLeaseUnavailable => (
             "mutation_lease_unavailable",
             "mutation lease is unavailable",
