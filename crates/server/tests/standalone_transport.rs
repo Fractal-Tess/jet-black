@@ -21,9 +21,10 @@ use server::{Runtime, StandaloneServer};
 use std::{
     net::SocketAddr,
     path::PathBuf,
-    sync::{Arc, Mutex},
+    sync::{Arc, Condvar, Mutex},
+    time::{Duration, Instant},
 };
-use tokio::net::TcpListener;
+use tokio::{net::TcpListener, time::timeout};
 use tower::ServiceExt;
 
 const AUTHORITY: &str = "127.0.0.1:43170";
@@ -227,6 +228,10 @@ impl Runtime for FixtureRuntime {
         }
     }
 
+    fn drive_run_to_approval(&self, _run_id: Id) -> Result<(), StructuredError> {
+        Ok(())
+    }
+
     fn run_state(&self, _run_id: Id) -> Result<RunState, StructuredError> {
         Ok(RunState::Running)
     }
@@ -258,7 +263,164 @@ impl Runtime for FixtureRuntime {
     }
 }
 
-fn fixture_server(runtime: Arc<FixtureRuntime>) -> StandaloneServer {
+#[derive(Clone, Copy, Default)]
+struct SchedulingState {
+    active_drives: usize,
+    started_drives: usize,
+    max_active_drives: usize,
+    interrupt_count: usize,
+    block_start_dispatch: bool,
+    start_dispatch_entered: bool,
+    released: bool,
+}
+
+struct SchedulingRuntime {
+    state: Mutex<SchedulingState>,
+    changed: Condvar,
+}
+
+impl SchedulingRuntime {
+    fn new() -> Self {
+        Self {
+            state: Mutex::new(SchedulingState::default()),
+            changed: Condvar::new(),
+        }
+    }
+
+    fn with_blocked_start_dispatch() -> Self {
+        Self {
+            state: Mutex::new(SchedulingState {
+                block_start_dispatch: true,
+                ..SchedulingState::default()
+            }),
+            changed: Condvar::new(),
+        }
+    }
+
+    fn wait_until(&self, predicate: impl Fn(&SchedulingState) -> bool) -> bool {
+        let deadline = Instant::now() + Duration::from_secs(1);
+        let mut state = self.state.lock().unwrap();
+        while !predicate(&state) {
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            if remaining.is_zero() {
+                return false;
+            }
+            let (next_state, timeout) = self.changed.wait_timeout(state, remaining).unwrap();
+            state = next_state;
+            if timeout.timed_out() && !predicate(&state) {
+                return false;
+            }
+        }
+        true
+    }
+
+    fn wait_for_start_dispatch(&self) -> bool {
+        self.wait_until(|state| state.start_dispatch_entered)
+    }
+
+    fn wait_for_started_drives(&self, expected: usize) -> bool {
+        self.wait_until(|state| state.started_drives >= expected)
+    }
+
+    fn wait_for_active_drives(&self, expected: usize) -> bool {
+        self.wait_until(|state| state.active_drives == expected)
+    }
+
+    fn snapshot(&self) -> SchedulingState {
+        *self.state.lock().unwrap()
+    }
+
+    fn release_drives(&self) {
+        self.state.lock().unwrap().released = true;
+        self.changed.notify_all();
+    }
+}
+
+struct DriveReleaseGuard(Arc<SchedulingRuntime>);
+
+impl Drop for DriveReleaseGuard {
+    fn drop(&mut self) {
+        self.0.release_drives();
+    }
+}
+
+impl Runtime for SchedulingRuntime {
+    fn dispatch(&self, command: LocalCommand) -> Result<LocalCommandResponse, StructuredError> {
+        match command {
+            LocalCommand::StartRun { changeset_id } => {
+                let mut state = self.state.lock().unwrap();
+                state.start_dispatch_entered = true;
+                self.changed.notify_all();
+                while state.block_start_dispatch && !state.released {
+                    state = self.changed.wait(state).unwrap();
+                }
+                drop(state);
+                Ok(LocalCommandResponse::RunStarted(
+                    protocol::RunStartedResponse {
+                        run_id: changeset_id,
+                        changeset_id,
+                        worktree_id: Id::new_v4(),
+                        approval_id: None,
+                        approval_request: None,
+                    },
+                ))
+            }
+            LocalCommand::InterruptRun { run_id: _ } => {
+                self.state.lock().unwrap().interrupt_count += 1;
+                self.changed.notify_all();
+                let mut run = Run::new(Id::new_v4());
+                run.start().unwrap();
+                run.interrupt().unwrap();
+                Ok(LocalCommandResponse::RunInterrupted(run))
+            }
+            _ => Err(StructuredError {
+                code: "unsupported".to_owned(),
+                message: "unsupported scheduling command".to_owned(),
+                retryable: false,
+            }),
+        }
+    }
+
+    fn drive_run_to_approval(&self, _run_id: Id) -> Result<(), StructuredError> {
+        let mut state = self.state.lock().unwrap();
+        state.active_drives += 1;
+        state.started_drives += 1;
+        state.max_active_drives = state.max_active_drives.max(state.active_drives);
+        self.changed.notify_all();
+
+        while !state.released {
+            state = self.changed.wait(state).unwrap();
+        }
+        state.active_drives -= 1;
+        self.changed.notify_all();
+        Err(StructuredError {
+            code: "fixture_drive_failed".to_owned(),
+            message: "fixture drive failed after release".to_owned(),
+            retryable: false,
+        })
+    }
+
+    fn run_state(&self, _run_id: Id) -> Result<RunState, StructuredError> {
+        Ok(RunState::Running)
+    }
+
+    fn events_after(
+        &self,
+        run_id: Id,
+        after_sequence: u64,
+        _limit: usize,
+    ) -> Result<EventPage, StructuredError> {
+        Ok(EventPage {
+            events: Vec::new(),
+            next_cursor: EventCursor {
+                run_id,
+                after_sequence,
+            },
+        })
+    }
+}
+
+fn test_server(runtime: Arc<dyn Runtime>) -> StandaloneServer {
     StandaloneServer::new(
         AUTHORITY.parse::<SocketAddr>().unwrap(),
         PublicBootstrap {
@@ -360,8 +522,166 @@ async fn binds_an_ephemeral_loopback_listener_before_server_creation() {
 }
 
 #[tokio::test]
+async fn start_run_returns_before_the_provider_worker_finishes() {
+    let runtime = Arc::new(SchedulingRuntime::new());
+    let _release_guard = DriveReleaseGuard(Arc::clone(&runtime));
+    let server = test_server(runtime.clone());
+    let (router, cookie, csrf) = exchange(&server).await;
+    let changeset_id = Id::new_v4();
+
+    let (_, response) = timeout(
+        Duration::from_secs(1),
+        authenticated_command(
+            &router,
+            &cookie,
+            &csrf,
+            LocalCommand::StartRun { changeset_id },
+        ),
+    )
+    .await
+    .unwrap();
+
+    assert!(matches!(
+        response.result,
+        CommandResult::Ok(LocalCommandResponse::RunStarted(started))
+            if started.run_id == changeset_id
+                && started.approval_id.is_none()
+                && started.approval_request.is_none()
+    ));
+    let wait_runtime = Arc::clone(&runtime);
+    assert!(
+        tokio::task::spawn_blocking(move || wait_runtime.wait_for_started_drives(1))
+            .await
+            .unwrap()
+    );
+    assert_eq!(runtime.snapshot().active_drives, 1);
+
+    runtime.release_drives();
+    let wait_runtime = Arc::clone(&runtime);
+    assert!(
+        tokio::task::spawn_blocking(move || wait_runtime.wait_for_active_drives(0))
+            .await
+            .unwrap()
+    );
+}
+
+#[tokio::test]
+async fn cancelled_start_request_still_schedules_the_durable_run() {
+    let runtime = Arc::new(SchedulingRuntime::with_blocked_start_dispatch());
+    let _release_guard = DriveReleaseGuard(Arc::clone(&runtime));
+    let server = test_server(runtime.clone());
+    let (router, cookie, csrf) = exchange(&server).await;
+    let request = tokio::spawn(async move {
+        authenticated_command(
+            &router,
+            &cookie,
+            &csrf,
+            LocalCommand::StartRun {
+                changeset_id: Id::new_v4(),
+            },
+        )
+        .await
+    });
+    let wait_runtime = Arc::clone(&runtime);
+    assert!(
+        tokio::task::spawn_blocking(move || wait_runtime.wait_for_start_dispatch())
+            .await
+            .unwrap()
+    );
+
+    request.abort();
+    assert!(request.await.unwrap_err().is_cancelled());
+    runtime.release_drives();
+    let wait_runtime = Arc::clone(&runtime);
+    assert!(
+        tokio::task::spawn_blocking(move || wait_runtime.wait_for_started_drives(1))
+            .await
+            .unwrap()
+    );
+}
+
+#[tokio::test]
+async fn provider_workers_are_bounded_without_blocking_interrupt_commands() {
+    const RUN_WORKER_LIMIT: usize = 4;
+    const RUN_ADMISSION_LIMIT: usize = 8;
+    let runtime = Arc::new(SchedulingRuntime::new());
+    let _release_guard = DriveReleaseGuard(Arc::clone(&runtime));
+    let server = test_server(runtime.clone());
+    let (router, cookie, csrf) = exchange(&server).await;
+
+    for _ in 0..RUN_ADMISSION_LIMIT {
+        timeout(
+            Duration::from_secs(1),
+            authenticated_command(
+                &router,
+                &cookie,
+                &csrf,
+                LocalCommand::StartRun {
+                    changeset_id: Id::new_v4(),
+                },
+            ),
+        )
+        .await
+        .unwrap();
+    }
+    let wait_runtime = Arc::clone(&runtime);
+    assert!(
+        tokio::task::spawn_blocking(move || {
+            wait_runtime.wait_for_started_drives(RUN_WORKER_LIMIT)
+        })
+        .await
+        .unwrap()
+    );
+    let state = runtime.snapshot();
+    assert_eq!(state.active_drives, RUN_WORKER_LIMIT);
+    assert_eq!(state.max_active_drives, RUN_WORKER_LIMIT);
+    assert!(
+        timeout(
+            Duration::from_millis(50),
+            authenticated_command(
+                &router,
+                &cookie,
+                &csrf,
+                LocalCommand::StartRun {
+                    changeset_id: Id::new_v4(),
+                },
+            ),
+        )
+        .await
+        .is_err()
+    );
+
+    timeout(
+        Duration::from_secs(1),
+        authenticated_command(
+            &router,
+            &cookie,
+            &csrf,
+            LocalCommand::InterruptRun {
+                run_id: Id::new_v4(),
+            },
+        ),
+    )
+    .await
+    .unwrap();
+    assert_eq!(runtime.snapshot().interrupt_count, 1);
+
+    runtime.release_drives();
+    let wait_runtime = Arc::clone(&runtime);
+    assert!(
+        tokio::task::spawn_blocking(move || {
+            wait_runtime.wait_for_started_drives(RUN_ADMISSION_LIMIT)
+                && wait_runtime.wait_for_active_drives(0)
+        })
+        .await
+        .unwrap()
+    );
+    assert_eq!(runtime.snapshot().max_active_drives, RUN_WORKER_LIMIT);
+}
+
+#[tokio::test]
 async fn bootstrap_rejects_foreign_hosts_and_exposes_no_launch_secret() {
-    let server = fixture_server(Arc::new(FixtureRuntime::default()));
+    let server = test_server(Arc::new(FixtureRuntime::default()));
     let router = server.router();
     let rejected = router
         .clone()
@@ -395,7 +715,7 @@ async fn bootstrap_rejects_foreign_hosts_and_exposes_no_launch_secret() {
 
 #[tokio::test]
 async fn exchange_is_same_origin_single_use_and_body_limited() {
-    let server = fixture_server(Arc::new(FixtureRuntime::default()));
+    let server = test_server(Arc::new(FixtureRuntime::default()));
     let missing_origin = server
         .router()
         .oneshot(
@@ -446,7 +766,7 @@ async fn exchange_is_same_origin_single_use_and_body_limited() {
 
 #[tokio::test]
 async fn commands_require_session_origin_and_csrf() {
-    let server = fixture_server(Arc::new(FixtureRuntime::default()));
+    let server = test_server(Arc::new(FixtureRuntime::default()));
     let (router, cookie, csrf) = exchange(&server).await;
     let run_id = Id::new_v4();
     let envelope = Envelope::new(LocalCommand::GetRunArtifacts { run_id });
@@ -518,7 +838,7 @@ async fn authenticated_snapshot_history_and_event_commands_are_typed() {
     let runtime = Arc::new(FixtureRuntime::default());
     let run_id = runtime.snapshot.run.id;
     let changeset_id = runtime.snapshot.changeset.id;
-    let server = fixture_server(Arc::clone(&runtime));
+    let server = test_server(runtime.clone());
     let (router, cookie, csrf) = exchange(&server).await;
 
     let (_, events) = authenticated_command(
@@ -576,7 +896,7 @@ async fn authenticated_snapshot_history_and_event_commands_are_typed() {
 
 #[tokio::test]
 async fn authenticated_artifact_commands_return_path_free_typed_responses() {
-    let server = fixture_server(Arc::new(FixtureRuntime::default()));
+    let server = test_server(Arc::new(FixtureRuntime::default()));
     let (router, cookie, csrf) = exchange(&server).await;
     let run_id = Id::new_v4();
 
@@ -669,7 +989,7 @@ async fn authenticated_mutation_commands_return_typed_path_free_results() {
     let changeset_id = runtime.snapshot.changeset.id;
     let expected_version = runtime.snapshot.changeset.version();
     let expected_head_sha = runtime.snapshot.changeset.head_sha().to_owned();
-    let server = fixture_server(runtime);
+    let server = test_server(runtime);
     let (router, cookie, csrf) = exchange(&server).await;
 
     let (_, commit_preview) = authenticated_command(
@@ -786,7 +1106,7 @@ async fn authenticated_mutation_commands_return_typed_path_free_results() {
 #[tokio::test]
 async fn authenticated_recovery_and_sse_replay_use_bounded_cursors() {
     let runtime = Arc::new(FixtureRuntime::default());
-    let server = fixture_server(Arc::clone(&runtime));
+    let server = test_server(runtime.clone());
     let (router, cookie, _) = exchange(&server).await;
 
     let recovery = router

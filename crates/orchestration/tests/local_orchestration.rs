@@ -456,6 +456,40 @@ fn begin_run_is_durable_without_invoking_the_provider() {
 }
 
 #[test]
+fn queued_run_renews_its_mutation_lease_before_provider_drive() {
+    let directory = tempdir().unwrap();
+    let repository_path = fixture_repository(directory.path());
+    let store = SqliteStore::open(directory.path().join("state.sqlite3")).unwrap();
+    let runtime = LocalOrchestrator::with_process_supervision(
+        store.clone(),
+        GitService::new(
+            vec![directory.path().to_path_buf()],
+            directory.path().join("worktrees"),
+        )
+        .unwrap(),
+        MockProvider::deterministic(),
+        Duration::from_secs(60),
+        Duration::from_millis(5),
+        ProcessSupervisor::new(),
+    );
+    let repository = runtime.register_repository(&repository_path).unwrap();
+    let changeset = runtime
+        .create_changeset(repository.id, &repository.base_sha, None)
+        .unwrap();
+    let begun = runtime.begin_run(changeset.id).unwrap();
+    let initial_lease = store.mutation_lease(changeset.id).unwrap().unwrap();
+    thread::sleep(Duration::from_millis(100));
+
+    let started = runtime.drive_run_to_approval(begun.run_id).unwrap();
+
+    let renewed_lease = store.mutation_lease(changeset.id).unwrap().unwrap();
+    assert_eq!(started.run_id, begun.run_id);
+    assert_eq!(renewed_lease.run_id, begun.run_id);
+    assert!(renewed_lease.fencing_epoch > initial_lease.fencing_epoch);
+    assert!(renewed_lease.expires_at_unix_ms > initial_lease.expires_at_unix_ms);
+}
+
+#[test]
 fn drive_run_to_approval_drives_an_existing_begin() {
     let directory = tempdir().unwrap();
     let repository_path = fixture_repository(directory.path());
@@ -819,7 +853,7 @@ fn command_boundary_completes_and_recovers_a_digest_approved_run() {
         CommandOutcome::ChangesetCreated(changeset) => changeset,
         outcome => panic!("unexpected outcome: {outcome:?}"),
     };
-    let started = match runtime
+    let begun = match runtime
         .handle(LocalCommand::StartRun {
             changeset_id: changeset.id,
         })
@@ -828,6 +862,10 @@ fn command_boundary_completes_and_recovers_a_digest_approved_run() {
         CommandOutcome::RunStarted(started) => started,
         outcome => panic!("unexpected outcome: {outcome:?}"),
     };
+    assert!(begun.approval_id.is_none());
+    assert!(begun.approval_request.is_none());
+    assert_eq!(runtime.run_state(begun.run_id).unwrap(), RunState::Starting);
+    let started = runtime.drive_run_to_approval(begun.run_id).unwrap();
 
     let mut tampered_scope = approval_scope(&started).clone();
     tampered_scope.proposal.target_path = RelativePath::parse("tampered.txt").unwrap();

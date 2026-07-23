@@ -91,7 +91,7 @@ impl<P: AgentProvider> LocalOrchestrator<P> {
                 ticket,
             )?)),
             LocalCommand::StartRun { changeset_id } => {
-                Ok(CommandOutcome::RunStarted(self.start_run(changeset_id)?))
+                Ok(CommandOutcome::RunStarted(self.begin_run(changeset_id)?))
             }
             LocalCommand::InterruptRun { run_id } => {
                 Ok(CommandOutcome::RunInterrupted(self.interrupt_run(run_id)?))
@@ -326,16 +326,12 @@ impl<P: AgentProvider> LocalOrchestrator<P> {
         if worktree.changeset_id() != changeset.id || worktree.state() != WorktreeState::Ready {
             return Err(OrchestrationError::RunDriveUnavailable);
         }
-        let lease = self
-            .store
-            .mutation_lease(changeset.id)?
-            .ok_or(OrchestrationError::MutationLeaseUnavailable)?;
-        if lease.run_id != run.id {
-            return Err(OrchestrationError::MutationLeaseUnavailable);
-        }
-        if lease.expires_at_unix_ms <= current_unix_ms() {
-            return Err(persistence::PersistenceError::MutationLeaseExpired.into());
-        }
+        self.store.acquire_mutation_lease(
+            changeset.id,
+            run.id,
+            current_unix_ms(),
+            self.mutation_lease_ttl,
+        )?;
 
         let drive_claim_guard = self
             .supervision_transition_gate

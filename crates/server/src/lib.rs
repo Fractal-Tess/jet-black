@@ -20,14 +20,22 @@ use protocol::{
 use serde::{Deserialize, Serialize};
 use std::{convert::Infallible, net::SocketAddr, sync::Arc, time::Duration};
 use thiserror::Error;
-use tokio::{net::TcpListener, sync::Semaphore};
+use tokio::{
+    net::TcpListener,
+    runtime::Handle,
+    sync::{OwnedSemaphorePermit, Semaphore},
+};
 
 const MAX_CONCURRENT_COMMANDS: usize = 4;
+const MAX_CONCURRENT_RUN_WORKERS: usize = 4;
+const MAX_QUEUED_RUN_WORKERS: usize = 4;
+const MAX_ADMITTED_RUNS: usize = MAX_CONCURRENT_RUN_WORKERS + MAX_QUEUED_RUN_WORKERS;
 const SSE_PAGE_SIZE: usize = 100;
 const SSE_POLL_INTERVAL: Duration = Duration::from_millis(250);
 
 pub trait Runtime: Send + Sync + 'static {
     fn dispatch(&self, command: LocalCommand) -> Result<LocalCommandResponse, StructuredError>;
+    fn drive_run_to_approval(&self, run_id: Id) -> Result<(), StructuredError>;
     fn run_state(&self, run_id: Id) -> Result<RunState, StructuredError>;
     fn events_after(
         &self,
@@ -44,6 +52,12 @@ where
     fn dispatch(&self, command: LocalCommand) -> Result<LocalCommandResponse, StructuredError> {
         self.handle(command)
             .map(command_response)
+            .map_err(structured_orchestration_error)
+    }
+
+    fn drive_run_to_approval(&self, run_id: Id) -> Result<(), StructuredError> {
+        LocalOrchestrator::drive_run_to_approval(self, run_id)
+            .map(|_| ())
             .map_err(structured_orchestration_error)
     }
 
@@ -69,6 +83,8 @@ struct ServerState {
     bootstrap: PublicBootstrap,
     sessions: Arc<SessionManager>,
     command_slots: Arc<Semaphore>,
+    run_admission_slots: Arc<Semaphore>,
+    run_slots: Arc<Semaphore>,
     runtime: Arc<dyn Runtime>,
 }
 
@@ -96,6 +112,8 @@ impl StandaloneServer {
                 bootstrap,
                 sessions: Arc::new(sessions),
                 command_slots: Arc::new(Semaphore::new(MAX_CONCURRENT_COMMANDS)),
+                run_admission_slots: Arc::new(Semaphore::new(MAX_ADMITTED_RUNS)),
+                run_slots: Arc::new(Semaphore::new(MAX_CONCURRENT_RUN_WORKERS)),
                 runtime,
             },
             launch_token,
@@ -177,14 +195,39 @@ async fn command(
     if let Err(error) = envelope.validate_version() {
         return Ok(Json(ResponseEnvelope::error(request_id, error)));
     }
+    let starts_run = matches!(&envelope.payload, LocalCommand::StartRun { .. });
+    let run_admission = if starts_run {
+        Some(
+            Arc::clone(&state.run_admission_slots)
+                .acquire_owned()
+                .await
+                .map_err(|_| ApiError::internal("run executor is unavailable"))?,
+        )
+    } else {
+        None
+    };
     let runtime = Arc::clone(&state.runtime);
-    let permit = Arc::clone(&state.command_slots)
+    let run_slots = Arc::clone(&state.run_slots);
+    let runtime_handle = Handle::current();
+    let command_permit = Arc::clone(&state.command_slots)
         .acquire_owned()
         .await
         .map_err(|_| ApiError::internal("command executor is unavailable"))?;
     let result = tokio::task::spawn_blocking(move || {
-        let _permit = permit;
-        runtime.dispatch(envelope.payload)
+        let _command_permit = command_permit;
+        let result = runtime.dispatch(envelope.payload);
+        if let (Some(admission_permit), Ok(LocalCommandResponse::RunStarted(started))) =
+            (run_admission, &result)
+        {
+            schedule_run_worker(
+                &runtime_handle,
+                runtime,
+                run_slots,
+                started.run_id,
+                admission_permit,
+            );
+        }
+        result
     })
     .await
     .map_err(|_| ApiError::internal("command worker failed"))?;
@@ -192,6 +235,26 @@ async fn command(
         Ok(response) => ResponseEnvelope::success(request_id, response),
         Err(error) => ResponseEnvelope::error(request_id, error),
     }))
+}
+
+fn schedule_run_worker(
+    runtime_handle: &Handle,
+    runtime: Arc<dyn Runtime>,
+    run_slots: Arc<Semaphore>,
+    run_id: Id,
+    admission_permit: OwnedSemaphorePermit,
+) {
+    drop(runtime_handle.spawn(async move {
+        let Ok(worker_permit) = run_slots.acquire_owned().await else {
+            return;
+        };
+        let _worker_result = tokio::task::spawn_blocking(move || {
+            let _worker_permit = worker_permit;
+            let _admission_permit = admission_permit;
+            runtime.drive_run_to_approval(run_id)
+        })
+        .await;
+    }));
 }
 
 async fn recovery(
