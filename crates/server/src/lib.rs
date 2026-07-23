@@ -6,7 +6,7 @@ use auth::{AuthError, SessionManager, session_cookie};
 use axum::{
     Json, Router,
     extract::{DefaultBodyLimit, Path, Query, Request, State},
-    http::{HeaderMap, HeaderValue, StatusCode, header},
+    http::{HeaderMap, HeaderName, HeaderValue, StatusCode, header},
     middleware::{self, Next},
     response::{IntoResponse, Response, Sse, sse::Event},
     routing::{any, get, post},
@@ -33,6 +33,10 @@ use tokio::{
     sync::{OwnedSemaphorePermit, Semaphore},
 };
 use tower_http::services::ServeDir;
+
+const PERMISSIONS_POLICY: HeaderName = HeaderName::from_static("permissions-policy");
+const STANDALONE_CONTENT_SECURITY_POLICY: &str = "default-src 'self'; base-uri 'none'; object-src 'none'; frame-ancestors 'none'; form-action 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self'; connect-src 'self'; worker-src 'self'";
+const STANDALONE_PERMISSIONS_POLICY: &str = "accelerometer=(), ambient-light-sensor=(), autoplay=(), battery=(), camera=(), display-capture=(), geolocation=(), gyroscope=(), magnetometer=(), microphone=(), payment=(), publickey-credentials-get=(), screen-wake-lock=(), usb=()";
 
 const MAX_CONCURRENT_COMMANDS: usize = 4;
 const MAX_CONCURRENT_REVIEWS: usize = 1;
@@ -172,6 +176,7 @@ impl StandaloneServer {
             .route("/api/commands", post(command))
             .route("/api/recovery", get(recovery))
             .route("/api/runs/{run_id}/events", get(run_events))
+            .route("/api", any(api_not_found))
             .route("/api/{*path}", any(api_not_found))
             .layer(DefaultBodyLimit::max(MAX_COMMAND_BODY_BYTES))
             .with_state(self.state.clone());
@@ -179,10 +184,12 @@ impl StandaloneServer {
             Some(static_assets) => router.fallback_service(ServeDir::new(&static_assets.directory)),
             None => router,
         };
-        router.layer(middleware::from_fn_with_state(
-            self.state.clone(),
-            require_valid_host,
-        ))
+        router
+            .layer(middleware::from_fn_with_state(
+                self.state.clone(),
+                require_valid_host,
+            ))
+            .layer(middleware::from_fn(apply_security_headers))
     }
 
     pub async fn serve(self, listener: TcpListener) -> Result<(), std::io::Error> {
@@ -199,6 +206,35 @@ impl StandaloneServer {
 
 async fn api_not_found() -> StatusCode {
     StatusCode::NOT_FOUND
+}
+
+async fn apply_security_headers(request: Request, next: Next) -> Response {
+    let path = request.uri().path();
+    let is_api = path == "/api" || path.starts_with("/api/");
+    let disable_caching = path == "/" || path == "/index.html" || is_api;
+    let mut response = next.run(request).await;
+    let headers = response.headers_mut();
+    headers.insert(
+        header::CONTENT_SECURITY_POLICY,
+        HeaderValue::from_static(STANDALONE_CONTENT_SECURITY_POLICY),
+    );
+    headers.insert(
+        PERMISSIONS_POLICY,
+        HeaderValue::from_static(STANDALONE_PERMISSIONS_POLICY),
+    );
+    headers.insert(
+        header::REFERRER_POLICY,
+        HeaderValue::from_static("no-referrer"),
+    );
+    headers.insert(
+        header::X_CONTENT_TYPE_OPTIONS,
+        HeaderValue::from_static("nosniff"),
+    );
+    headers.insert(header::X_FRAME_OPTIONS, HeaderValue::from_static("DENY"));
+    if disable_caching {
+        headers.insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
+    }
+    response
 }
 
 #[derive(Debug, Serialize)]

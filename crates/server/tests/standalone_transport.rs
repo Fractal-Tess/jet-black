@@ -1,7 +1,7 @@
 use axum::{
     Router,
     body::{Body, to_bytes},
-    http::{Request, StatusCode, header},
+    http::{HeaderMap, Request, StatusCode, header},
 };
 use config::{ProviderKind, PublicBootstrap};
 use domain::{
@@ -656,6 +656,29 @@ async fn authenticated_command(
     (text, envelope)
 }
 
+fn assert_security_headers(headers: &HeaderMap, expect_no_store: bool) {
+    assert_eq!(
+        headers.get("content-security-policy").unwrap(),
+        "default-src 'self'; base-uri 'none'; object-src 'none'; frame-ancestors 'none'; form-action 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self'; connect-src 'self'; worker-src 'self'"
+    );
+    assert_eq!(
+        headers.get("permissions-policy").unwrap(),
+        "accelerometer=(), ambient-light-sensor=(), autoplay=(), battery=(), camera=(), display-capture=(), geolocation=(), gyroscope=(), magnetometer=(), microphone=(), payment=(), publickey-credentials-get=(), screen-wake-lock=(), usb=()"
+    );
+    assert_eq!(headers.get("referrer-policy").unwrap(), "no-referrer");
+    assert_eq!(headers.get("x-content-type-options").unwrap(), "nosniff");
+    assert_eq!(headers.get("x-frame-options").unwrap(), "DENY");
+    if expect_no_store {
+        assert_eq!(headers.get(header::CACHE_CONTROL).unwrap(), "no-store");
+    } else {
+        assert!(
+            headers
+                .get(header::CACHE_CONTROL)
+                .is_none_or(|value| value != "no-store")
+        );
+    }
+}
+
 #[tokio::test]
 async fn binds_an_ephemeral_loopback_listener_before_server_creation() {
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -710,6 +733,20 @@ async fn serves_static_assets_only_for_the_local_authority() {
         index.headers().get(header::CONTENT_TYPE).unwrap(),
         "text/html"
     );
+    assert_security_headers(index.headers(), true);
+
+    let index_file = router
+        .clone()
+        .oneshot(
+            Request::get("/index.html")
+                .header(header::HOST, AUTHORITY)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(index_file.status(), StatusCode::OK);
+    assert_security_headers(index_file.headers(), true);
 
     let asset = router
         .clone()
@@ -726,6 +763,7 @@ async fn serves_static_assets_only_for_the_local_authority() {
         asset.headers().get(header::CONTENT_TYPE).unwrap(),
         "text/javascript"
     );
+    assert_security_headers(asset.headers(), false);
 
     let invalid_host = router
         .clone()
@@ -738,8 +776,10 @@ async fn serves_static_assets_only_for_the_local_authority() {
         .await
         .unwrap();
     assert_eq!(invalid_host.status(), StatusCode::FORBIDDEN);
+    assert_security_headers(invalid_host.headers(), true);
 
     let missing_api = router
+        .clone()
         .oneshot(
             Request::get("/api/missing")
                 .header(header::HOST, AUTHORITY)
@@ -749,6 +789,19 @@ async fn serves_static_assets_only_for_the_local_authority() {
         .await
         .unwrap();
     assert_eq!(missing_api.status(), StatusCode::NOT_FOUND);
+    assert_security_headers(missing_api.headers(), true);
+
+    let api_root = router
+        .oneshot(
+            Request::get("/api")
+                .header(header::HOST, AUTHORITY)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(api_root.status(), StatusCode::NOT_FOUND);
+    assert_security_headers(api_root.headers(), true);
 }
 
 #[tokio::test]
