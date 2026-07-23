@@ -540,4 +540,71 @@ describe("browser run session", () => {
     expect(session.state.events.runState).toBe("awaiting_approval");
     session.close();
   });
+
+  test("interrupts the exact run and refreshes its terminal snapshot", async () => {
+    const storage = new MemoryStorage();
+    storedSession(storage);
+    let currentSnapshot = snapshot();
+    const commands: LocalCommand[] = [];
+    const source = new FakeEventSource();
+    const session = await createBrowserRunSession({
+      runId: RUN_ID,
+      createRequestId: () => REQUEST_ID,
+      location: { hash: "", pathname: "/", search: "" },
+      history: { state: null, replaceState: () => undefined },
+      storage,
+      now: () => 1000,
+      fetch: (_input, init) => {
+        const { command, requestId } = readCommand(init);
+        commands.push(command);
+        if (command.type === "get_snapshot") {
+          return Promise.resolve(
+            commandResponse(requestId, {
+              type: "snapshot",
+              data: currentSnapshot,
+            })
+          );
+        }
+        if (command.type === "get_events") {
+          return Promise.resolve(
+            commandResponse(requestId, {
+              type: "events",
+              data: {
+                events: [],
+                next_cursor: {
+                  run_id: RUN_ID,
+                  after_sequence: command.data.after_sequence,
+                },
+              },
+            })
+          );
+        }
+
+        expect(command).toEqual({
+          type: "interrupt_run",
+          data: { run_id: RUN_ID },
+        });
+        currentSnapshot = snapshot({ state: "interrupted" });
+        return Promise.resolve(
+          commandResponse(requestId, {
+            type: "run_interrupted",
+            data: currentSnapshot.run,
+          })
+        );
+      },
+      createEventSource: () => source,
+    });
+
+    await session.interrupt();
+
+    expect(commands.map((command) => command.type)).toEqual([
+      "get_snapshot",
+      "interrupt_run",
+      "get_snapshot",
+      "get_events",
+    ]);
+    expect(source.closed).toBe(true);
+    expect(session.state.events.runState).toBe("interrupted");
+    expect(session.state.status).toBe("closed");
+  });
 });

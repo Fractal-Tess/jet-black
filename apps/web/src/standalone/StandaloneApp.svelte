@@ -9,6 +9,7 @@ import { createBrowserCommandSession } from "../lib/execution-client/browser-com
 import type { StandaloneRunSetup } from "../lib/execution-client/standalone-setup";
 import { startStandaloneRun } from "../lib/execution-client/standalone-setup";
 import type { ExecutionClient } from "../lib/execution-client/types";
+import StandaloneRun from "./StandaloneRun.svelte";
 
 type ConnectionStatus = "connecting" | "ready" | "failed";
 
@@ -126,7 +127,7 @@ onMount(connect);
             </Button>
           </form>
         {:else}
-          <dl class="mt-8 grid gap-4 rounded-lg border border-border bg-muted/30 p-4 text-sm">
+          <dl class="mt-8 grid gap-4 rounded-lg border border-border bg-muted/30 p-4 text-sm sm:grid-cols-3">
             <div>
               <dt class="text-muted-foreground">Repository</dt>
               <dd class="mt-1 break-all font-mono">{setup.repository.canonical_path}</dd>
@@ -140,6 +141,7 @@ onMount(connect);
               <dd class="mt-1 break-all font-mono">{setup.run.run_id}</dd>
             </div>
           </dl>
+          <StandaloneRun runId={setup.run.run_id} />
         {/if}
       </Card>
     </section>

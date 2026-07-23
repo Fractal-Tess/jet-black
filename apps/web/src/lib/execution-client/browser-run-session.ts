@@ -29,7 +29,7 @@ const TERMINAL_RUN_STATES = new Set<RunState>([
   "interrupted",
 ]);
 
-const isTerminalRunState = (state: RunState | null): boolean =>
+export const isTerminalRunState = (state: RunState | null): boolean =>
   state !== null && TERMINAL_RUN_STATES.has(state);
 
 export type BrowserRunSessionStatus =
