@@ -1,13 +1,16 @@
 <script lang="ts">
+import type { ApprovedRepositorySummary } from "@workspace/shared/protocol";
 import { Badge } from "@workspace/ui/components/badge";
 import { Button } from "@workspace/ui/components/button";
 import { Card } from "@workspace/ui/components/card";
-import { Input } from "@workspace/ui/components/input";
 import { Label } from "@workspace/ui/components/label";
 import { onMount } from "svelte";
 import { createBrowserCommandSession } from "../lib/execution-client/browser-command-session";
 import type { StandaloneRunSetup } from "../lib/execution-client/standalone-setup";
-import { startStandaloneRun } from "../lib/execution-client/standalone-setup";
+import {
+  listApprovedRepositories,
+  startStandaloneRun,
+} from "../lib/execution-client/standalone-setup";
 import type { ExecutionClient } from "../lib/execution-client/types";
 import StandaloneRun from "./StandaloneRun.svelte";
 
@@ -21,7 +24,8 @@ const connectionLabels: Record<ConnectionStatus, string> = {
 
 let client = $state<ExecutionClient | null>(null);
 let connectionStatus = $state<ConnectionStatus>("connecting");
-let repositoryPath = $state("");
+let approvedRepositories = $state<ApprovedRepositorySummary[]>([]);
+let selectedRepositoryId = $state("");
 let setup = $state<StandaloneRunSetup | null>(null);
 let setupAttempted = $state(false);
 let busy = $state(false);
@@ -32,7 +36,10 @@ const errorText = (error: unknown): string =>
 
 const connect = async (): Promise<void> => {
   try {
-    client = await createBrowserCommandSession();
+    const connectedClient = await createBrowserCommandSession();
+    approvedRepositories = await listApprovedRepositories(connectedClient);
+    selectedRepositoryId = approvedRepositories[0]?.id ?? "";
+    client = connectedClient;
     connectionStatus = "ready";
   } catch (error) {
     connectionStatus = "failed";
@@ -46,11 +53,19 @@ const startRun = async (event: SubmitEvent): Promise<void> => {
     return;
   }
 
+  const approvedRepository = approvedRepositories.find(
+    (repository) => repository.id === selectedRepositoryId
+  );
+  if (approvedRepository === undefined) {
+    errorMessage = "Select an approved repository.";
+    return;
+  }
+
   setupAttempted = true;
   busy = true;
   errorMessage = null;
   try {
-    setup = await startStandaloneRun(client, repositoryPath);
+    setup = await startStandaloneRun(client, approvedRepository);
   } catch (error) {
     errorMessage = errorText(error);
   } finally {
@@ -89,23 +104,34 @@ onMount(connect);
           {setup === null ? "Start a local execution run" : "Local run started"}
         </h2>
         <p class="mt-3 max-w-xl text-sm leading-6 text-muted-foreground">
-          Register an approved Git repository path. Jet Black creates an isolated changeset
-          and starts the run using the exact repository revision returned by the local service.
+          Select a repository approved when the local service started. Jet Black creates an
+          isolated changeset and starts the run using the exact revision returned by the service.
         </p>
 
         {#if setup === null}
           <form class="mt-8 space-y-4" onsubmit={startRun}>
             <div class="space-y-2">
-              <Label for="repository-path">Repository path</Label>
-              <Input
-                id="repository-path"
-                name="repositoryPath"
-                bind:value={repositoryPath}
-                placeholder="/absolute/path/to/repository"
-                autocomplete="off"
-                spellcheck="false"
-                disabled={connectionStatus !== "ready" || setupAttempted}
-              />
+              <Label for="approved-repository">Repository</Label>
+              <select
+                id="approved-repository"
+                name="approvedRepository"
+                bind:value={selectedRepositoryId}
+                class="flex h-9 w-full rounded-md border border-input bg-transparent px-3 py-1 text-sm shadow-xs outline-none transition-colors focus-visible:border-ring focus-visible:ring-[3px] focus-visible:ring-ring/50 disabled:cursor-not-allowed disabled:opacity-50"
+                disabled={connectionStatus !== "ready" || setupAttempted || approvedRepositories.length === 0}
+              >
+                {#if approvedRepositories.length === 0}
+                  <option value="">No approved repositories</option>
+                {:else}
+                  {#each approvedRepositories as repository (repository.id)}
+                    <option value={repository.id}>{repository.display_name}</option>
+                  {/each}
+                {/if}
+              </select>
+              {#if connectionStatus === "ready" && approvedRepositories.length === 0}
+                <p class="text-sm text-muted-foreground">
+                  Restart the local service with at least one approved repository.
+                </p>
+              {/if}
             </div>
 
             {#if errorMessage !== null}
@@ -121,7 +147,7 @@ onMount(connect);
 
             <Button
               type="submit"
-              disabled={connectionStatus !== "ready" || setupAttempted || repositoryPath.trim().length === 0}
+              disabled={connectionStatus !== "ready" || setupAttempted || selectedRepositoryId.length === 0}
             >
               {busy ? "Starting run…" : setupAttempted ? "Setup stopped" : "Start local run"}
             </Button>
@@ -130,7 +156,7 @@ onMount(connect);
           <dl class="mt-8 grid gap-4 rounded-lg border border-border bg-muted/30 p-4 text-sm sm:grid-cols-3">
             <div>
               <dt class="text-muted-foreground">Repository</dt>
-              <dd class="mt-1 break-all font-mono">{setup.repository.canonical_path}</dd>
+              <dd class="mt-1">{setup.approvedRepository.display_name}</dd>
             </div>
             <div>
               <dt class="text-muted-foreground">Changeset</dt>

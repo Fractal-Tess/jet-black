@@ -48,11 +48,6 @@ const snapshot = ({
 } = {}): RunSnapshot => ({
   repository: {
     id: REPOSITORY_ID,
-    canonical_path: "/fixture/repository",
-    filesystem_identity: "filesystem",
-    git_directory_identity: "git-directory",
-    identity: "repository",
-    primary_remote: null,
     default_branch: "main",
     base_sha: "base-sha",
     version: 1,

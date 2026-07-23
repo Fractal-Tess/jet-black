@@ -5,12 +5,13 @@ mod events;
 mod typescript;
 
 pub use commands::{
-    ApprovalRequest, ApprovalResponse, CheckpointResponse, DiffResponse, FindingsResponse,
-    HistoryResponse, LocalCommand, LocalCommandResponse, MutationPreview, MutationResult,
-    RecoveryAction, RecoveryResponse, ReviewCheckKind, ReviewCheckResult, ReviewCheckStatus,
+    ApprovalRequest, ApprovalResponse, ApprovedRepositoriesResponse, ApprovedRepositorySummary,
+    CheckpointResponse, DiffResponse, FindingsResponse, HistoryResponse, LocalCommand,
+    LocalCommandResponse, MutationPreview, MutationResult, RecoveryAction, RecoveryResponse,
+    RegisteredRepositorySummary, ReviewCheckKind, ReviewCheckResult, ReviewCheckStatus,
     ReviewReport, RunArtifactSegmentMetadata, RunArtifactSegmentResponse, RunArtifactStream,
     RunArtifactSummary, RunArtifactsDeletedResponse, RunArtifactsResponse, RunCompletedResponse,
-    RunSnapshot, RunStartedResponse,
+    RunSnapshot, RunStartedResponse, WorktreeSnapshot,
 };
 pub use envelopes::{CommandResult, Envelope, PROTOCOL_VERSION, ResponseEnvelope};
 pub use errors::StructuredError;

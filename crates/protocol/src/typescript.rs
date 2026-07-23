@@ -1,16 +1,18 @@
 use crate::{
-    ApprovalRequest, ApprovalResponse, CheckpointResponse, CommandResult, DiffResponse, Envelope,
-    EventCursor, EventPage, FindingsResponse, HistoryResponse, LocalCommand, LocalCommandResponse,
-    MutationPreview, MutationResult, OrderedRunEvent, PROTOCOL_VERSION, RecoveryAction,
-    RecoveryResponse, ResponseEnvelope, ReviewCheckKind, ReviewCheckResult, ReviewCheckStatus,
-    ReviewReport, RunArtifactSegmentMetadata, RunArtifactSegmentResponse, RunArtifactStream,
-    RunArtifactSummary, RunArtifactsDeletedResponse, RunArtifactsResponse, RunCompletedResponse,
-    RunSnapshot, RunStartedResponse, SemanticEventKind, StructuredError,
+    ApprovalRequest, ApprovalResponse, ApprovedRepositoriesResponse, ApprovedRepositorySummary,
+    CheckpointResponse, CommandResult, DiffResponse, Envelope, EventCursor, EventPage,
+    FindingsResponse, HistoryResponse, LocalCommand, LocalCommandResponse, MutationPreview,
+    MutationResult, OrderedRunEvent, PROTOCOL_VERSION, RecoveryAction, RecoveryResponse,
+    RegisteredRepositorySummary, ResponseEnvelope, ReviewCheckKind, ReviewCheckResult,
+    ReviewCheckStatus, ReviewReport, RunArtifactSegmentMetadata, RunArtifactSegmentResponse,
+    RunArtifactStream, RunArtifactSummary, RunArtifactsDeletedResponse, RunArtifactsResponse,
+    RunCompletedResponse, RunSnapshot, RunStartedResponse, SemanticEventKind, StructuredError,
+    WorktreeSnapshot,
 };
 use domain::{
     ActionKind, ActionProposal, ApprovalScope, Changeset, ChangesetMutationKind, ChangesetState,
-    Checkpoint, ControlPlaneId, ExecutionTargetId, Finding, FindingState, RelativePath, Repository,
-    Run, RunKind, RunState, TicketRef, Worktree, WorktreeState,
+    Checkpoint, ControlPlaneId, ExecutionTargetId, Finding, FindingState, RelativePath, Run,
+    RunKind, RunState, TicketRef, WorktreeState,
 };
 use ts_rs::TS;
 
@@ -29,10 +31,12 @@ pub fn declarations() -> String {
         exported_decl::<RunState>(),
         exported_decl::<WorktreeState>(),
         exported_decl::<FindingState>(),
-        exported_decl::<Repository>(),
+        exported_decl::<ApprovedRepositorySummary>(),
+        exported_decl::<ApprovedRepositoriesResponse>(),
+        exported_decl::<RegisteredRepositorySummary>(),
+        exported_decl::<WorktreeSnapshot>(),
         exported_decl::<Changeset>(),
         exported_decl::<Run>(),
-        exported_decl::<Worktree>(),
         exported_decl::<Checkpoint>(),
         exported_decl::<Finding>(),
         exported_decl::<ReviewCheckKind>(),

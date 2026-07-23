@@ -1,17 +1,17 @@
 use domain::{
     ActionKind, ActionProposal, ApprovalScope, Changeset, ChangesetMutationKind, Checkpoint,
-    RelativePath, Repository, Run, RunState, WorktreeState,
+    RelativePath, Run, RunState, WorktreeState,
 };
 use protocol::{
-    ApprovalRequest, ApprovalResponse, CommandResult, DiffResponse, Envelope, EventCursor,
-    EventPage, HistoryResponse, LocalCommand, LocalCommandResponse, MutationPreview,
-    MutationResult, OrderedRunEvent, PROTOCOL_VERSION, RecoveryAction, RecoveryResponse,
-    ResponseEnvelope, ReviewCheckKind, ReviewCheckResult, ReviewCheckStatus, ReviewReport,
+    ApprovalRequest, ApprovalResponse, ApprovedRepositoriesResponse, ApprovedRepositorySummary,
+    CommandResult, DiffResponse, Envelope, EventCursor, EventPage, HistoryResponse, LocalCommand,
+    LocalCommandResponse, MutationPreview, MutationResult, OrderedRunEvent, PROTOCOL_VERSION,
+    RecoveryAction, RecoveryResponse, RegisteredRepositorySummary, ResponseEnvelope,
+    ReviewCheckKind, ReviewCheckResult, ReviewCheckStatus, ReviewReport,
     RunArtifactSegmentMetadata, RunArtifactSegmentResponse, RunArtifactStream, RunArtifactSummary,
     RunArtifactsDeletedResponse, RunArtifactsResponse, RunSnapshot, RunStartedResponse,
     SemanticEventKind, StructuredError,
 };
-use std::path::PathBuf;
 
 #[test]
 fn protocol_fixture_round_trips_with_version() {
@@ -51,13 +51,12 @@ fn all_local_message_shapes_round_trip() {
         expires_at_unix_ms: 100,
     };
     let changeset = Changeset::new(id, "base".into());
-    let repository = Repository {
+    let approved_repository = ApprovedRepositorySummary {
         id,
-        filesystem_identity: "fixture".into(),
-        git_directory_identity: "git-fixture".into(),
-        canonical_path: PathBuf::from("/repo"),
-        identity: "repo".into(),
-        primary_remote: None,
+        display_name: "Fixture repository".into(),
+    };
+    let repository = RegisteredRepositorySummary {
+        id,
         default_branch: "main".into(),
         base_sha: "base".into(),
         version: 0,
@@ -132,6 +131,10 @@ fn all_local_message_shapes_round_trip() {
     let confirmation_digest = "a".repeat(64);
     let manifest_sha256 = "b".repeat(64);
     let commands = [
+        LocalCommand::ListApprovedRepositories,
+        LocalCommand::RegisterRepository {
+            approved_repository_id: approved_repository.id,
+        },
         LocalCommand::GetRunArtifacts { run_id: run.id },
         LocalCommand::ReadRunArtifactSegment {
             run_id: run.id,
@@ -185,6 +188,10 @@ fn all_local_message_shapes_round_trip() {
         },
     ];
     let responses = [
+        LocalCommandResponse::ApprovedRepositories(ApprovedRepositoriesResponse {
+            repositories: vec![approved_repository.clone()],
+        }),
+        LocalCommandResponse::RepositoryRegistered(repository.clone()),
         LocalCommandResponse::RunStarted(RunStartedResponse {
             run_id: run.id,
             changeset_id: changeset.id,
@@ -300,7 +307,7 @@ fn all_local_message_shapes_round_trip() {
         serde_json::to_value(recovery_command.clone()).unwrap(),
     ];
     assert_eq!(
-        serde_json::from_value::<Repository>(values[0].clone()).unwrap(),
+        serde_json::from_value::<RegisteredRepositorySummary>(values[0].clone()).unwrap(),
         repository
     );
     assert_eq!(
@@ -351,12 +358,33 @@ fn all_local_message_shapes_round_trip() {
         serde_json::from_value::<LocalCommand>(values[12].clone()).unwrap(),
         recovery_command
     );
+    for invalid_registration in [
+        serde_json::json!({
+            "type": "register_repository",
+            "data": { "path": "/repo" }
+        }),
+        serde_json::json!({
+            "type": "register_repository",
+            "data": { "approved_repository_id": "Fixture repository" }
+        }),
+    ] {
+        assert!(serde_json::from_value::<LocalCommand>(invalid_registration).is_err());
+    }
     for command in commands {
         let value = serde_json::to_value(&command).unwrap();
         assert_eq!(
             serde_json::from_value::<LocalCommand>(value).unwrap(),
             command
         );
+    }
+    let public_response_json = serde_json::to_string(&responses).unwrap();
+    for forbidden in [
+        "canonical_path",
+        "filesystem_identity",
+        "git_directory_identity",
+        "/repo",
+    ] {
+        assert!(!public_response_json.contains(forbidden));
     }
     for response in responses {
         let value = serde_json::to_value(&response).unwrap();

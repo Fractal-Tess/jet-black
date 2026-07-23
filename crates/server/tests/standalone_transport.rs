@@ -5,24 +5,23 @@ use axum::{
 };
 use config::{ProviderKind, PublicBootstrap};
 use domain::{
-    Changeset, ChangesetMutationKind, Id, RelativePath, Repository, Run, RunState, WorktreeState,
+    Changeset, ChangesetMutationKind, Id, RelativePath, Run, RunState, WorktreeState,
     limits::MAX_COMMAND_BODY_BYTES,
 };
 use futures_util::StreamExt;
 use protocol::{
     CommandResult, Envelope, EventCursor, EventPage, HistoryResponse, LocalCommand,
     LocalCommandResponse, MutationPreview, MutationResult, OrderedRunEvent, RecoveryResponse,
-    ResponseEnvelope, ReviewCheckKind, ReviewCheckResult, ReviewCheckStatus, ReviewReport,
-    RunArtifactSegmentMetadata, RunArtifactSegmentResponse, RunArtifactStream, RunArtifactSummary,
-    RunArtifactsDeletedResponse, RunArtifactsResponse, RunSnapshot, SemanticEventKind,
-    StructuredError,
+    RegisteredRepositorySummary, ResponseEnvelope, ReviewCheckKind, ReviewCheckResult,
+    ReviewCheckStatus, ReviewReport, RunArtifactSegmentMetadata, RunArtifactSegmentResponse,
+    RunArtifactStream, RunArtifactSummary, RunArtifactsDeletedResponse, RunArtifactsResponse,
+    RunSnapshot, SemanticEventKind, StructuredError,
 };
 use serde::Deserialize;
 use server::{Runtime, StandaloneServer, StaticAssets};
 use std::{
     fs,
     net::SocketAddr,
-    path::PathBuf,
     sync::{Arc, Condvar, Mutex},
     time::{Duration, Instant},
 };
@@ -39,13 +38,8 @@ struct FixtureRuntime {
 
 impl Default for FixtureRuntime {
     fn default() -> Self {
-        let repository = Repository {
+        let repository = RegisteredRepositorySummary {
             id: Id::new_v4(),
-            filesystem_identity: "fixture".to_owned(),
-            git_directory_identity: "git-fixture".to_owned(),
-            canonical_path: PathBuf::from("registered-repository"),
-            identity: "fixture-repository".to_owned(),
-            primary_remote: None,
             default_branch: "main".to_owned(),
             base_sha: "base".to_owned(),
             version: 0,

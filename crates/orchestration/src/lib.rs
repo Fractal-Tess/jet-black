@@ -8,31 +8,47 @@ use execution::{
     CancellationToken, ProcessConfinement, ProcessResult, ProcessSpec, ProcessSupervisor,
     SupervisionState, TerminalOutcome, TerminationReason, TerminationStatus,
 };
-use git::GitService;
+use git::{ApprovedRepositoryIdentity, GitService};
 use persistence::{
     ArtifactSegment, ArtifactStream, ChangesetFinalization, ChangesetFinalizationResult,
     ChangesetFinalizationState, CompletedChangesetFinalization, LocalArtifactStore, MutationLease,
     RecoveryReport, RunArtifact, SqliteStore, VerifiedArtifactSegment,
 };
 use protocol::{
-    ApprovalRequest, CheckpointResponse, DiffResponse, EventCursor, EventPage, FindingsResponse,
-    HistoryResponse, LocalCommand, MutationPreview, MutationResult, OrderedRunEvent,
-    RecoveryAction, RecoveryResponse, ReviewCheckKind, ReviewReport, RunArtifactSegmentMetadata,
+    ApprovalRequest, ApprovedRepositoriesResponse, ApprovedRepositorySummary, CheckpointResponse,
+    DiffResponse, EventCursor, EventPage, FindingsResponse, HistoryResponse, LocalCommand,
+    MutationPreview, MutationResult, OrderedRunEvent, RecoveryAction, RecoveryResponse,
+    RegisteredRepositorySummary, ReviewCheckKind, ReviewReport, RunArtifactSegmentMetadata,
     RunArtifactSegmentResponse, RunArtifactStream, RunArtifactSummary, RunArtifactsDeletedResponse,
     RunArtifactsResponse, RunCompletedResponse, RunSnapshot, RunStartedResponse, SemanticEventKind,
+    WorktreeSnapshot,
 };
 use review::{ReviewOptions, ReviewService};
-use std::{fs, path::Path, sync::Mutex, time::Duration};
+use std::{
+    collections::{HashMap, HashSet},
+    fs,
+    path::{Path, PathBuf},
+    sync::Mutex,
+    time::Duration,
+};
 use thiserror::Error;
 use uuid::Uuid;
 
 pub const DEFAULT_APPROVAL_TTL: Duration = Duration::from_secs(300);
 pub const DEFAULT_MUTATION_LEASE_TTL: Duration = Duration::from_secs(600);
+pub const MAX_APPROVED_REPOSITORIES: usize = 128;
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ApprovedRepositoryEntry {
+    summary: ApprovedRepositorySummary,
+    identity: ApprovedRepositoryIdentity,
+}
 
 pub struct LocalOrchestrator<P> {
     store: SqliteStore,
     git: GitService,
     provider: P,
+    approved_repositories: Vec<ApprovedRepositoryEntry>,
     approval_ttl: Duration,
     supervisor: ProcessSupervisor,
     mutation_lease_ttl: Duration,
@@ -65,6 +81,7 @@ impl<P: AgentProvider> LocalOrchestrator<P> {
             store,
             git,
             provider,
+            approved_repositories: Vec::new(),
             approval_ttl,
             supervisor,
             mutation_lease_ttl,
@@ -72,6 +89,59 @@ impl<P: AgentProvider> LocalOrchestrator<P> {
             review_service: None,
             supervision_transition_gate: Mutex::new(()),
         }
+    }
+
+    pub fn with_approved_repositories(
+        mut self,
+        paths: impl IntoIterator<Item = PathBuf>,
+    ) -> Result<Self, OrchestrationError> {
+        let mut canonical_paths = HashSet::new();
+        let mut identities = Vec::new();
+        for path in paths {
+            let identity = self.git.approve_repository(&path)?;
+            if canonical_paths.insert(identity.canonical_path().to_owned()) {
+                if identities.len() == MAX_APPROVED_REPOSITORIES {
+                    return Err(OrchestrationError::ResourceLimit("approved repositories"));
+                }
+                identities.push(identity);
+            }
+        }
+
+        let base_labels = identities
+            .iter()
+            .enumerate()
+            .map(|(index, identity)| {
+                approved_repository_base_label(identity.canonical_path(), index + 1)
+            })
+            .collect::<Vec<_>>();
+        let label_counts = base_labels
+            .iter()
+            .fold(HashMap::new(), |mut counts, label| {
+                *counts.entry(label.clone()).or_insert(0) += 1;
+                counts
+            });
+        let mut label_positions = HashMap::new();
+        self.approved_repositories = identities
+            .into_iter()
+            .zip(base_labels)
+            .map(|(identity, base_label)| {
+                let position = label_positions.entry(base_label.clone()).or_insert(0);
+                *position += 1;
+                let display_name = if label_counts[&base_label] > 1 {
+                    format!("{base_label} ({position})")
+                } else {
+                    base_label
+                };
+                ApprovedRepositoryEntry {
+                    summary: ApprovedRepositorySummary {
+                        id: Id::new_v4(),
+                        display_name,
+                    },
+                    identity,
+                }
+            })
+            .collect();
+        Ok(self)
     }
 
     pub fn with_artifact_store(mut self, artifact_store: LocalArtifactStore) -> Self {
@@ -102,9 +172,29 @@ impl<P: AgentProvider> LocalOrchestrator<P> {
 
     pub fn handle(&self, command: LocalCommand) -> Result<CommandOutcome, OrchestrationError> {
         match command {
-            LocalCommand::RegisterRepository { path } => Ok(CommandOutcome::RepositoryRegistered(
-                self.register_repository(&path)?,
+            LocalCommand::ListApprovedRepositories => Ok(CommandOutcome::ApprovedRepositories(
+                ApprovedRepositoriesResponse {
+                    repositories: self
+                        .approved_repositories
+                        .iter()
+                        .map(|entry| entry.summary.clone())
+                        .collect(),
+                },
             )),
+            LocalCommand::RegisterRepository {
+                approved_repository_id,
+            } => {
+                let entry = self
+                    .approved_repositories
+                    .iter()
+                    .find(|entry| entry.summary.id == approved_repository_id)
+                    .ok_or(OrchestrationError::NotFound("approved repository"))?;
+                let repository = self.git.register_approved(&entry.identity)?;
+                self.store.save_repository(&repository)?;
+                Ok(CommandOutcome::RepositoryRegistered(
+                    RegisteredRepositorySummary::from(&repository),
+                ))
+            }
             LocalCommand::CreateChangeset {
                 repository_id,
                 base_sha,
@@ -877,10 +967,10 @@ impl<P: AgentProvider> LocalOrchestrator<P> {
             .run_snapshot(run_id)?
             .ok_or(OrchestrationError::NotFound("run"))?;
         Ok(RunSnapshot {
-            repository: snapshot.repository,
+            repository: RegisteredRepositorySummary::from(&snapshot.repository),
             changeset: snapshot.changeset,
             run: snapshot.run,
-            worktree: snapshot.worktree,
+            worktree: snapshot.worktree.as_ref().map(WorktreeSnapshot::from),
             checkpoint: snapshot.checkpoint,
             pending_approval: snapshot
                 .pending_approval
@@ -1952,7 +2042,8 @@ fn mutation_result(
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CommandOutcome {
-    RepositoryRegistered(Repository),
+    ApprovedRepositories(ApprovedRepositoriesResponse),
+    RepositoryRegistered(RegisteredRepositorySummary),
     ChangesetCreated(Changeset),
     RunStarted(RunStarted),
     RunInterrupted(Run),
@@ -1971,6 +2062,13 @@ pub enum CommandOutcome {
     RunArtifactsDeleted(RunArtifactsDeletedResponse),
     MutationPreview(MutationPreview),
     MutationCompleted(MutationResult),
+}
+
+fn approved_repository_base_label(path: &Path, position: usize) -> String {
+    path.file_name()
+        .and_then(|name| name.to_str())
+        .filter(|name| !name.trim().is_empty())
+        .map_or_else(|| format!("Repository {position}"), str::to_owned)
 }
 
 fn current_unix_ms() -> i64 {

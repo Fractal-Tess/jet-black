@@ -56,6 +56,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     )?;
     let runtime = Arc::new(
         LocalOrchestrator::new(store, git, provider, DEFAULT_APPROVAL_TTL)
+            .with_approved_repositories(config.repository_roots.clone())?
             .with_artifact_store(artifact_store)
             .with_review_options(
                 ReviewOptions {

@@ -8,7 +8,7 @@ use execution::{
     CancellationToken, LinuxFilesystemConfinement, ProcessConfinement, ProcessResult, ProcessSpec,
     ProcessStartIdentity, ProcessSupervisor, SupervisionState, TerminationReason,
 };
-use git::GitService;
+use git::{GitError, GitService};
 use orchestration::{CommandOutcome, LocalOrchestrator, OrchestrationError};
 use persistence::{
     ArtifactPolicy, ArtifactState, ArtifactStream, ChangesetFinalizationState, LocalArtifactStore,
@@ -52,7 +52,11 @@ fn approval_scope(started: &RunStartedResponse) -> &ApprovalScope {
 }
 
 fn fixture_repository(root: &Path) -> std::path::PathBuf {
-    let repository = root.join("repo");
+    fixture_repository_named(root, "repo")
+}
+
+fn fixture_repository_named(root: &Path, name: &str) -> std::path::PathBuf {
+    let repository = root.join(name);
     fs::create_dir(&repository).unwrap();
     run_git(&repository, &["init", "-q"]);
     run_git(&repository, &["config", "user.email", "test@example.com"]);
@@ -1003,14 +1007,114 @@ fn interruption_deletes_a_proposal_persisted_before_approval() {
 }
 
 #[test]
+fn command_repository_registry_exposes_only_opaque_approved_entries() {
+    let directory = tempdir().unwrap();
+    let approved_path = fixture_repository_named(directory.path(), "approved");
+    let _unapproved_path = fixture_repository_named(directory.path(), "unapproved");
+    let runtime = build_runtime(directory.path())
+        .with_approved_repositories([approved_path.clone(), approved_path])
+        .unwrap();
+
+    let approved = match runtime
+        .handle(LocalCommand::ListApprovedRepositories)
+        .unwrap()
+    {
+        CommandOutcome::ApprovedRepositories(response) => response,
+        outcome => panic!("unexpected outcome: {outcome:?}"),
+    };
+    assert_eq!(approved.repositories.len(), 1);
+    assert_eq!(approved.repositories[0].display_name, "approved");
+
+    assert!(matches!(
+        runtime.handle(LocalCommand::RegisterRepository {
+            approved_repository_id: uuid::Uuid::new_v4(),
+        }),
+        Err(OrchestrationError::NotFound("approved repository"))
+    ));
+    assert!(matches!(
+        runtime
+            .handle(LocalCommand::RegisterRepository {
+                approved_repository_id: approved.repositories[0].id,
+            })
+            .unwrap(),
+        CommandOutcome::RepositoryRegistered(_)
+    ));
+}
+
+#[test]
+fn approved_repository_identity_rejects_path_replacement() {
+    let directory = tempdir().unwrap();
+    let approved_path = fixture_repository_named(directory.path(), "approved");
+    let runtime = build_runtime(directory.path())
+        .with_approved_repositories([approved_path.clone()])
+        .unwrap();
+    let approved_repository_id = match runtime
+        .handle(LocalCommand::ListApprovedRepositories)
+        .unwrap()
+    {
+        CommandOutcome::ApprovedRepositories(response) => response.repositories[0].id,
+        outcome => panic!("unexpected outcome: {outcome:?}"),
+    };
+
+    fs::rename(&approved_path, directory.path().join("original")).unwrap();
+    fixture_repository_named(directory.path(), "approved");
+
+    assert!(matches!(
+        runtime.handle(LocalCommand::RegisterRepository {
+            approved_repository_id,
+        }),
+        Err(OrchestrationError::Git(GitError::RepositoryIdentityChanged))
+    ));
+}
+
+#[test]
+fn approved_repository_labels_disambiguate_matching_directory_names() {
+    let directory = tempdir().unwrap();
+    let first_parent = directory.path().join("first");
+    let second_parent = directory.path().join("second");
+    fs::create_dir(&first_parent).unwrap();
+    fs::create_dir(&second_parent).unwrap();
+    let first = fixture_repository_named(&first_parent, "repository");
+    let second = fixture_repository_named(&second_parent, "repository");
+    let runtime = build_runtime(directory.path())
+        .with_approved_repositories([first, second])
+        .unwrap();
+
+    let approved = match runtime
+        .handle(LocalCommand::ListApprovedRepositories)
+        .unwrap()
+    {
+        CommandOutcome::ApprovedRepositories(response) => response,
+        outcome => panic!("unexpected outcome: {outcome:?}"),
+    };
+    assert_eq!(
+        approved
+            .repositories
+            .iter()
+            .map(|repository| repository.display_name.as_str())
+            .collect::<Vec<_>>(),
+        ["repository (1)", "repository (2)"]
+    );
+}
+
+#[test]
 fn command_boundary_completes_and_recovers_a_digest_approved_run() {
     let directory = tempdir().unwrap();
     let repository_path = fixture_repository(directory.path());
-    let runtime = build_runtime(directory.path());
+    let runtime = build_runtime(directory.path())
+        .with_approved_repositories([repository_path])
+        .unwrap();
+    let approved_repository_id = match runtime
+        .handle(LocalCommand::ListApprovedRepositories)
+        .unwrap()
+    {
+        CommandOutcome::ApprovedRepositories(response) => response.repositories[0].id,
+        outcome => panic!("unexpected outcome: {outcome:?}"),
+    };
 
     let repository = match runtime
         .handle(LocalCommand::RegisterRepository {
-            path: repository_path,
+            approved_repository_id,
         })
         .unwrap()
     {

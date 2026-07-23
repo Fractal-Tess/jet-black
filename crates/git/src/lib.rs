@@ -72,6 +72,19 @@ impl GitStatusSnapshot {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ApprovedRepositoryIdentity {
+    canonical_path: PathBuf,
+    filesystem_identity: String,
+    git_directory_identity: String,
+}
+
+impl ApprovedRepositoryIdentity {
+    pub fn canonical_path(&self) -> &Path {
+        &self.canonical_path
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct GitService {
     repository_roots: Vec<PathBuf>,
@@ -97,6 +110,33 @@ impl GitService {
             mutation_lock_root,
             git_binary: resolve_git_binary()?,
         })
+    }
+
+    pub fn approve_repository(
+        &self,
+        selected: &Path,
+    ) -> Result<ApprovedRepositoryIdentity, GitError> {
+        let canonical_path = fs::canonicalize(selected)?;
+        self.ensure_repository_root(&canonical_path)?;
+        let git_directory = validate_git_directory(&canonical_path)?;
+        Ok(ApprovedRepositoryIdentity {
+            filesystem_identity: filesystem_identity(&canonical_path)?,
+            git_directory_identity: filesystem_identity(&git_directory)?,
+            canonical_path,
+        })
+    }
+
+    pub fn register_approved(
+        &self,
+        approved: &ApprovedRepositoryIdentity,
+    ) -> Result<Repository, GitError> {
+        let repository = self.register(approved.canonical_path())?;
+        if repository.filesystem_identity != approved.filesystem_identity
+            || repository.git_directory_identity != approved.git_directory_identity
+        {
+            return Err(GitError::RepositoryIdentityChanged);
+        }
+        Ok(repository)
     }
 
     pub fn register(&self, selected: &Path) -> Result<Repository, GitError> {

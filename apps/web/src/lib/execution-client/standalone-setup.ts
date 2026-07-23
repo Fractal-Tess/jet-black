@@ -1,25 +1,36 @@
 import type {
+  ApprovedRepositorySummary,
   Changeset,
-  Repository,
+  RegisteredRepositorySummary,
   RunStartedResponse,
 } from "@workspace/shared/protocol";
 import { ExecutionClientError, unwrapCommandResult } from "./errors";
 import type { ExecutionClient } from "./types";
 
 export type StandaloneRunSetup = {
+  approvedRepository: ApprovedRepositorySummary;
   changeset: Changeset;
-  repository: Repository;
+  repository: RegisteredRepositorySummary;
   run: RunStartedResponse;
+};
+
+export const listApprovedRepositories = async (
+  client: ExecutionClient
+): Promise<ApprovedRepositorySummary[]> => {
+  const response = unwrapCommandResult(
+    await client.command({ type: "list_approved_repositories" })
+  );
+  return response.data.repositories;
 };
 
 export const startStandaloneRun = async (
   client: ExecutionClient,
-  repositoryPath: string
+  approvedRepository: ApprovedRepositorySummary
 ): Promise<StandaloneRunSetup> => {
-  if (repositoryPath.trim().length === 0) {
+  if (approvedRepository.id.trim().length === 0) {
     throw new ExecutionClientError({
-      code: "invalid_repository_path",
-      message: "Enter an approved repository path.",
+      code: "invalid_repository_selection",
+      message: "Select an approved repository.",
       retryable: false,
     });
   }
@@ -27,7 +38,7 @@ export const startStandaloneRun = async (
   const repositoryResponse = unwrapCommandResult(
     await client.command({
       type: "register_repository",
-      data: { path: repositoryPath },
+      data: { approved_repository_id: approvedRepository.id },
     })
   );
   const repository = repositoryResponse.data;
@@ -52,6 +63,7 @@ export const startStandaloneRun = async (
   );
 
   return {
+    approvedRepository,
     changeset,
     repository,
     run: runResponse.data,

@@ -187,6 +187,8 @@ fn compose_runtime(
         },
         Duration::from_secs(60),
     )
+    .with_approved_repositories([root.join("repository")])
+    .unwrap()
     .with_artifact_store(artifact_store)
     .with_review_options(ReviewOptions::default(), "")
     .unwrap();
@@ -269,7 +271,16 @@ async fn authenticated_command(
     let body = to_bytes(response.into_body(), MAX_COMMAND_BODY_BYTES)
         .await
         .unwrap();
-    let envelope: ResponseEnvelope<LocalCommandResponse> = serde_json::from_slice(&body).unwrap();
+    let response_text = String::from_utf8(body.to_vec()).unwrap();
+    for forbidden in [
+        "canonical_path",
+        "filesystem_identity",
+        "git_directory_identity",
+    ] {
+        assert!(!response_text.contains(forbidden));
+    }
+    let envelope: ResponseEnvelope<LocalCommandResponse> =
+        serde_json::from_str(&response_text).unwrap();
     match envelope.result {
         CommandResult::Ok(response) => response,
         CommandResult::Error(error) => panic!("command failed: {error:?}"),
@@ -354,8 +365,21 @@ async fn standalone_supervised_run_survives_restart_and_finalizes_exact_revision
         &router,
         &cookie,
         &csrf,
+        LocalCommand::ListApprovedRepositories,
+    )
+    .await;
+    let LocalCommandResponse::ApprovedRepositories(approved) = response else {
+        panic!("expected approved repositories");
+    };
+    assert_eq!(approved.repositories.len(), 1);
+    assert_eq!(approved.repositories[0].display_name, "repository");
+
+    let response = authenticated_command(
+        &router,
+        &cookie,
+        &csrf,
         LocalCommand::RegisterRepository {
-            path: repository_path.clone(),
+            approved_repository_id: approved.repositories[0].id,
         },
     )
     .await;
@@ -396,7 +420,7 @@ async fn standalone_supervised_run_survives_restart_and_finalizes_exact_revision
     assert!(started.approval_request.is_none());
 
     let approval_snapshot = wait_for_approval(&router, &cookie, &csrf, started.run_id).await;
-    let worktree_path = approval_snapshot.worktree.as_ref().unwrap().path.clone();
+    let worktree_path = root.join("worktrees").join(changeset.id.to_string());
 
     let supervision = store
         .latest_process_supervision_for_run(started.run_id)

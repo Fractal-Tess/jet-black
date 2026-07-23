@@ -12,6 +12,7 @@ const UUID_PATTERN =
 
 type CommandResponseTypeMap = {
   create_changeset: "changeset_created";
+  list_approved_repositories: "approved_repositories";
   delete_run_artifacts: "run_artifacts_deleted";
   get_checkpoint: "checkpoint";
   get_diff: "diff";

@@ -4,14 +4,14 @@ use domain::{
     Run, TicketRef, Worktree, WorktreeState,
 };
 use serde::{Deserialize, Serialize};
-use std::path::PathBuf;
 use ts_rs::TS;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[serde(tag = "type", content = "data", rename_all = "snake_case")]
 pub enum LocalCommand {
+    ListApprovedRepositories,
     RegisterRepository {
-        path: PathBuf,
+        approved_repository_id: Id,
     },
     CreateChangeset {
         repository_id: Id,
@@ -100,6 +100,59 @@ pub enum LocalCommand {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+pub struct ApprovedRepositorySummary {
+    pub id: Id,
+    pub display_name: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+pub struct ApprovedRepositoriesResponse {
+    pub repositories: Vec<ApprovedRepositorySummary>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+pub struct RegisteredRepositorySummary {
+    pub id: Id,
+    pub default_branch: String,
+    pub base_sha: String,
+    #[ts(type = "number")]
+    pub version: u64,
+}
+
+impl From<&Repository> for RegisteredRepositorySummary {
+    fn from(repository: &Repository) -> Self {
+        Self {
+            id: repository.id,
+            default_branch: repository.default_branch.clone(),
+            base_sha: repository.base_sha.clone(),
+            version: repository.version,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+pub struct WorktreeSnapshot {
+    pub id: Id,
+    pub changeset_id: Id,
+    pub base_sha: String,
+    pub state: WorktreeState,
+    #[ts(type = "number")]
+    pub version: u64,
+}
+
+impl From<&Worktree> for WorktreeSnapshot {
+    fn from(worktree: &Worktree) -> Self {
+        Self {
+            id: worktree.id,
+            changeset_id: worktree.changeset_id(),
+            base_sha: worktree.base_sha.clone(),
+            state: worktree.state(),
+            version: worktree.version(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
 pub struct RunStartedResponse {
     pub run_id: Id,
     pub changeset_id: Id,
@@ -118,7 +171,8 @@ pub struct RunCompletedResponse {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[serde(tag = "type", content = "data", rename_all = "snake_case")]
 pub enum LocalCommandResponse {
-    RepositoryRegistered(Repository),
+    ApprovedRepositories(ApprovedRepositoriesResponse),
+    RepositoryRegistered(RegisteredRepositorySummary),
     ChangesetCreated(Changeset),
     RunStarted(RunStartedResponse),
     RunInterrupted(Run),
@@ -176,10 +230,10 @@ pub struct DiffResponse {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
 pub struct RunSnapshot {
-    pub repository: Repository,
+    pub repository: RegisteredRepositorySummary,
     pub changeset: Changeset,
     pub run: Run,
-    pub worktree: Option<Worktree>,
+    pub worktree: Option<WorktreeSnapshot>,
     pub checkpoint: Option<Checkpoint>,
     pub pending_approval: Option<ApprovalRequest>,
     pub findings: Vec<Finding>,

@@ -7,7 +7,10 @@ import {
   PROTOCOL_VERSION,
 } from "@workspace/shared/protocol";
 import { createHttpExecutionClient } from "./http";
-import { startStandaloneRun } from "./standalone-setup";
+import {
+  listApprovedRepositories,
+  startStandaloneRun,
+} from "./standalone-setup";
 
 const REQUEST_IDS = [
   "123e4567-e89b-42d3-a456-426614174010",
@@ -15,18 +18,23 @@ const REQUEST_IDS = [
   "123e4567-e89b-42d3-a456-426614174012",
 ];
 
+const APPROVED_REPOSITORY = {
+  id: "approved-repository-id",
+  display_name: "Approved repository",
+};
+
 const responseData = (command: LocalCommand): unknown => {
   switch (command.type) {
+    case "list_approved_repositories":
+      return {
+        type: "approved_repositories",
+        data: { repositories: [APPROVED_REPOSITORY] },
+      };
     case "register_repository":
       return {
         type: "repository_registered",
         data: {
           id: "repository-id",
-          canonical_path: "/approved/repository",
-          filesystem_identity: "filesystem",
-          git_directory_identity: "git-directory",
-          identity: "repository",
-          primary_remote: null,
           default_branch: "main",
           base_sha: "base-sha",
           version: 0,
@@ -83,12 +91,12 @@ describe("standalone run setup", () => {
       },
     });
 
-    const setup = await startStandaloneRun(client, "/approved/repository");
+    const setup = await startStandaloneRun(client, APPROVED_REPOSITORY);
 
     expect(commands).toEqual([
       {
         type: "register_repository",
-        data: { path: "/approved/repository" },
+        data: { approved_repository_id: APPROVED_REPOSITORY.id },
       },
       {
         type: "create_changeset",
@@ -107,7 +115,30 @@ describe("standalone run setup", () => {
     expect(setup.changeset.repository_id).toBe(setup.repository.id);
   });
 
-  test("rejects blank paths before dispatch", async () => {
+  test("loads approved repositories through the typed command", async () => {
+    const client = createHttpExecutionClient({
+      endpoint: "/api/commands",
+      createRequestId: () => REQUEST_IDS[0] ?? crypto.randomUUID(),
+      fetch: (_input, init) => {
+        const envelope = JSON.parse(
+          String(init?.body)
+        ) as Envelope<LocalCommand>;
+        return Promise.resolve(
+          Response.json({
+            version: PROTOCOL_VERSION,
+            request_id: envelope.request_id,
+            result: { status: "ok", data: responseData(envelope.payload) },
+          })
+        );
+      },
+    });
+
+    await expect(listApprovedRepositories(client)).resolves.toEqual([
+      APPROVED_REPOSITORY,
+    ]);
+  });
+
+  test("rejects an empty repository selection before dispatch", async () => {
     const client = createHttpExecutionClient({
       endpoint: "/api/commands",
       fetch: () => {
@@ -116,11 +147,14 @@ describe("standalone run setup", () => {
     });
 
     try {
-      await startStandaloneRun(client, "   ");
-      throw new Error("Expected blank repository path to be rejected.");
+      await startStandaloneRun(client, {
+        id: "   ",
+        display_name: "Invalid repository",
+      });
+      throw new Error("Expected an empty repository selection to be rejected.");
     } catch (error) {
       expect(error).toEqual(
-        expect.objectContaining({ code: "invalid_repository_path" })
+        expect.objectContaining({ code: "invalid_repository_selection" })
       );
     }
   });

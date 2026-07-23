@@ -462,6 +462,9 @@ fn validate_origin(state: &ServerState, headers: &HeaderMap) -> Result<(), ApiEr
 
 fn command_response(outcome: CommandOutcome) -> LocalCommandResponse {
     match outcome {
+        CommandOutcome::ApprovedRepositories(repositories) => {
+            LocalCommandResponse::ApprovedRepositories(repositories)
+        }
         CommandOutcome::RepositoryRegistered(repository) => {
             LocalCommandResponse::RepositoryRegistered(repository)
         }
