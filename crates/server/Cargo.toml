@@ -25,6 +25,10 @@ tokio.workspace = true
 tower-http.workspace = true
 
 [dev-dependencies]
+execution.workspace = true
 futures-util.workspace = true
+git.workspace = true
+persistence.workspace = true
+review.workspace = true
 tempfile.workspace = true
 tower.workspace = true
