@@ -1,4 +1,4 @@
-use domain::{Changeset, Repository, Run, RunState, limits};
+use domain::{Changeset, Finding, RelativePath, Repository, Run, RunState, limits};
 use execution::{
     ExecutableIdentity, ProcessGroupIdentity, ProcessStartIdentity, SupervisionMetadata,
     SupervisionState, TerminationReason,
@@ -8,6 +8,18 @@ use protocol::{RecoveryAction, SemanticEventKind};
 use rusqlite::{Connection, params};
 use std::time::Duration;
 use tempfile::tempdir;
+
+fn finding(changeset_id: uuid::Uuid, path: &str) -> Finding {
+    Finding::new(
+        changeset_id,
+        Some(RelativePath::parse(path).unwrap()),
+        "fixture-blob".to_owned(),
+        "check".to_owned(),
+        "warning".to_owned(),
+        "fixture finding".to_owned(),
+        "fixture evidence".to_owned(),
+    )
+}
 
 fn supervision_metadata(state: SupervisionState) -> SupervisionMetadata {
     SupervisionMetadata {
@@ -341,7 +353,7 @@ fn adopts_user_version_zero_schema_and_preserves_existing_versions() {
             |row| row.get(0),
         )
         .unwrap();
-    assert_eq!(user_version, 2);
+    assert_eq!(user_version, 3);
     assert_eq!(changeset_version, changeset.version());
     assert_eq!(run_version, run.version());
 }
@@ -358,7 +370,7 @@ fn rejects_schema_versions_newer_than_the_runtime() {
         SqliteStore::open(&path),
         Err(PersistenceError::UnsupportedSchemaVersion {
             database: 999,
-            runtime: 2
+            runtime: 3
         })
     ));
 }
@@ -680,4 +692,47 @@ fn active_process_supervision_listing_is_deterministic() {
     assert_eq!(active[0].run_id, first_run.id);
     assert_eq!(active[1].run_id, second_run.id);
     assert_eq!(active[1].metadata.state, SupervisionState::Running);
+}
+
+#[test]
+fn findings_reload_in_creation_order_with_current_versions() {
+    let directory = tempdir().unwrap();
+    let store = SqliteStore::open(directory.path().join("findings.sqlite3")).unwrap();
+    let changeset_id = uuid::Uuid::new_v4();
+    seed_changeset(&store, changeset_id);
+    let first = finding(changeset_id, "first.txt");
+    let mut second = finding(changeset_id, "second.txt");
+    store
+        .save_findings(&[first.clone(), second.clone()])
+        .unwrap();
+    store
+        .save_findings(&[first.clone(), second.clone()])
+        .unwrap();
+    second.resolve().unwrap();
+    store.persist_finding_transition(&second).unwrap();
+
+    let findings = store.findings_for_changeset(changeset_id).unwrap();
+    assert_eq!(findings, vec![first, second]);
+}
+
+#[test]
+fn finding_batches_are_atomic_and_bounded() {
+    let directory = tempdir().unwrap();
+    let store = SqliteStore::open(directory.path().join("bounded-findings.sqlite3")).unwrap();
+    let changeset_id = uuid::Uuid::new_v4();
+    seed_changeset(&store, changeset_id);
+    let findings = (0..=limits::MAX_FINDINGS_PER_CHANGESET)
+        .map(|index| finding(changeset_id, &format!("finding-{index}.txt")))
+        .collect::<Vec<_>>();
+
+    assert!(matches!(
+        store.save_findings(&findings),
+        Err(PersistenceError::ResourceLimit("findings per changeset"))
+    ));
+    assert!(
+        store
+            .findings_for_changeset(changeset_id)
+            .unwrap()
+            .is_empty()
+    );
 }

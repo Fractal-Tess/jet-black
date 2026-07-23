@@ -703,6 +703,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "review"
+version = "0.1.0"
+dependencies = [
+ "domain",
+ "execution",
+ "git",
+ "persistence",
+ "serial_test",
+ "tempfile",
+ "thiserror",
+ "uuid",
+]
+
+[[package]]
 name = "rusqlite"
 version = "0.37.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"

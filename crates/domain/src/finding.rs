@@ -21,7 +21,7 @@ impl FindingState {
 pub struct Finding {
     pub id: Id,
     changeset_id: Id,
-    pub path: RelativePath,
+    pub path: Option<RelativePath>,
     pub blob_identity: String,
     pub line_range: Option<(u32, u32)>,
     pub category: String,
@@ -37,7 +37,7 @@ pub struct Finding {
 impl Finding {
     pub fn new(
         changeset_id: Id,
-        path: RelativePath,
+        path: Option<RelativePath>,
         blob_identity: String,
         category: String,
         severity: String,

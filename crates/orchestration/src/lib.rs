@@ -10,9 +10,9 @@ use execution::{
 use git::GitService;
 use persistence::{MutationLease, RecoveryReport, SqliteStore};
 use protocol::{
-    ApprovalRequest, CheckpointResponse, DiffResponse, EventCursor, EventPage, LocalCommand,
-    OrderedRunEvent, RecoveryAction, RecoveryResponse, RunCompletedResponse, RunStartedResponse,
-    SemanticEventKind,
+    ApprovalRequest, CheckpointResponse, DiffResponse, EventCursor, EventPage, FindingsResponse,
+    LocalCommand, OrderedRunEvent, RecoveryAction, RecoveryResponse, RunCompletedResponse,
+    RunStartedResponse, SemanticEventKind,
 };
 use std::{path::Path, sync::Mutex, time::Duration};
 use thiserror::Error;
@@ -124,10 +124,15 @@ impl<P: AgentProvider> LocalOrchestrator<P> {
                     .map(|record| record.action)
                     .collect(),
             })),
+            LocalCommand::GetFindings { changeset_id } => {
+                Ok(CommandOutcome::Findings(FindingsResponse {
+                    changeset_id,
+                    findings: self.store.findings_for_changeset(changeset_id)?,
+                }))
+            }
             LocalCommand::GetEvents { .. }
             | LocalCommand::GetSnapshot { .. }
             | LocalCommand::GetHistory { .. }
-            | LocalCommand::GetFindings { .. }
             | LocalCommand::PreviewCommit { .. }
             | LocalCommand::CommitChangeset { .. }
             | LocalCommand::PreviewDiscard { .. }
@@ -1102,6 +1107,7 @@ pub enum CommandOutcome {
     Checkpoint(CheckpointResponse),
     Diff(DiffResponse),
     Recovery(RecoveryResponse),
+    Findings(FindingsResponse),
 }
 
 fn current_unix_ms() -> i64 {

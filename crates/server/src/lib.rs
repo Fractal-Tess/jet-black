@@ -349,6 +349,7 @@ fn command_response(outcome: CommandOutcome) -> LocalCommandResponse {
         CommandOutcome::Checkpoint(checkpoint) => LocalCommandResponse::Checkpoint(checkpoint),
         CommandOutcome::Diff(diff) => LocalCommandResponse::Diff(diff),
         CommandOutcome::Recovery(recovery) => LocalCommandResponse::Recovery(recovery),
+        CommandOutcome::Findings(findings) => LocalCommandResponse::Findings(findings),
     }
 }
 

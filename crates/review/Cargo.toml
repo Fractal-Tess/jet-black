@@ -1,0 +1,18 @@
+[package]
+name = "review"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+domain.workspace = true
+execution.workspace = true
+git.workspace = true
+persistence.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]
+serial_test = "3"
+tempfile.workspace = true
+uuid.workspace = true

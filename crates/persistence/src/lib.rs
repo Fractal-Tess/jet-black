@@ -8,6 +8,7 @@ use protocol::{OrderedRunEvent, RecoveryAction, SemanticEventKind};
 use rusqlite::{Connection, OptionalExtension, Transaction, TransactionBehavior, params};
 use serde::{Deserialize, Serialize};
 use std::{
+    collections::HashMap,
     fs::{File, OpenOptions},
     path::{Path, PathBuf},
     time::Duration,
@@ -15,7 +16,7 @@ use std::{
 use thiserror::Error;
 use uuid::Uuid;
 
-const CURRENT_SCHEMA_VERSION: u32 = 2;
+const CURRENT_SCHEMA_VERSION: u32 = 3;
 
 #[derive(Debug, Clone)]
 pub struct SqliteStore {
@@ -703,17 +704,85 @@ impl SqliteStore {
     }
 
     pub fn save_finding(&self, finding: &Finding) -> Result<(), PersistenceError> {
+        self.save_findings(std::slice::from_ref(finding)).map(drop)
+    }
+
+    pub fn save_findings(&self, findings: &[Finding]) -> Result<Vec<Finding>, PersistenceError> {
+        if findings.is_empty() {
+            return Ok(Vec::new());
+        }
+        let changeset_id = findings[0].changeset_id();
+        if findings
+            .iter()
+            .any(|finding| finding.changeset_id() != changeset_id)
+        {
+            return Err(PersistenceError::MixedFindingOwners);
+        }
+
         self.with_connection(|connection| {
-            connection.execute(
-                "INSERT INTO findings (id, owner, version, body) VALUES (?1, ?2, ?3, ?4)",
-                params![
-                    finding.id.to_string(),
-                    finding.changeset_id().to_string(),
-                    finding.version(),
-                    encode(finding)?
-                ],
+            let transaction =
+                connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+            let mut existing = HashMap::new();
+            let mut statement =
+                transaction.prepare("SELECT body FROM findings WHERE owner = ?1 ORDER BY rowid")?;
+            let rows =
+                statement.query_map([changeset_id.to_string()], |row| row.get::<_, String>(0))?;
+            for row in rows {
+                let finding: Finding = decode(&row?)?;
+                existing.insert(finding_dedup_key(&finding)?, finding);
+            }
+            drop(statement);
+
+            let mut canonical = Vec::with_capacity(findings.len());
+            for finding in findings {
+                let dedup_key = finding_dedup_key(finding)?;
+                if let Some(existing_finding) = existing.get(&dedup_key) {
+                    canonical.push(existing_finding.clone());
+                    continue;
+                }
+                if existing.len() >= domain::limits::MAX_FINDINGS_PER_CHANGESET {
+                    return Err(PersistenceError::ResourceLimit("findings per changeset"));
+                }
+                transaction.execute(
+                    "INSERT INTO findings (id, owner, version, body) VALUES (?1, ?2, ?3, ?4)",
+                    params![
+                        finding.id.to_string(),
+                        changeset_id.to_string(),
+                        finding.version(),
+                        encode(finding)?
+                    ],
+                )?;
+                existing.insert(dedup_key, finding.clone());
+                canonical.push(finding.clone());
+            }
+            transaction.commit()?;
+            Ok(canonical)
+        })
+    }
+
+    pub fn findings_for_changeset(
+        &self,
+        changeset_id: Uuid,
+    ) -> Result<Vec<Finding>, PersistenceError> {
+        self.with_connection(|connection| {
+            let mut statement = connection.prepare(
+                "SELECT body, version FROM findings WHERE owner = ?1 ORDER BY rowid LIMIT ?2",
             )?;
-            Ok(())
+            let rows = statement.query_map(
+                params![
+                    changeset_id.to_string(),
+                    domain::limits::MAX_FINDINGS_PER_CHANGESET
+                ],
+                |row| Ok((row.get::<_, String>(0)?, row.get::<_, u64>(1)?)),
+            )?;
+            let mut findings = Vec::new();
+            for row in rows {
+                let (body, scalar_version) = row?;
+                let finding: Finding = decode(&body)?;
+                ensure_version_agreement("finding", finding.id, scalar_version, finding.version())?;
+                findings.push(finding);
+            }
+            Ok(findings)
         })
     }
 
@@ -1276,6 +1345,7 @@ fn migrate(connection: &mut Connection) -> Result<(), PersistenceError> {
         match target_version {
             1 => migrate_to_version_1(&transaction)?,
             2 => migrate_to_version_2(&transaction)?,
+            3 => migrate_to_version_3(&transaction)?,
             _ => unreachable!("all schema migrations are explicitly ordered"),
         }
         transaction.pragma_update(None, "user_version", target_version)?;
@@ -1301,6 +1371,14 @@ fn migrate_to_version_1(transaction: &Transaction<'_>) -> Result<(), Persistence
          CREATE TABLE IF NOT EXISTS checkpoints (id TEXT PRIMARY KEY, owner TEXT NOT NULL REFERENCES runs(id), body TEXT NOT NULL);
          CREATE INDEX IF NOT EXISTS checkpoints_by_owner ON checkpoints(owner);
          CREATE TABLE IF NOT EXISTS findings (id TEXT PRIMARY KEY, owner TEXT NOT NULL REFERENCES changesets(id), body TEXT NOT NULL);",
+    )?;
+    Ok(())
+}
+
+fn migrate_to_version_3(transaction: &Transaction<'_>) -> Result<(), PersistenceError> {
+    transaction.execute(
+        "CREATE INDEX IF NOT EXISTS findings_by_owner ON findings(owner)",
+        [],
     )?;
     Ok(())
 }
@@ -1777,6 +1855,19 @@ fn validate_semantic_event(event: &SemanticEventKind) -> Result<(), PersistenceE
     Ok(())
 }
 
+fn finding_dedup_key(finding: &Finding) -> Result<String, PersistenceError> {
+    encode(&(
+        &finding.path,
+        &finding.blob_identity,
+        &finding.line_range,
+        &finding.category,
+        &finding.severity,
+        &finding.message,
+        &finding.evidence,
+        finding.state(),
+    ))
+}
+
 fn encode<T: serde::Serialize>(value: &T) -> Result<String, PersistenceError> {
     Ok(serde_json::to_string(value)?)
 }
@@ -1815,6 +1906,8 @@ pub enum PersistenceError {
     ApprovalDoesNotMatchRun,
     #[error("resource limit exceeded for {0}")]
     ResourceLimit(&'static str),
+    #[error("a finding batch must belong to one changeset")]
+    MixedFindingOwners,
     #[error("database schema version {database} is newer than runtime version {runtime}")]
     UnsupportedSchemaVersion { database: u32, runtime: u32 },
     #[error(

@@ -44,7 +44,7 @@ fn lifecycle_methods_are_the_only_valid_transition_path() {
     );
     let mut finding = Finding::new(
         changeset.id,
-        RelativePath::parse("file").unwrap(),
+        Some(RelativePath::parse("file").unwrap()),
         "blob".into(),
         "quality".into(),
         "low".into(),

@@ -11,6 +11,7 @@ members = [
   "crates/persistence",
   "crates/policy",
   "crates/protocol",
+  "crates/review",
   "crates/server",
 ]
 
@@ -29,6 +30,7 @@ execution = { path = "crates/execution" }
 agents = { path = "crates/agents" }
 policy = { path = "crates/policy" }
 config = { path = "crates/config" }
+review = { path = "crates/review" }
 server = { path = "crates/server" }
 axum = "0.8"
 base64 = "0.22"

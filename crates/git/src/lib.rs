@@ -22,6 +22,28 @@ pub struct ReconciliationState {
     pub worktree_dirty: bool,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GitStatusEntry {
+    pub index_status: char,
+    pub worktree_status: char,
+    pub path: RelativePath,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GitStatusSnapshot {
+    pub head_sha: String,
+    pub entries: Vec<GitStatusEntry>,
+}
+
+impl GitStatusSnapshot {
+    pub fn changed_paths(&self) -> Vec<RelativePath> {
+        self.entries
+            .iter()
+            .map(|entry| entry.path.clone())
+            .collect()
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct GitService {
     repository_roots: Vec<PathBuf>,
@@ -283,33 +305,39 @@ impl GitService {
         self.git_text(&worktree.path, ["rev-parse", "HEAD"])
     }
 
+    pub fn status_snapshot(
+        &self,
+        repository: &Repository,
+        worktree: &Worktree,
+    ) -> Result<GitStatusSnapshot, GitError> {
+        self.validate_worktree_identity(repository, worktree)?;
+        let head_sha = self.git_text(&worktree.path, ["rev-parse", "HEAD"])?;
+        let output = ensure_success(
+            self.git_output(
+                &worktree.path,
+                [
+                    "status",
+                    "--porcelain=v1",
+                    "-z",
+                    "--untracked-files=all",
+                    "--no-renames",
+                ],
+            )?,
+            "read worktree status",
+        )?;
+        let entries = parse_status_entries(&output.stdout)?;
+        if self.git_text(&worktree.path, ["rev-parse", "HEAD"])? != head_sha {
+            return Err(GitError::WorktreeChangedDuringRead);
+        }
+        Ok(GitStatusSnapshot { head_sha, entries })
+    }
+
     pub fn reconciliation_state(
         &self,
         repository: &Repository,
         worktree: &Worktree,
     ) -> Result<ReconciliationState, GitError> {
-        let repository_path = self.validate_registered_repository_for_cleanup(repository)?;
-        self.ensure_ready(worktree)?;
-        ensure_canonical_within(&self.worktree_root, &worktree.path)?;
-
-        let worktree_root =
-            fs::canonicalize(self.git_text(&worktree.path, ["rev-parse", "--show-toplevel"])?)?;
-        if worktree_root != worktree.path {
-            return Err(GitError::RepositoryIdentityChanged);
-        }
-
-        let repository_git_dir = fs::canonicalize(repository_path.join(".git"))?;
-        let common_git_dir =
-            PathBuf::from(self.git_text(&worktree.path, ["rev-parse", "--git-common-dir"])?);
-        let common_git_dir = if common_git_dir.is_absolute() {
-            common_git_dir
-        } else {
-            worktree.path.join(common_git_dir)
-        };
-        if fs::canonicalize(common_git_dir)? != repository_git_dir {
-            return Err(GitError::RepositoryIdentityChanged);
-        }
-
+        let repository_path = self.validate_worktree_identity(repository, worktree)?;
         Ok(ReconciliationState {
             repository_head_sha: self.git_text(&repository_path, ["rev-parse", "HEAD"])?,
             worktree_head_sha: self.git_text(&worktree.path, ["rev-parse", "HEAD"])?,
@@ -421,6 +449,33 @@ impl GitService {
         }
         Ok(current)
     }
+    fn validate_worktree_identity(
+        &self,
+        repository: &Repository,
+        worktree: &Worktree,
+    ) -> Result<PathBuf, GitError> {
+        let repository_path = self.validate_registered_repository_for_cleanup(repository)?;
+        self.ensure_ready(worktree)?;
+        ensure_canonical_within(&self.worktree_root, &worktree.path)?;
+
+        let worktree_root =
+            fs::canonicalize(self.git_text(&worktree.path, ["rev-parse", "--show-toplevel"])?)?;
+        if worktree_root != worktree.path {
+            return Err(GitError::RepositoryIdentityChanged);
+        }
+
+        let common_git_dir =
+            PathBuf::from(self.git_text(&worktree.path, ["rev-parse", "--git-common-dir"])?);
+        let common_git_dir = if common_git_dir.is_absolute() {
+            common_git_dir
+        } else {
+            worktree.path.join(common_git_dir)
+        };
+        if fs::canonicalize(common_git_dir)? != fs::canonicalize(repository_path.join(".git"))? {
+            return Err(GitError::RepositoryIdentityChanged);
+        }
+        Ok(repository_path)
+    }
     fn git_output<I, S>(&self, repository: &Path, arguments: I) -> Result<CommandOutput, GitError>
     where
         I: IntoIterator<Item = S>,
@@ -481,6 +536,28 @@ impl GitService {
 
 pub fn content_digest(content: &[u8]) -> String {
     format!("{:x}", Sha256::digest(content))
+}
+
+fn parse_status_entries(output: &[u8]) -> Result<Vec<GitStatusEntry>, GitError> {
+    let mut entries = Vec::new();
+    for record in output
+        .split(|byte| *byte == 0)
+        .filter(|record| !record.is_empty())
+    {
+        if record.len() < 4 || record[2] != b' ' || !record[0].is_ascii() || !record[1].is_ascii() {
+            return Err(GitError::InvalidStatusOutput);
+        }
+        let path = std::str::from_utf8(&record[3..]).map_err(|_| GitError::NonUtf8Output)?;
+        if entries.len() == limits::MAX_CHANGED_FILES {
+            return Err(GitError::ResourceLimit("changed file count"));
+        }
+        entries.push(GitStatusEntry {
+            index_status: char::from(record[0]),
+            worktree_status: char::from(record[1]),
+            path: RelativePath::parse(path.to_owned()).map_err(GitError::Domain)?,
+        });
+    }
+    Ok(entries)
 }
 
 #[derive(Debug)]
@@ -760,6 +837,10 @@ pub enum GitError {
         operation: &'static str,
         stderr: String,
     },
+    #[error("Git returned malformed status output")]
+    InvalidStatusOutput,
+    #[error("worktree HEAD changed while Git state was being read")]
+    WorktreeChangedDuringRead,
     #[error("Git returned non-UTF-8 output")]
     NonUtf8Output,
     #[error("Git executable was not found on PATH")]

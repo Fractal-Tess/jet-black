@@ -55,6 +55,14 @@ fn worktree_and_file_operations_are_bounded() {
     service
         .write_approved_file(&registered, &worktree, approved, b"changed\n")
         .unwrap();
+    let snapshot_before = service.status_snapshot(&registered, &worktree).unwrap();
+    assert_eq!(snapshot_before.head_sha, registered.base_sha);
+    assert_eq!(
+        snapshot_before.changed_paths(),
+        vec![RelativePath::parse("change.txt").unwrap()]
+    );
+    assert_eq!(snapshot_before.entries[0].index_status, '?');
+    assert_eq!(snapshot_before.entries[0].worktree_status, '?');
     let status_before = Command::new("git")
         .current_dir(&worktree.path)
         .args(["status", "--porcelain"])
@@ -74,6 +82,10 @@ fn worktree_and_file_operations_are_bounded() {
         .unwrap()
         .stdout;
     assert_eq!(status_after, status_before);
+    assert_eq!(
+        service.status_snapshot(&registered, &worktree).unwrap(),
+        snapshot_before
+    );
     assert!(RelativePath::parse("../escape.txt").is_err());
     let outside = directory.path().join("outside.txt");
     assert!(!outside.exists());
@@ -385,6 +397,45 @@ fn approved_write_and_changed_file_count_limits_are_enforced() {
         Err(GitError::ResourceLimit("changed file count"))
     ));
 
+    service
+        .cleanup_worktree(&registered, &mut worktree)
+        .unwrap();
+}
+
+#[test]
+#[serial_test::serial]
+fn status_snapshot_rejects_too_many_changed_files() {
+    let directory = tempdir().unwrap();
+    let repo = directory.path().join("repo");
+    fs::create_dir(&repo).unwrap();
+    git(&repo, &["init", "-q"]);
+    git(&repo, &["config", "user.email", "test@example.com"]);
+    git(&repo, &["config", "user.name", "Test"]);
+    fs::write(repo.join("README.md"), "fixture\n").unwrap();
+    git(&repo, &["add", "."]);
+    git(&repo, &["commit", "-qm", "fixture"]);
+
+    let service = GitService::new(
+        vec![directory.path().to_path_buf()],
+        directory.path().join("worktrees"),
+    )
+    .unwrap();
+    let registered = service.register(&repo).unwrap();
+    let mut worktree = service
+        .create_worktree(&registered, uuid::Uuid::new_v4())
+        .unwrap();
+    for index in 0..=limits::MAX_CHANGED_FILES {
+        fs::write(
+            worktree.path.join(format!("change-{index}.txt")),
+            "change\n",
+        )
+        .unwrap();
+    }
+
+    assert!(matches!(
+        service.status_snapshot(&registered, &worktree),
+        Err(GitError::ResourceLimit("changed file count"))
+    ));
     service
         .cleanup_worktree(&registered, &mut worktree)
         .unwrap();
