@@ -10,12 +10,14 @@ import {
 
 export type HttpExecutionClientOptions = {
   createRequestId?: RequestIdFactory;
+  csrfToken?: string;
   endpoint: string;
   fetch?: FetchTransport;
 };
 
 export const createHttpExecutionClient = ({
   createRequestId,
+  csrfToken,
   endpoint,
   fetch: fetchTransport = globalThis.fetch,
 }: HttpExecutionClientOptions): ExecutionClient => ({
@@ -25,10 +27,14 @@ export const createHttpExecutionClient = ({
     let response: Response;
 
     try {
+      const headers = new Headers({ "content-type": "application/json" });
+      if (csrfToken !== undefined) {
+        headers.set("x-csrf-token", csrfToken);
+      }
       response = await fetchTransport(endpoint, {
         body: JSON.stringify(envelope),
         credentials: "same-origin",
-        headers: { "content-type": "application/json" },
+        headers,
         method: "POST",
       });
     } catch {

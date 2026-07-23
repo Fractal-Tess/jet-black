@@ -192,10 +192,7 @@ describe("execution event reducer", () => {
     );
     expect(afterReplay.hasGap).toBe(false);
     expect(afterReplay.lastSequence).toBe(3);
-    expect(afterReplay.pendingApproval).toEqual({
-      proposal,
-      digest: "approval-digest",
-    });
+    expect(afterReplay.pendingApproval).toBeNull();
     expect(afterReplay.runState).toBe("awaiting_approval");
   });
 

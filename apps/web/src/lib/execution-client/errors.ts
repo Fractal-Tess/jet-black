@@ -19,7 +19,7 @@ export class ExecutionClientError extends Error {
 const isRecord = (value: unknown): value is Record<string, unknown> =>
   typeof value === "object" && value !== null;
 
-const isStructuredError = (value: unknown): value is StructuredError =>
+export const isStructuredError = (value: unknown): value is StructuredError =>
   isRecord(value) &&
   typeof value.code === "string" &&
   typeof value.message === "string" &&
