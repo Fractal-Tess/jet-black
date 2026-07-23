@@ -296,6 +296,7 @@ impl ReviewService {
             program: program.to_string_lossy().into_owned(),
             arguments: arguments.into_iter().map(str::to_owned).collect(),
             environment: minimal_environment(&self.programs.search_path),
+            sensitive_environment_keys: Vec::new(),
             current_dir: Some(worktree.to_path_buf()),
             timeout: self.options.timeout,
             output_limit: self.options.output_limit,

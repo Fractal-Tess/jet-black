@@ -8,7 +8,7 @@ use execution::{
     TerminalOutcome, TerminationReason, TerminationStatus,
 };
 use git::GitService;
-use persistence::{MutationLease, RecoveryReport, SqliteStore};
+use persistence::{LocalArtifactStore, MutationLease, RecoveryReport, SqliteStore};
 use protocol::{
     ApprovalRequest, CheckpointResponse, DiffResponse, EventCursor, EventPage, FindingsResponse,
     LocalCommand, OrderedRunEvent, RecoveryAction, RecoveryResponse, RunCompletedResponse,
@@ -28,6 +28,7 @@ pub struct LocalOrchestrator<P> {
     approval_ttl: Duration,
     supervisor: ProcessSupervisor,
     mutation_lease_ttl: Duration,
+    artifact_store: Option<LocalArtifactStore>,
     supervision_transition_gate: Mutex<()>,
 }
 
@@ -58,8 +59,14 @@ impl<P: AgentProvider> LocalOrchestrator<P> {
             approval_ttl,
             supervisor,
             mutation_lease_ttl,
+            artifact_store: None,
             supervision_transition_gate: Mutex::new(()),
         }
+    }
+
+    pub fn with_artifact_store(mut self, artifact_store: LocalArtifactStore) -> Self {
+        self.artifact_store = Some(artifact_store);
+        self
     }
 
     pub fn handle(&self, command: LocalCommand) -> Result<CommandOutcome, OrchestrationError> {
@@ -539,6 +546,11 @@ impl<P: AgentProvider> LocalOrchestrator<P> {
             }
         }
 
+        if let Some(artifact_store) = &self.artifact_store {
+            artifact_store.recover_incomplete()?;
+            artifact_store.prune_expired(now_unix_ms)?;
+        }
+
         Ok(report)
     }
 
@@ -863,6 +875,13 @@ impl<P: AgentProvider> LocalOrchestrator<P> {
             return Ok(None);
         };
         self.bind_process_to_worktree(&mut spec, worktree)?;
+        let mut sensitive_values = spec
+            .sensitive_environment_keys
+            .iter()
+            .filter_map(|key| spec.environment.get(key))
+            .filter(|value| !value.is_empty())
+            .map(|value| value.as_bytes().to_vec())
+            .collect::<Vec<_>>();
         let preparation_guard = self
             .supervision_transition_gate
             .lock()
@@ -936,7 +955,7 @@ impl<P: AgentProvider> LocalOrchestrator<P> {
             }
         };
 
-        let _transition_guard = self
+        let transition_guard = self
             .supervision_transition_gate
             .lock()
             .map_err(|_| OrchestrationError::SupervisionStateUnavailable)?;
@@ -951,6 +970,20 @@ impl<P: AgentProvider> LocalOrchestrator<P> {
             self.store.mark_process_supervision_terminated(
                 run_id,
                 &supervised.metadata,
+                current_unix_ms(),
+            )?;
+        }
+        drop(transition_guard);
+
+        if let Some(artifact_store) = &self.artifact_store {
+            sensitive_values.push(supervised.metadata.supervision_token.as_bytes().to_vec());
+            let run = self.run(run_id)?;
+            artifact_store.capture_process_result(
+                run_id,
+                run.changeset_id(),
+                supervised.metadata.supervision_id,
+                &supervised.result,
+                &sensitive_values,
                 current_unix_ms(),
             )?;
         }

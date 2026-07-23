@@ -2,7 +2,7 @@ use agents::{ClaudeCodeProvider, CodexProvider, LocalProvider, MockProvider, Ope
 use config::{CliOverrides, ProviderKind, StandaloneConfig};
 use git::GitService;
 use orchestration::{DEFAULT_APPROVAL_TTL, LocalOrchestrator};
-use persistence::SqliteStore;
+use persistence::{ArtifactPolicy, LocalArtifactStore, SqliteStore};
 use server::StandaloneServer;
 use std::{collections::HashMap, sync::Arc};
 use tokio::net::TcpListener;
@@ -47,12 +47,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         config.repository_roots.clone(),
         config.data_dir.join("worktrees"),
     )?;
-    let runtime = Arc::new(LocalOrchestrator::new(
-        store,
-        git,
-        provider,
-        DEFAULT_APPROVAL_TTL,
-    ));
+    let artifact_store = LocalArtifactStore::new(
+        store.clone(),
+        config.log_dir.join("artifacts"),
+        ArtifactPolicy::default(),
+    )?;
+    let runtime = Arc::new(
+        LocalOrchestrator::new(store, git, provider, DEFAULT_APPROVAL_TTL)
+            .with_artifact_store(artifact_store),
+    );
     let listener = TcpListener::bind(config.bind).await?;
     let address = listener.local_addr()?;
     let recovery = runtime.recover()?;

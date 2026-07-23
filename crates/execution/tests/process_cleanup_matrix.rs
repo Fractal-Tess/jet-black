@@ -13,6 +13,7 @@ fn spec(_seconds: u64) -> ProcessSpec {
         program: "/bin/sh".into(),
         arguments: vec!["-c".into(), "while :; do :; done".into()],
         environment: HashMap::new(),
+        sensitive_environment_keys: Vec::new(),
         current_dir: None,
         timeout: Duration::from_millis(200),
         output_limit: 32,

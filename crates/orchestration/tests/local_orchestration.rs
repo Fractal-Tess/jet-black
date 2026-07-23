@@ -6,7 +6,7 @@ use execution::{
 };
 use git::GitService;
 use orchestration::{CommandOutcome, LocalOrchestrator, OrchestrationError};
-use persistence::SqliteStore;
+use persistence::{ArtifactPolicy, ArtifactState, ArtifactStream, LocalArtifactStore, SqliteStore};
 use protocol::{LocalCommand, SemanticEventKind};
 use std::{
     collections::HashMap,
@@ -125,6 +125,7 @@ impl AgentProvider for LongRunningProcessProvider {
                 "/bin/sleep 30 & echo $! > child.pid; wait".to_owned(),
             ],
             environment: HashMap::new(),
+            sensitive_environment_keys: Vec::new(),
             current_dir: Some(worktree_path.to_path_buf()),
             timeout: Duration::from_secs(60),
             output_limit: 1024,
@@ -159,6 +160,134 @@ impl AgentProvider for ShortProcessProvider {
             program: "/bin/sh".to_owned(),
             arguments: vec!["-c".to_owned(), "printf provider-complete".to_owned()],
             environment: HashMap::new(),
+            sensitive_environment_keys: Vec::new(),
+            current_dir: None,
+            timeout: Duration::from_secs(5),
+            output_limit: 1024,
+        })
+    }
+
+    fn propose(
+        &self,
+        process_result: Option<&ProcessResult>,
+    ) -> Result<ProposedFileChange, ProviderError> {
+        MockProvider::deterministic().propose(process_result)
+    }
+
+    fn normalized_events(
+        &self,
+        change: &ProposedFileChange,
+        digest: &str,
+    ) -> Vec<SemanticEventKind> {
+        MockProvider::deterministic().normalized_events(change, digest)
+    }
+}
+
+#[derive(Clone, Copy)]
+enum ArtifactFailureMode {
+    ProcessFailure,
+    OutputTruncation,
+    ParserFailure,
+}
+
+impl ArtifactFailureMode {
+    fn command(self) -> &'static str {
+        match self {
+            Self::ProcessFailure => "printf process-failed; exit 7",
+            Self::OutputTruncation => "printf 0123456789",
+            Self::ParserFailure => "printf parser-failed",
+        }
+    }
+
+    fn output_limit(self) -> usize {
+        match self {
+            Self::OutputTruncation => 4,
+            Self::ProcessFailure | Self::ParserFailure => 1024,
+        }
+    }
+
+    fn expected_output(self) -> &'static [u8] {
+        match self {
+            Self::ProcessFailure => b"process-failed",
+            Self::OutputTruncation => b"0123",
+            Self::ParserFailure => b"parser-failed",
+        }
+    }
+
+    fn assert_error(self, error: OrchestrationError) {
+        match (self, error) {
+            (
+                Self::ProcessFailure,
+                OrchestrationError::ProviderProcessFailed(execution::TerminalOutcome::Failed),
+            )
+            | (Self::OutputTruncation, OrchestrationError::ProviderProcessOutputTruncated)
+            | (Self::ParserFailure, OrchestrationError::Provider(ProviderError::InvalidResponse)) =>
+                {}
+            (_, unexpected) => panic!("unexpected orchestration error: {unexpected:?}"),
+        }
+    }
+}
+
+struct ArtifactFailureProvider {
+    mode: ArtifactFailureMode,
+}
+
+impl AgentProvider for ArtifactFailureProvider {
+    fn name(&self) -> &'static str {
+        "artifact-failure"
+    }
+
+    fn process_spec(&self, _: &Path) -> Option<ProcessSpec> {
+        Some(ProcessSpec {
+            program: "/bin/sh".to_owned(),
+            arguments: vec!["-c".to_owned(), self.mode.command().to_owned()],
+            environment: HashMap::new(),
+            sensitive_environment_keys: Vec::new(),
+            current_dir: None,
+            timeout: Duration::from_secs(5),
+            output_limit: self.mode.output_limit(),
+        })
+    }
+
+    fn propose(
+        &self,
+        process_result: Option<&ProcessResult>,
+    ) -> Result<ProposedFileChange, ProviderError> {
+        if matches!(self.mode, ArtifactFailureMode::ParserFailure) {
+            return Err(ProviderError::InvalidResponse);
+        }
+        MockProvider::deterministic().propose(process_result)
+    }
+
+    fn normalized_events(
+        &self,
+        change: &ProposedFileChange,
+        digest: &str,
+    ) -> Vec<SemanticEventKind> {
+        MockProvider::deterministic().normalized_events(change, digest)
+    }
+}
+
+struct SensitiveOutputProvider;
+
+impl AgentProvider for SensitiveOutputProvider {
+    fn name(&self) -> &'static str {
+        "sensitive-output"
+    }
+
+    fn process_spec(&self, _: &Path) -> Option<ProcessSpec> {
+        Some(ProcessSpec {
+            program: "/bin/sh".to_owned(),
+            arguments: vec![
+                "-c".to_owned(),
+                "printf '%s:%s' \"$JET_BLACK_TEST_SECRET\" \"$JET_BLACK_SUPERVISION_TOKEN\""
+                    .to_owned(),
+            ],
+            environment: HashMap::from([(
+                "JET_BLACK_TEST_SECRET".to_owned(),
+                "provider-secret".to_owned(),
+            )]),
+            sensitive_environment_keys: vec!["JET_BLACK_TEST_SECRET".to_owned()],
             current_dir: None,
             timeout: Duration::from_secs(5),
             output_limit: 1024,
@@ -645,6 +774,188 @@ fn successful_provider_process_holds_lease_for_exact_approval_then_releases_it()
 }
 
 #[test]
+fn provider_artifacts_redact_credentials_and_supervision_identity() {
+    let directory = tempdir().unwrap();
+    let repository_path = fixture_repository(directory.path());
+    let store = SqliteStore::open(directory.path().join("state.sqlite3")).unwrap();
+    let artifact_root = directory.path().join("artifacts");
+    let artifact_store = LocalArtifactStore::new(
+        store.clone(),
+        &artifact_root,
+        ArtifactPolicy {
+            segment_bytes: 8,
+            per_run_bytes: 1024,
+            total_bytes: 1024,
+            retention: Duration::from_secs(60),
+        },
+    )
+    .unwrap();
+    let runtime = LocalOrchestrator::with_process_supervision(
+        store.clone(),
+        GitService::new(
+            vec![directory.path().to_path_buf()],
+            directory.path().join("worktrees"),
+        )
+        .unwrap(),
+        SensitiveOutputProvider,
+        Duration::from_secs(60),
+        Duration::from_secs(120),
+        execution::ProcessSupervisor::new(),
+    )
+    .with_artifact_store(artifact_store.clone());
+    let repository = runtime.register_repository(&repository_path).unwrap();
+    let changeset = runtime
+        .create_changeset(repository.id, &repository.base_sha, None)
+        .unwrap();
+    let started = runtime.start_run(changeset.id).unwrap();
+    let supervision = store
+        .latest_process_supervision_for_run(started.run_id)
+        .unwrap()
+        .unwrap();
+    let artifacts = artifact_store.artifacts_for_run(started.run_id).unwrap();
+
+    assert_eq!(artifacts.len(), 1);
+    let artifact = &artifacts[0];
+    assert_eq!(artifact.changeset_id, changeset.id);
+    assert_eq!(artifact.run_id, started.run_id);
+    assert_eq!(artifact.supervision_id, supervision.metadata.supervision_id);
+    assert_eq!(artifact.stream, ArtifactStream::Stdout);
+    let mut persisted = Vec::new();
+    for segment in &artifact.segments {
+        persisted.extend(
+            fs::read(
+                artifact_root
+                    .join(artifact.id.to_string())
+                    .join(format!("{:08}.segment", segment.sequence)),
+            )
+            .unwrap(),
+        );
+    }
+    assert_eq!(persisted, b"[REDACTED]:[REDACTED]");
+    assert!(
+        !persisted
+            .windows(b"provider-secret".len())
+            .any(|bytes| { bytes == b"provider-secret" })
+    );
+    assert!(
+        !persisted
+            .windows(supervision.metadata.supervision_token.len())
+            .any(|bytes| bytes == supervision.metadata.supervision_token.as_bytes())
+    );
+
+    let events = runtime.events(started.run_id).unwrap();
+    assert_eq!(
+        artifact_store.delete_run_artifacts(started.run_id).unwrap(),
+        1
+    );
+    assert_eq!(
+        artifact_store.delete_run_artifacts(started.run_id).unwrap(),
+        0
+    );
+    assert!(
+        artifact_store
+            .artifacts_for_run(started.run_id)
+            .unwrap()
+            .is_empty()
+    );
+    assert_eq!(
+        runtime.run_state(started.run_id).unwrap(),
+        RunState::AwaitingApproval
+    );
+    assert_eq!(runtime.events(started.run_id).unwrap(), events);
+
+    runtime
+        .reject_approval(started.run_id, &started.approval_request.scope)
+        .unwrap();
+}
+
+#[test]
+fn provider_artifacts_survive_process_and_parser_failures() {
+    for mode in [
+        ArtifactFailureMode::ProcessFailure,
+        ArtifactFailureMode::OutputTruncation,
+        ArtifactFailureMode::ParserFailure,
+    ] {
+        let directory = tempdir().unwrap();
+        let repository_path = fixture_repository(directory.path());
+        let store = SqliteStore::open(directory.path().join("state.sqlite3")).unwrap();
+        let artifact_root = directory.path().join("artifacts");
+        let artifact_store = LocalArtifactStore::new(
+            store.clone(),
+            &artifact_root,
+            ArtifactPolicy {
+                segment_bytes: 4,
+                per_run_bytes: 1024,
+                total_bytes: 1024,
+                retention: Duration::from_secs(60),
+            },
+        )
+        .unwrap();
+        let runtime = LocalOrchestrator::with_process_supervision(
+            store.clone(),
+            GitService::new(
+                vec![directory.path().to_path_buf()],
+                directory.path().join("worktrees"),
+            )
+            .unwrap(),
+            ArtifactFailureProvider { mode },
+            Duration::from_secs(60),
+            Duration::from_secs(120),
+            execution::ProcessSupervisor::new(),
+        )
+        .with_artifact_store(artifact_store.clone());
+        let repository = runtime.register_repository(&repository_path).unwrap();
+        let changeset = runtime
+            .create_changeset(repository.id, &repository.base_sha, None)
+            .unwrap();
+
+        mode.assert_error(runtime.start_run(changeset.id).unwrap_err());
+
+        let run = store.runs().unwrap().pop().unwrap();
+        assert_eq!(run.state(), RunState::Failed);
+        assert_eq!(
+            store.changeset(changeset.id).unwrap().unwrap().state(),
+            ChangesetState::Recoverable
+        );
+        let supervision = store
+            .latest_process_supervision_for_run(run.id)
+            .unwrap()
+            .unwrap();
+        if matches!(mode, ArtifactFailureMode::ProcessFailure) {
+            assert_eq!(
+                supervision.metadata.termination_reason,
+                Some(TerminationReason::Exited { code: 7 })
+            );
+        }
+        let artifacts = artifact_store.artifacts_for_run(run.id).unwrap();
+        assert_eq!(artifacts.len(), 1);
+        let artifact = &artifacts[0];
+        assert_eq!(artifact.state, ArtifactState::Complete);
+        assert_eq!(artifact.stream, ArtifactStream::Stdout);
+        assert_eq!(artifact.changeset_id, changeset.id);
+        assert_eq!(artifact.supervision_id, supervision.metadata.supervision_id);
+        assert_eq!(
+            artifact.process_truncated,
+            matches!(mode, ArtifactFailureMode::OutputTruncation)
+        );
+        assert!(!artifact.quota_limited);
+
+        let mut persisted = Vec::new();
+        for segment in &artifact.segments {
+            persisted.extend(
+                fs::read(
+                    artifact_root
+                        .join(artifact.id.to_string())
+                        .join(format!("{:08}.segment", segment.sequence)),
+                )
+                .unwrap(),
+            );
+        }
+        assert_eq!(persisted, mode.expected_output());
+    }
+}
+
+#[test]
 fn startup_reconciliation_interrupts_clean_pending_run_and_is_idempotent() {
     let directory = tempdir().unwrap();
     let repository_path = fixture_repository(directory.path());
@@ -960,6 +1271,7 @@ fn startup_reconciliation_terminates_a_surviving_persisted_process_tree() {
             "/bin/sleep 30 & echo $! > child.pid; wait".to_owned(),
         ],
         environment: HashMap::new(),
+        sensitive_environment_keys: Vec::new(),
         current_dir: Some(worktree_path.clone()),
         timeout: Duration::from_secs(60),
         output_limit: 1024,
@@ -1034,6 +1346,7 @@ fn startup_reconciliation_terminates_a_prepared_process_before_release() {
             format!("echo acted > '{}'", marker.display()),
         ],
         environment: HashMap::new(),
+        sensitive_environment_keys: Vec::new(),
         current_dir: None,
         timeout: Duration::from_secs(60),
         output_limit: 1024,
@@ -1082,6 +1395,7 @@ fn startup_reconciliation_terminalizes_an_already_exited_process_record() {
         program: "/bin/sh".to_owned(),
         arguments: vec!["-c".to_owned(), "exit 0".to_owned()],
         environment: HashMap::new(),
+        sensitive_environment_keys: Vec::new(),
         current_dir: None,
         timeout: Duration::from_secs(5),
         output_limit: 1024,
@@ -1133,6 +1447,7 @@ fn startup_reconciliation_does_not_signal_a_pid_with_mismatched_identity() {
         program: "/bin/sh".to_owned(),
         arguments: vec!["-c".to_owned(), "sleep 30".to_owned()],
         environment: HashMap::new(),
+        sensitive_environment_keys: Vec::new(),
         current_dir: None,
         timeout: Duration::from_secs(60),
         output_limit: 1024,

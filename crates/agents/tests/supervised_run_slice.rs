@@ -69,6 +69,7 @@ fn supervised_local_run_survives_restart() {
             program: "/bin/sh".into(),
             arguments: vec!["-c".into(), "exit 0".into()],
             environment: std::collections::HashMap::new(),
+            sensitive_environment_keys: Vec::new(),
             current_dir: Some(worktree.path.clone()),
             timeout: std::time::Duration::from_secs(2),
             output_limit: 1024,

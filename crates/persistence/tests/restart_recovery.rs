@@ -353,9 +353,51 @@ fn adopts_user_version_zero_schema_and_preserves_existing_versions() {
             |row| row.get(0),
         )
         .unwrap();
-    assert_eq!(user_version, 3);
+    assert_eq!(user_version, 4);
     assert_eq!(changeset_version, changeset.version());
     assert_eq!(run_version, run.version());
+}
+
+#[test]
+fn version_four_quarantines_legacy_artifact_rows() {
+    let directory = tempdir().unwrap();
+    let path = directory.path().join("legacy-artifacts.sqlite3");
+    let connection = Connection::open(&path).unwrap();
+    connection
+        .execute_batch(
+            "CREATE TABLE artifacts (
+                id TEXT PRIMARY KEY,
+                changeset_id TEXT NOT NULL,
+                run_id TEXT,
+                kind TEXT NOT NULL,
+                created_at_unix_ms INTEGER NOT NULL,
+                body BLOB NOT NULL
+            );
+            INSERT INTO artifacts (id, changeset_id, run_id, kind, created_at_unix_ms, body)
+            VALUES ('legacy-artifact', 'legacy-changeset', 'legacy-run', 'provider_stdout', 42, '{}');
+            PRAGMA user_version = 3;",
+        )
+        .unwrap();
+    drop(connection);
+
+    SqliteStore::open(&path).unwrap();
+    let connection = Connection::open(&path).unwrap();
+    let (status, stored_bytes, updated_at, expires_at): (String, i64, i64, Option<i64>) = connection
+        .query_row(
+            "SELECT status, stored_bytes, updated_at_unix_ms, expires_at_unix_ms FROM artifacts WHERE id = 'legacy-artifact'",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+        )
+        .unwrap();
+    let user_version: u32 = connection
+        .pragma_query_value(None, "user_version", |row| row.get(0))
+        .unwrap();
+
+    assert_eq!(status, "deleting");
+    assert_eq!(stored_bytes, 0);
+    assert_eq!(updated_at, 42);
+    assert_eq!(expires_at, None);
+    assert_eq!(user_version, 4);
 }
 
 #[test]
@@ -370,7 +412,7 @@ fn rejects_schema_versions_newer_than_the_runtime() {
         SqliteStore::open(&path),
         Err(PersistenceError::UnsupportedSchemaVersion {
             database: 999,
-            runtime: 3
+            runtime: 4
         })
     ));
 }

@@ -25,6 +25,7 @@ const PROVIDER_CREDENTIALS: &[(&str, &[&str])] = &[
 pub struct OpenCodeProvider {
     executable: PathBuf,
     environment: HashMap<String, String>,
+    credential_name: String,
     model: Option<String>,
     timeout: Duration,
 }
@@ -44,11 +45,12 @@ impl OpenCodeProvider {
         let (credential_name, credential) = select_credential(credentials, model.as_deref())?;
         let discovery = common::discover_provider(search_path, "opencode", state_dir)?;
         let mut environment = discovery.environment;
-        environment.insert(credential_name, credential);
+        environment.insert(credential_name.clone(), credential);
         environment.insert("OPENCODE_CONFIG_CONTENT".to_owned(), CONFIG.to_owned());
         Ok(Self {
             executable: discovery.executable,
             environment,
+            credential_name,
             model,
             timeout,
         })
@@ -116,6 +118,7 @@ impl AgentProvider for OpenCodeProvider {
             program: self.executable.to_string_lossy().into_owned(),
             arguments,
             environment: self.environment.clone(),
+            sensitive_environment_keys: vec![self.credential_name.clone()],
             current_dir: Some(worktree_path.to_path_buf()),
             timeout: self.timeout,
             output_limit: common::PROVIDER_OUTPUT_LIMIT_BYTES,

@@ -50,6 +50,7 @@ pub struct ProcessSpec {
     pub program: String,
     pub arguments: Vec<String>,
     pub environment: HashMap<String, String>,
+    pub sensitive_environment_keys: Vec<String>,
     pub current_dir: Option<PathBuf>,
     pub timeout: Duration,
     pub output_limit: usize,
@@ -64,6 +65,10 @@ impl fmt::Debug for ProcessSpec {
             .field("program", &self.program)
             .field("arguments", &self.arguments)
             .field("environment_keys", &environment_keys)
+            .field(
+                "sensitive_environment_keys",
+                &self.sensitive_environment_keys,
+            )
             .field("current_dir", &self.current_dir)
             .field("timeout", &self.timeout)
             .field("output_limit", &self.output_limit)
@@ -1215,6 +1220,7 @@ mod tests {
             program: "provider".to_owned(),
             arguments: vec!["run".to_owned()],
             environment: HashMap::from([("PROVIDER_API_KEY".to_owned(), "top-secret".to_owned())]),
+            sensitive_environment_keys: vec!["PROVIDER_API_KEY".to_owned()],
             current_dir: None,
             timeout: Duration::from_secs(1),
             output_limit: 1024,

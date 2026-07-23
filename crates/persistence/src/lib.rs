@@ -1,3 +1,9 @@
+mod artifacts;
+
+pub use artifacts::{
+    ArtifactPolicy, ArtifactState, ArtifactStream, LocalArtifactStore, RunArtifact,
+};
+
 use domain::{
     ActionProposal, Approval, ApprovalScope, ApprovedAction, Changeset, ChangesetState, Checkpoint,
     Finding, Repository, Run, RunState, Worktree,
@@ -16,7 +22,7 @@ use std::{
 use thiserror::Error;
 use uuid::Uuid;
 
-const CURRENT_SCHEMA_VERSION: u32 = 3;
+const CURRENT_SCHEMA_VERSION: u32 = 4;
 
 #[derive(Debug, Clone)]
 pub struct SqliteStore {
@@ -1346,6 +1352,7 @@ fn migrate(connection: &mut Connection) -> Result<(), PersistenceError> {
             1 => migrate_to_version_1(&transaction)?,
             2 => migrate_to_version_2(&transaction)?,
             3 => migrate_to_version_3(&transaction)?,
+            4 => migrate_to_version_4(&transaction)?,
             _ => unreachable!("all schema migrations are explicitly ordered"),
         }
         transaction.pragma_update(None, "user_version", target_version)?;
@@ -1379,6 +1386,42 @@ fn migrate_to_version_3(transaction: &Transaction<'_>) -> Result<(), Persistence
     transaction.execute(
         "CREATE INDEX IF NOT EXISTS findings_by_owner ON findings(owner)",
         [],
+    )?;
+    Ok(())
+}
+
+fn migrate_to_version_4(transaction: &Transaction<'_>) -> Result<(), PersistenceError> {
+    add_column_if_missing(
+        transaction,
+        "artifacts",
+        "status",
+        "ALTER TABLE artifacts ADD COLUMN status TEXT NOT NULL DEFAULT 'complete'",
+    )?;
+    add_column_if_missing(
+        transaction,
+        "artifacts",
+        "stored_bytes",
+        "ALTER TABLE artifacts ADD COLUMN stored_bytes INTEGER NOT NULL DEFAULT 0",
+    )?;
+    add_column_if_missing(
+        transaction,
+        "artifacts",
+        "updated_at_unix_ms",
+        "ALTER TABLE artifacts ADD COLUMN updated_at_unix_ms INTEGER NOT NULL DEFAULT 0",
+    )?;
+    add_column_if_missing(
+        transaction,
+        "artifacts",
+        "expires_at_unix_ms",
+        "ALTER TABLE artifacts ADD COLUMN expires_at_unix_ms INTEGER",
+    )?;
+    transaction.execute(
+        "UPDATE artifacts SET status = 'deleting', updated_at_unix_ms = created_at_unix_ms WHERE expires_at_unix_ms IS NULL",
+        [],
+    )?;
+    transaction.execute_batch(
+        "CREATE INDEX IF NOT EXISTS artifacts_by_status ON artifacts(status, updated_at_unix_ms);
+         CREATE INDEX IF NOT EXISTS artifacts_by_expiry ON artifacts(expires_at_unix_ms, status);",
     )?;
     Ok(())
 }
@@ -1956,4 +1999,12 @@ pub enum PersistenceError {
     RecoveryActionConflict,
     #[error("stored recovery action scalar fields do not match its serialized body")]
     CorruptRecoveryAction,
+    #[error("artifact policy limits or retention are invalid")]
+    InvalidArtifactPolicy,
+    #[error("artifact root must be absolute")]
+    InvalidArtifactRoot,
+    #[error("stored artifact metadata is corrupt")]
+    ArtifactMetadataCorrupt,
+    #[error("stored {0} is not a valid UUID")]
+    CorruptIdentifier(&'static str),
 }

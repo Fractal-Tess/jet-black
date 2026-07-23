@@ -81,6 +81,7 @@ impl AgentProvider for ClaudeCodeProvider {
             program: self.executable.to_string_lossy().into_owned(),
             arguments,
             environment: self.environment.clone(),
+            sensitive_environment_keys: vec!["ANTHROPIC_API_KEY".to_owned()],
             current_dir: Some(worktree_path.to_path_buf()),
             timeout: self.timeout,
             output_limit: common::PROVIDER_OUTPUT_LIMIT_BYTES,
