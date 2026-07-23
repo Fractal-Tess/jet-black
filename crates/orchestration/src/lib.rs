@@ -15,9 +15,10 @@ use persistence::{
 };
 use protocol::{
     ApprovalRequest, CheckpointResponse, DiffResponse, EventCursor, EventPage, FindingsResponse,
-    LocalCommand, OrderedRunEvent, RecoveryAction, RecoveryResponse, RunArtifactSegmentMetadata,
-    RunArtifactSegmentResponse, RunArtifactStream, RunArtifactSummary, RunArtifactsDeletedResponse,
-    RunArtifactsResponse, RunCompletedResponse, RunStartedResponse, SemanticEventKind,
+    HistoryResponse, LocalCommand, OrderedRunEvent, RecoveryAction, RecoveryResponse,
+    RunArtifactSegmentMetadata, RunArtifactSegmentResponse, RunArtifactStream, RunArtifactSummary,
+    RunArtifactsDeletedResponse, RunArtifactsResponse, RunCompletedResponse, RunSnapshot,
+    RunStartedResponse, SemanticEventKind,
 };
 use std::{path::Path, sync::Mutex, time::Duration};
 use thiserror::Error;
@@ -155,10 +156,32 @@ impl<P: AgentProvider> LocalOrchestrator<P> {
             LocalCommand::DeleteRunArtifacts { run_id } => Ok(CommandOutcome::RunArtifactsDeleted(
                 self.delete_run_artifacts(run_id)?,
             )),
-            LocalCommand::GetEvents { .. }
-            | LocalCommand::GetSnapshot { .. }
-            | LocalCommand::GetHistory { .. }
-            | LocalCommand::PreviewCommit { .. }
+            LocalCommand::GetEvents {
+                run_id,
+                after_sequence,
+                limit,
+            } => Ok(CommandOutcome::Events(
+                self.events_after(
+                    run_id,
+                    after_sequence,
+                    usize::try_from(limit)
+                        .map_err(|_| OrchestrationError::ResourceLimit("event page size"))?,
+                )?,
+            )),
+            LocalCommand::GetSnapshot { run_id } => {
+                Ok(CommandOutcome::Snapshot(Box::new(self.snapshot(run_id)?)))
+            }
+            LocalCommand::GetHistory {
+                changeset_id,
+                limit,
+            } => Ok(CommandOutcome::History(
+                self.history(
+                    changeset_id,
+                    usize::try_from(limit)
+                        .map_err(|_| OrchestrationError::ResourceLimit("run history page size"))?,
+                )?,
+            )),
+            LocalCommand::PreviewCommit { .. }
             | LocalCommand::CommitChangeset { .. }
             | LocalCommand::PreviewDiscard { .. }
             | LocalCommand::DiscardChangeset { .. } => Err(OrchestrationError::UnsupportedCommand),
@@ -445,6 +468,10 @@ impl<P: AgentProvider> LocalOrchestrator<P> {
         after_sequence: u64,
         limit: usize,
     ) -> Result<EventPage, OrchestrationError> {
+        if limit == 0 || limit > domain::limits::MAX_EVENT_PAGE_SIZE {
+            return Err(OrchestrationError::ResourceLimit("event page size"));
+        }
+        self.run(run_id)?;
         let events = self.store.events_after(run_id, after_sequence, limit)?;
         let next_sequence = events.last().map_or(after_sequence, |event| event.sequence);
         Ok(EventPage {
@@ -453,6 +480,37 @@ impl<P: AgentProvider> LocalOrchestrator<P> {
                 run_id,
                 after_sequence: next_sequence,
             },
+        })
+    }
+
+    pub fn snapshot(&self, run_id: Id) -> Result<RunSnapshot, OrchestrationError> {
+        let snapshot = self
+            .store
+            .run_snapshot(run_id)?
+            .ok_or(OrchestrationError::NotFound("run"))?;
+        Ok(RunSnapshot {
+            repository: snapshot.repository,
+            changeset: snapshot.changeset,
+            run: snapshot.run,
+            worktree: snapshot.worktree,
+            checkpoint: snapshot.checkpoint,
+            findings: snapshot.findings,
+            events: snapshot.events,
+        })
+    }
+
+    pub fn history(
+        &self,
+        changeset_id: Id,
+        limit: usize,
+    ) -> Result<HistoryResponse, OrchestrationError> {
+        if limit == 0 || limit > domain::limits::MAX_RUN_HISTORY_PAGE_SIZE {
+            return Err(OrchestrationError::ResourceLimit("run history page size"));
+        }
+        self.changeset(changeset_id)?;
+        Ok(HistoryResponse {
+            changeset_id,
+            runs: self.store.runs_for_changeset(changeset_id, limit)?,
         })
     }
 
@@ -1283,6 +1341,9 @@ pub enum CommandOutcome {
     RunCompleted(RunCompleted),
     Checkpoint(CheckpointResponse),
     Diff(DiffResponse),
+    Events(EventPage),
+    Snapshot(Box<RunSnapshot>),
+    History(HistoryResponse),
     Recovery(RecoveryResponse),
     Findings(FindingsResponse),
     RunArtifacts(RunArtifactsResponse),

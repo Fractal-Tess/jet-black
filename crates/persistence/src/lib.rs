@@ -30,6 +30,17 @@ pub struct SqliteStore {
     path: PathBuf,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StoredRunSnapshot {
+    pub repository: Repository,
+    pub changeset: Changeset,
+    pub run: Run,
+    pub worktree: Option<Worktree>,
+    pub checkpoint: Option<Checkpoint>,
+    pub findings: Vec<Finding>,
+    pub events: Vec<OrderedRunEvent>,
+}
+
 pub struct RecoveryLock {
     file: File,
 }
@@ -354,14 +365,7 @@ impl SqliteStore {
             return Err(PersistenceError::ResourceLimit("event page size"));
         }
         self.with_connection(|connection| {
-            let mut statement = connection.prepare(
-                "SELECT body FROM semantic_events WHERE run_id = ?1 AND sequence > ?2 ORDER BY sequence LIMIT ?3",
-            )?;
-            let rows = statement.query_map(
-                params![run_id.to_string(), after_sequence.min(i64::MAX as u64) as i64, limit as i64],
-                |row| row.get::<_, String>(0),
-            )?;
-            rows.map(|row| decode(&row?)).collect()
+            query_bounded_events(connection, run_id, after_sequence, limit)
         })
     }
 
@@ -397,6 +401,99 @@ impl SqliteStore {
                 Ok(run)
             })
             .collect()
+        })
+    }
+
+    pub fn runs_for_changeset(
+        &self,
+        changeset_id: Uuid,
+        limit: usize,
+    ) -> Result<Vec<Run>, PersistenceError> {
+        if limit == 0 || limit > domain::limits::MAX_RUN_HISTORY_PAGE_SIZE {
+            return Err(PersistenceError::ResourceLimit("run history page size"));
+        }
+        self.with_connection(|connection| {
+            let mut statement = connection.prepare(
+                "SELECT id, changeset_id, body, version FROM runs WHERE changeset_id = ?1 ORDER BY rowid DESC LIMIT ?2",
+            )?;
+            let rows = statement.query_map(
+                params![changeset_id.to_string(), limit as i64],
+                |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, String>(2)?,
+                        row.get::<_, u64>(3)?,
+                    ))
+                },
+            )?;
+            rows.map(|row| {
+                let (scalar_run_id, scalar_changeset_id, body, scalar_version) = row?;
+                let run_id = Uuid::parse_str(&scalar_run_id)
+                    .map_err(|_| PersistenceError::CorruptIdentifier("run id"))?;
+                let run = decode_versioned_run(run_id, &body, scalar_version)?;
+                if scalar_changeset_id != changeset_id.to_string()
+                    || run.changeset_id() != changeset_id
+                {
+                    return Err(PersistenceError::CorruptOwnership("run"));
+                }
+                Ok(run)
+            })
+            .collect()
+        })
+    }
+
+    pub fn run_snapshot(
+        &self,
+        run_id: Uuid,
+    ) -> Result<Option<StoredRunSnapshot>, PersistenceError> {
+        self.with_connection(|connection| {
+            let transaction =
+                connection.transaction_with_behavior(TransactionBehavior::Deferred)?;
+            let Some((run_body, run_version)) = transaction
+                .query_row(
+                    "SELECT body, version FROM runs WHERE id = ?1",
+                    [run_id.to_string()],
+                    |row| Ok((row.get::<_, String>(0)?, row.get::<_, u64>(1)?)),
+                )
+                .optional()?
+            else {
+                return Ok(None);
+            };
+            let run = decode_versioned_run(run_id, &run_body, run_version)?;
+            let (changeset, _) = load_changeset(&transaction, run.changeset_id())?;
+            if run.changeset_id() != changeset.id {
+                return Err(PersistenceError::CorruptOwnership("run"));
+            }
+            let repository = load_repository(&transaction, changeset.repository_id())?;
+            let latest_run_id = transaction.query_row(
+                "SELECT id FROM runs WHERE changeset_id = ?1 ORDER BY rowid DESC LIMIT 1",
+                [changeset.id.to_string()],
+                |row| row.get::<_, String>(0),
+            )?;
+            let worktree = if latest_run_id == run.id.to_string() {
+                load_latest_worktree(&transaction, changeset.id)?
+            } else {
+                None
+            };
+            let checkpoint = load_latest_checkpoint(&transaction, run.id)?;
+            let findings = load_findings(&transaction, changeset.id)?;
+            let events = query_bounded_events(
+                &transaction,
+                run.id,
+                0,
+                domain::limits::MAX_SNAPSHOT_EVENT_PAGE_SIZE,
+            )?;
+            transaction.commit()?;
+            Ok(Some(StoredRunSnapshot {
+                repository,
+                changeset,
+                run,
+                worktree,
+                checkpoint,
+                findings,
+                events,
+            }))
         })
     }
 
@@ -1521,6 +1618,161 @@ fn add_column_if_missing(
     Ok(())
 }
 
+fn query_bounded_events(
+    connection: &Connection,
+    run_id: Uuid,
+    after_sequence: u64,
+    limit: usize,
+) -> Result<Vec<OrderedRunEvent>, PersistenceError> {
+    let mut statement = connection.prepare(
+        "SELECT run_id, sequence, body FROM semantic_events WHERE run_id = ?1 AND sequence > ?2 ORDER BY sequence LIMIT ?3",
+    )?;
+    let rows = statement.query_map(
+        params![
+            run_id.to_string(),
+            after_sequence.min(i64::MAX as u64) as i64,
+            limit as i64
+        ],
+        |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, u64>(1)?,
+                row.get::<_, String>(2)?,
+            ))
+        },
+    )?;
+    let mut events = Vec::new();
+    let mut encoded_bytes = 0_usize;
+    for row in rows {
+        let (scalar_run_id, scalar_sequence, body) = row?;
+        let next_bytes = encoded_bytes
+            .checked_add(body.len())
+            .ok_or(PersistenceError::ResourceLimit("event page bytes"))?;
+        if next_bytes > domain::limits::MAX_EVENT_PAGE_BYTES {
+            if events.is_empty() {
+                return Err(PersistenceError::ResourceLimit("event page bytes"));
+            }
+            break;
+        }
+        let event: OrderedRunEvent = decode(&body)?;
+        if scalar_run_id != run_id.to_string()
+            || event.run_id != run_id
+            || event.sequence != scalar_sequence
+        {
+            return Err(PersistenceError::CorruptOwnership("semantic event"));
+        }
+        encoded_bytes = next_bytes;
+        events.push(event);
+    }
+    Ok(events)
+}
+
+fn decode_versioned_run(
+    run_id: Uuid,
+    body: &str,
+    scalar_version: u64,
+) -> Result<Run, PersistenceError> {
+    let run: Run = decode(body)?;
+    if run.id != run_id {
+        return Err(PersistenceError::CorruptOwnership("run"));
+    }
+    ensure_version_agreement("run", run_id, scalar_version, run.version())?;
+    Ok(run)
+}
+
+fn load_repository(
+    connection: &Connection,
+    repository_id: Uuid,
+) -> Result<Repository, PersistenceError> {
+    let body = connection.query_row(
+        "SELECT body FROM repositories WHERE id = ?1",
+        [repository_id.to_string()],
+        |row| row.get::<_, String>(0),
+    )?;
+    let repository: Repository = decode(&body)?;
+    if repository.id != repository_id {
+        return Err(PersistenceError::CorruptOwnership("repository"));
+    }
+    Ok(repository)
+}
+
+fn load_latest_worktree(
+    connection: &Connection,
+    changeset_id: Uuid,
+) -> Result<Option<Worktree>, PersistenceError> {
+    let row = connection
+        .query_row(
+            "SELECT changeset_id, body FROM worktrees WHERE changeset_id = ?1 ORDER BY rowid DESC LIMIT 1",
+            [changeset_id.to_string()],
+            |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
+        )
+        .optional()?;
+    row.map(|(scalar_changeset_id, body)| {
+        let worktree: Worktree = decode(&body)?;
+        if scalar_changeset_id != changeset_id.to_string()
+            || worktree.changeset_id() != changeset_id
+        {
+            return Err(PersistenceError::CorruptOwnership("worktree"));
+        }
+        Ok(worktree)
+    })
+    .transpose()
+}
+
+fn load_latest_checkpoint(
+    connection: &Connection,
+    run_id: Uuid,
+) -> Result<Option<Checkpoint>, PersistenceError> {
+    let row = connection
+        .query_row(
+            "SELECT owner, body FROM checkpoints WHERE owner = ?1 ORDER BY rowid DESC LIMIT 1",
+            [run_id.to_string()],
+            |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
+        )
+        .optional()?;
+    row.map(|(scalar_run_id, body)| {
+        let checkpoint: Checkpoint = decode(&body)?;
+        if scalar_run_id != run_id.to_string() || checkpoint.run_id != run_id {
+            return Err(PersistenceError::CorruptOwnership("checkpoint"));
+        }
+        Ok(checkpoint)
+    })
+    .transpose()
+}
+
+fn load_findings(
+    connection: &Connection,
+    changeset_id: Uuid,
+) -> Result<Vec<Finding>, PersistenceError> {
+    let mut statement = connection.prepare(
+        "SELECT owner, body, version FROM findings WHERE owner = ?1 ORDER BY rowid LIMIT ?2",
+    )?;
+    let rows = statement.query_map(
+        params![
+            changeset_id.to_string(),
+            domain::limits::MAX_FINDINGS_PER_CHANGESET
+        ],
+        |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, u64>(2)?,
+            ))
+        },
+    )?;
+    rows.map(|row| {
+        let (scalar_changeset_id, body, scalar_version) = row?;
+        let finding: Finding = decode(&body)?;
+        if scalar_changeset_id != changeset_id.to_string() || finding.changeset_id() != changeset_id
+        {
+            return Err(PersistenceError::CorruptOwnership("finding"));
+        }
+        ensure_version_agreement("finding", finding.id, scalar_version, finding.version())?;
+        Ok(finding)
+    })
+    .collect()
+}
+
 fn load_run(connection: &Connection, run_id: Uuid) -> Result<(Run, u64), PersistenceError> {
     let (body, scalar_version): (String, u64) = connection.query_row(
         "SELECT body, version FROM runs WHERE id = ?1",
@@ -2008,6 +2260,8 @@ pub enum PersistenceError {
     ArtifactMetadataCorrupt,
     #[error("artifact content failed integrity verification")]
     ArtifactIntegrityMismatch,
+    #[error("stored {0} ownership fields do not agree")]
+    CorruptOwnership(&'static str),
     #[error("stored {0} is not a valid UUID")]
     CorruptIdentifier(&'static str),
 }

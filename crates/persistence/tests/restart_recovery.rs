@@ -4,7 +4,7 @@ use execution::{
     SupervisionState, TerminationReason,
 };
 use persistence::{MutationLease, PersistenceError, SqliteStore};
-use protocol::{RecoveryAction, SemanticEventKind};
+use protocol::{OrderedRunEvent, RecoveryAction, SemanticEventKind};
 use rusqlite::{Connection, params};
 use std::time::Duration;
 use tempfile::tempdir;
@@ -245,6 +245,29 @@ fn semantic_text_and_event_pages_are_bounded() {
 
     assert_eq!(store.events_after(run.id, 0, 1).unwrap().len(), 1);
     assert_eq!(store.events_after(run.id, 1, 1).unwrap()[0].sequence, 2);
+
+    for _ in 0..20 {
+        store
+            .persist_run_transition(
+                &run,
+                SemanticEventKind::Text {
+                    text: "x".repeat(limits::MAX_SEMANTIC_TEXT_BYTES),
+                },
+            )
+            .unwrap();
+    }
+    let byte_bounded = store
+        .events_after(run.id, 0, limits::MAX_EVENT_PAGE_SIZE)
+        .unwrap();
+    assert!(byte_bounded.len() < 22);
+    assert!(
+        byte_bounded
+            .iter()
+            .map(|event| serde_json::to_string(event).unwrap().len())
+            .sum::<usize>()
+            <= limits::MAX_EVENT_PAGE_BYTES
+    );
+
     assert!(matches!(
         store.events_after(run.id, 0, 0),
         Err(PersistenceError::ResourceLimit("event page size"))
@@ -252,6 +275,143 @@ fn semantic_text_and_event_pages_are_bounded() {
     assert!(matches!(
         store.events_after(run.id, 0, limits::MAX_EVENT_PAGE_SIZE + 1),
         Err(PersistenceError::ResourceLimit("event page size"))
+    ));
+}
+
+#[test]
+fn snapshot_events_return_a_bounded_initial_page() {
+    let directory = tempdir().unwrap();
+    let path = directory.path().join("snapshot-events.sqlite3");
+    let store = SqliteStore::open(&path).unwrap();
+    let run = Run::new(uuid::Uuid::new_v4());
+    seed_changeset(&store, run.changeset_id());
+    store.save_run(&run).unwrap();
+
+    let mut connection = Connection::open(&path).unwrap();
+    let transaction = connection.transaction().unwrap();
+    for sequence in 1..=(limits::MAX_EVENT_PAGE_SIZE + 1) {
+        let event = OrderedRunEvent {
+            run_id: run.id,
+            sequence: sequence as u64,
+            event: SemanticEventKind::Text {
+                text: "event".to_owned(),
+            },
+        };
+        transaction
+            .execute(
+                "INSERT INTO semantic_events (run_id, sequence, body) VALUES (?1, ?2, ?3)",
+                params![
+                    run.id.to_string(),
+                    sequence as u64,
+                    serde_json::to_string(&event).unwrap()
+                ],
+            )
+            .unwrap();
+    }
+    transaction.commit().unwrap();
+
+    let snapshot = store.run_snapshot(run.id).unwrap().unwrap();
+    assert_eq!(snapshot.events.len(), limits::MAX_SNAPSHOT_EVENT_PAGE_SIZE);
+    assert_eq!(snapshot.events.first().unwrap().sequence, 1);
+    assert_eq!(
+        snapshot.events.last().unwrap().sequence,
+        limits::MAX_SNAPSHOT_EVENT_PAGE_SIZE as u64
+    );
+}
+
+#[test]
+fn historical_run_snapshot_does_not_attach_a_later_worktree() {
+    let directory = tempdir().unwrap();
+    let store = SqliteStore::open(directory.path().join("snapshot-worktree.sqlite3")).unwrap();
+    let changeset_id = uuid::Uuid::new_v4();
+    seed_changeset(&store, changeset_id);
+
+    let mut first = Run::new(changeset_id);
+    store.save_run(&first).unwrap();
+    let first_worktree = domain::Worktree::creating(
+        uuid::Uuid::new_v4(),
+        changeset_id,
+        "/first".into(),
+        "first".to_owned(),
+        "base".to_owned(),
+    );
+    store.save_worktree(&first_worktree).unwrap();
+    first.interrupt().unwrap();
+    store
+        .persist_run_transition(
+            &first,
+            SemanticEventKind::Lifecycle {
+                state: first.state(),
+            },
+        )
+        .unwrap();
+
+    let second = Run::new(changeset_id);
+    store.save_run(&second).unwrap();
+    let second_worktree = domain::Worktree::creating(
+        uuid::Uuid::new_v4(),
+        changeset_id,
+        "/second".into(),
+        "second".to_owned(),
+        "base".to_owned(),
+    );
+    store.save_worktree(&second_worktree).unwrap();
+
+    assert!(
+        store
+            .run_snapshot(first.id)
+            .unwrap()
+            .unwrap()
+            .worktree
+            .is_none()
+    );
+    assert_eq!(
+        store
+            .run_snapshot(second.id)
+            .unwrap()
+            .unwrap()
+            .worktree
+            .unwrap()
+            .id,
+        second_worktree.id
+    );
+}
+
+#[test]
+fn changeset_run_history_is_newest_first_and_bounded() {
+    let directory = tempdir().unwrap();
+    let store = SqliteStore::open(directory.path().join("history.sqlite3")).unwrap();
+    let changeset_id = uuid::Uuid::new_v4();
+    seed_changeset(&store, changeset_id);
+
+    let mut first = Run::new(changeset_id);
+    store.save_run(&first).unwrap();
+    first.interrupt().unwrap();
+    store
+        .persist_run_transition(
+            &first,
+            SemanticEventKind::Lifecycle {
+                state: first.state(),
+            },
+        )
+        .unwrap();
+
+    let second = Run::new(changeset_id);
+    store.save_run(&second).unwrap();
+
+    let history = store.runs_for_changeset(changeset_id, 2).unwrap();
+    assert_eq!(history, vec![second.clone(), first]);
+    assert_eq!(
+        store.runs_for_changeset(changeset_id, 1).unwrap(),
+        vec![second]
+    );
+    assert!(matches!(
+        store.runs_for_changeset(changeset_id, 0),
+        Err(PersistenceError::ResourceLimit("run history page size"))
+    ));
+    assert!(matches!(
+        store.runs_for_changeset(changeset_id, limits::MAX_RUN_HISTORY_PAGE_SIZE + 1),
+        Err(PersistenceError::ResourceLimit("run history page size"))
     ));
 }
 

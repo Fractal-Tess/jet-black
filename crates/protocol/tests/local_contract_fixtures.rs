@@ -3,10 +3,11 @@ use domain::{
     Run, RunState,
 };
 use protocol::{
-    ApprovalRequest, ApprovalResponse, CommandResult, DiffResponse, Envelope, LocalCommand,
-    LocalCommandResponse, OrderedRunEvent, PROTOCOL_VERSION, RecoveryAction, RecoveryResponse,
-    ResponseEnvelope, RunArtifactSegmentMetadata, RunArtifactSegmentResponse, RunArtifactStream,
-    RunArtifactSummary, RunArtifactsDeletedResponse, RunArtifactsResponse, SemanticEventKind,
+    ApprovalRequest, ApprovalResponse, CommandResult, DiffResponse, Envelope, EventCursor,
+    EventPage, HistoryResponse, LocalCommand, LocalCommandResponse, OrderedRunEvent,
+    PROTOCOL_VERSION, RecoveryAction, RecoveryResponse, ResponseEnvelope,
+    RunArtifactSegmentMetadata, RunArtifactSegmentResponse, RunArtifactStream, RunArtifactSummary,
+    RunArtifactsDeletedResponse, RunArtifactsResponse, RunSnapshot, SemanticEventKind,
     StructuredError,
 };
 use std::path::PathBuf;
@@ -135,6 +136,16 @@ fn all_local_message_shapes_round_trip() {
             segment_sequence: 0,
         },
         LocalCommand::DeleteRunArtifacts { run_id: run.id },
+        LocalCommand::GetEvents {
+            run_id: run.id,
+            after_sequence: 0,
+            limit: 10,
+        },
+        LocalCommand::GetSnapshot { run_id: run.id },
+        LocalCommand::GetHistory {
+            changeset_id: changeset.id,
+            limit: 10,
+        },
     ];
     let artifact_responses = [
         LocalCommandResponse::RunArtifacts(RunArtifactsResponse {
@@ -152,6 +163,26 @@ fn all_local_message_shapes_round_trip() {
         LocalCommandResponse::RunArtifactsDeleted(RunArtifactsDeletedResponse {
             run_id: run.id,
             deleted_count: 1,
+        }),
+        LocalCommandResponse::Events(EventPage {
+            events: vec![event.clone()],
+            next_cursor: EventCursor {
+                run_id: run.id,
+                after_sequence: event.sequence,
+            },
+        }),
+        LocalCommandResponse::Snapshot(Box::new(RunSnapshot {
+            repository: repository.clone(),
+            changeset: changeset.clone(),
+            run: run.clone(),
+            worktree: None,
+            checkpoint: Some(checkpoint.clone()),
+            findings: Vec::new(),
+            events: vec![event.clone()],
+        })),
+        LocalCommandResponse::History(HistoryResponse {
+            changeset_id: changeset.id,
+            runs: vec![run.clone()],
         }),
     ];
     let values = vec![

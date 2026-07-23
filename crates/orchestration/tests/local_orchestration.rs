@@ -408,6 +408,64 @@ fn command_boundary_completes_and_recovers_a_digest_approved_run() {
         .unwrap();
     assert!(matches!(diff, CommandOutcome::Diff(_)));
 
+    let event_page = restarted
+        .handle(LocalCommand::GetEvents {
+            run_id: started.run_id,
+            after_sequence: 2,
+            limit: 3,
+        })
+        .unwrap();
+    assert!(matches!(
+        event_page,
+        CommandOutcome::Events(page)
+            if page.events.iter().map(|event| event.sequence).collect::<Vec<_>>() == vec![3, 4, 5]
+                && page.next_cursor.after_sequence == 5
+    ));
+
+    let snapshot = restarted
+        .handle(LocalCommand::GetSnapshot {
+            run_id: started.run_id,
+        })
+        .unwrap();
+    assert!(matches!(
+        snapshot,
+        CommandOutcome::Snapshot(snapshot)
+            if snapshot.repository.id == repository.id
+                && snapshot.changeset.id == changeset.id
+                && snapshot.run.id == started.run_id
+                && snapshot.worktree.is_some()
+                && snapshot.checkpoint.is_some()
+                && snapshot.events.len() == 9
+    ));
+
+    let history = restarted
+        .handle(LocalCommand::GetHistory {
+            changeset_id: changeset.id,
+            limit: 10,
+        })
+        .unwrap();
+    assert!(matches!(
+        history,
+        CommandOutcome::History(history)
+            if history.changeset_id == changeset.id
+                && history.runs == vec![completed.run]
+    ));
+    assert!(matches!(
+        restarted.handle(LocalCommand::GetEvents {
+            run_id: started.run_id,
+            after_sequence: 0,
+            limit: 0,
+        }),
+        Err(OrchestrationError::ResourceLimit("event page size"))
+    ));
+    assert!(matches!(
+        restarted.handle(LocalCommand::GetHistory {
+            changeset_id: changeset.id,
+            limit: 0,
+        }),
+        Err(OrchestrationError::ResourceLimit("run history page size"))
+    ));
+
     let worktree_path = directory
         .path()
         .join("worktrees")

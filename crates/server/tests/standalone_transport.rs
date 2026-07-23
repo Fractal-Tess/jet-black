@@ -4,18 +4,20 @@ use axum::{
     http::{Request, StatusCode, header},
 };
 use config::{ProviderKind, PublicBootstrap};
-use domain::{Id, RunState, limits::MAX_COMMAND_BODY_BYTES};
+use domain::{Changeset, Id, Repository, Run, RunState, limits::MAX_COMMAND_BODY_BYTES};
 use futures_util::StreamExt;
 use protocol::{
-    CommandResult, Envelope, EventCursor, EventPage, LocalCommand, LocalCommandResponse,
-    OrderedRunEvent, RecoveryResponse, ResponseEnvelope, RunArtifactSegmentMetadata,
-    RunArtifactSegmentResponse, RunArtifactStream, RunArtifactSummary, RunArtifactsDeletedResponse,
-    RunArtifactsResponse, SemanticEventKind, StructuredError,
+    CommandResult, Envelope, EventCursor, EventPage, HistoryResponse, LocalCommand,
+    LocalCommandResponse, OrderedRunEvent, RecoveryResponse, ResponseEnvelope,
+    RunArtifactSegmentMetadata, RunArtifactSegmentResponse, RunArtifactStream, RunArtifactSummary,
+    RunArtifactsDeletedResponse, RunArtifactsResponse, RunSnapshot, SemanticEventKind,
+    StructuredError,
 };
 use serde::Deserialize;
 use server::{Runtime, StandaloneServer};
 use std::{
     net::SocketAddr,
+    path::PathBuf,
     sync::{Arc, Mutex},
 };
 use tokio::net::TcpListener;
@@ -24,9 +26,46 @@ use tower::ServiceExt;
 const AUTHORITY: &str = "127.0.0.1:43170";
 const ORIGIN: &str = "http://127.0.0.1:43170";
 
-#[derive(Default)]
 struct FixtureRuntime {
     event_requests: Mutex<Vec<(u64, usize)>>,
+    snapshot: RunSnapshot,
+}
+
+impl Default for FixtureRuntime {
+    fn default() -> Self {
+        let repository = Repository {
+            id: Id::new_v4(),
+            filesystem_identity: "fixture".to_owned(),
+            git_directory_identity: "git-fixture".to_owned(),
+            canonical_path: PathBuf::from("registered-repository"),
+            identity: "fixture-repository".to_owned(),
+            primary_remote: None,
+            default_branch: "main".to_owned(),
+            base_sha: "base".to_owned(),
+            version: 0,
+        };
+        let changeset = Changeset::new(repository.id, repository.base_sha.clone());
+        let run = Run::new(changeset.id);
+        let event = OrderedRunEvent {
+            run_id: run.id,
+            sequence: 1,
+            event: SemanticEventKind::Text {
+                text: "fixture event".to_owned(),
+            },
+        };
+        Self {
+            event_requests: Mutex::new(Vec::new()),
+            snapshot: RunSnapshot {
+                repository,
+                changeset,
+                run,
+                worktree: None,
+                checkpoint: None,
+                findings: Vec::new(),
+                events: vec![event],
+            },
+        }
+    }
 }
 
 impl Runtime for FixtureRuntime {
@@ -35,6 +74,22 @@ impl Runtime for FixtureRuntime {
             LocalCommand::GetRecovery => Ok(LocalCommandResponse::Recovery(RecoveryResponse {
                 actions: Vec::new(),
             })),
+            LocalCommand::GetEvents { run_id, .. } => Ok(LocalCommandResponse::Events(EventPage {
+                events: self.snapshot.events.clone(),
+                next_cursor: EventCursor {
+                    run_id,
+                    after_sequence: 1,
+                },
+            })),
+            LocalCommand::GetSnapshot { .. } => Ok(LocalCommandResponse::Snapshot(Box::new(
+                self.snapshot.clone(),
+            ))),
+            LocalCommand::GetHistory { changeset_id, .. } => {
+                Ok(LocalCommandResponse::History(HistoryResponse {
+                    changeset_id,
+                    runs: vec![self.snapshot.run.clone()],
+                }))
+            }
             LocalCommand::GetRunArtifacts { run_id } => {
                 Ok(LocalCommandResponse::RunArtifacts(RunArtifactsResponse {
                     run_id,
@@ -391,6 +446,67 @@ async fn commands_require_session_origin_and_csrf() {
             run_id: response_run_id,
             ..
         })) if response_run_id == run_id
+    ));
+}
+
+#[tokio::test]
+async fn authenticated_snapshot_history_and_event_commands_are_typed() {
+    let runtime = Arc::new(FixtureRuntime::default());
+    let run_id = runtime.snapshot.run.id;
+    let changeset_id = runtime.snapshot.changeset.id;
+    let server = fixture_server(Arc::clone(&runtime));
+    let (router, cookie, csrf) = exchange(&server).await;
+
+    let (_, events) = authenticated_command(
+        &router,
+        &cookie,
+        &csrf,
+        LocalCommand::GetEvents {
+            run_id,
+            after_sequence: 0,
+            limit: 10,
+        },
+    )
+    .await;
+    assert!(matches!(
+        events.result,
+        CommandResult::Ok(LocalCommandResponse::Events(page))
+            if page.events.len() == 1
+                && page.events[0].run_id == run_id
+                && page.next_cursor.after_sequence == 1
+    ));
+
+    let (_, snapshot) = authenticated_command(
+        &router,
+        &cookie,
+        &csrf,
+        LocalCommand::GetSnapshot { run_id },
+    )
+    .await;
+    assert!(matches!(
+        snapshot.result,
+        CommandResult::Ok(LocalCommandResponse::Snapshot(snapshot))
+            if snapshot.run.id == run_id
+                && snapshot.changeset.id == changeset_id
+                && snapshot.events.len() == 1
+    ));
+
+    let (_, history) = authenticated_command(
+        &router,
+        &cookie,
+        &csrf,
+        LocalCommand::GetHistory {
+            changeset_id,
+            limit: 10,
+        },
+    )
+    .await;
+    assert!(matches!(
+        history.result,
+        CommandResult::Ok(LocalCommandResponse::History(history))
+            if history.changeset_id == changeset_id
+                && history.runs.len() == 1
+                && history.runs[0].id == run_id
     ));
 }
 
