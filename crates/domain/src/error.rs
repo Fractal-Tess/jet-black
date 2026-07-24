@@ -22,6 +22,10 @@ pub enum DomainError {
     InvalidRelativePath(String),
     #[error("invalid resulting commit SHA")]
     InvalidCommitSha,
+    #[error("unsupported provider: {0}")]
+    UnsupportedProvider(String),
+    #[error("invalid provider model: {0}")]
+    InvalidProviderModel(String),
     #[error("changeset is already committed with a different result")]
     CommitResultMismatch,
 }

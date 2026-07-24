@@ -1,7 +1,7 @@
 use domain::{
     ActionKind, ActionProposal, Approval, ApprovalScope, Changeset, ChangesetMutationKind,
-    ChangesetMutationScope, Checkpoint, Finding, RelativePath, Repository, Run, RunState, Worktree,
-    WorktreeState, limits,
+    ChangesetMutationScope, Checkpoint, Finding, ProviderKind, ProviderSelection, RelativePath,
+    Repository, Run, RunState, Worktree, WorktreeState, limits,
 };
 use execution::{
     ExecutableIdentity, ProcessConfinementReport, ProcessGroupIdentity, ProcessStartIdentity,
@@ -67,6 +67,104 @@ fn seed_changeset(store: &SqliteStore, changeset_id: uuid::Uuid) {
     let mut changeset = Changeset::new(repository.id, "base".into());
     changeset.id = changeset_id;
     store.save_changeset(&changeset).unwrap();
+}
+
+#[test]
+fn provider_selection_survives_sqlite_reopen() {
+    let directory = tempdir().unwrap();
+    let path = directory.path().join("provider-selection.sqlite3");
+    let changeset_id = uuid::Uuid::new_v4();
+    let selection = ProviderSelection::new(
+        ProviderKind::OpenCode,
+        Some("anthropic/claude-4.6".to_owned()),
+    )
+    .unwrap();
+
+    let store = SqliteStore::open(&path).unwrap();
+    seed_changeset(&store, changeset_id);
+    let run = Run::new_with_provider(changeset_id, selection.clone());
+    let run_id = run.id;
+    store.save_run(&run).unwrap();
+    drop(store);
+
+    let reopened = SqliteStore::open(&path).unwrap();
+    let restored = reopened.run(run_id).unwrap().unwrap();
+    assert_eq!(restored.provider_selection(), Some(&selection));
+}
+
+#[test]
+fn legacy_persisted_run_without_provider_selection_remains_unattributed() {
+    let directory = tempdir().unwrap();
+    let path = directory.path().join("legacy-provider-selection.sqlite3");
+    let changeset_id = uuid::Uuid::new_v4();
+
+    let store = SqliteStore::open(&path).unwrap();
+    seed_changeset(&store, changeset_id);
+    let run = Run::new(changeset_id);
+    let run_id = run.id;
+    store.save_run(&run).unwrap();
+    drop(store);
+
+    let connection = Connection::open(&path).unwrap();
+    let body: String = connection
+        .query_row(
+            "SELECT body FROM runs WHERE id = ?1",
+            [run_id.to_string()],
+            |row| row.get(0),
+        )
+        .unwrap();
+    let mut value: serde_json::Value = serde_json::from_str(&body).unwrap();
+    value.as_object_mut().unwrap().remove("provider_selection");
+    connection
+        .execute(
+            "UPDATE runs SET body = ?1 WHERE id = ?2",
+            params![serde_json::to_string(&value).unwrap(), run_id.to_string()],
+        )
+        .unwrap();
+    drop(connection);
+
+    let reopened = SqliteStore::open(&path).unwrap();
+    assert_eq!(
+        reopened.run(run_id).unwrap().unwrap().provider_selection(),
+        None
+    );
+}
+
+#[test]
+fn corrupt_persisted_provider_selection_fails_closed() {
+    let directory = tempdir().unwrap();
+    let path = directory.path().join("corrupt-provider-selection.sqlite3");
+    let changeset_id = uuid::Uuid::new_v4();
+    let selection =
+        ProviderSelection::new(ProviderKind::Codex, Some("gpt-5.3-codex".to_owned())).unwrap();
+
+    let store = SqliteStore::open(&path).unwrap();
+    seed_changeset(&store, changeset_id);
+    let run = Run::new_with_provider(changeset_id, selection);
+    let run_id = run.id;
+    store.save_run(&run).unwrap();
+    drop(store);
+
+    let connection = Connection::open(&path).unwrap();
+    let body: String = connection
+        .query_row(
+            "SELECT body FROM runs WHERE id = ?1",
+            [run_id.to_string()],
+            |row| row.get(0),
+        )
+        .unwrap();
+    let mut value: serde_json::Value = serde_json::from_str(&body).unwrap();
+    value["provider_selection"]["model"] = serde_json::Value::String(String::new());
+    connection
+        .execute(
+            "UPDATE runs SET body = ?1 WHERE id = ?2",
+            params![serde_json::to_string(&value).unwrap(), run_id.to_string()],
+        )
+        .unwrap();
+    drop(connection);
+
+    let reopened = SqliteStore::open(&path).unwrap();
+    assert!(reopened.run(run_id).is_err());
 }
 
 fn seed_pending_approval(store: &SqliteStore) -> (Run, Approval) {

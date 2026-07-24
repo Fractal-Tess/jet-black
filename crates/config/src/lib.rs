@@ -1,4 +1,5 @@
-use domain::limits;
+pub use domain::ProviderKind;
+use domain::{ProviderSelection, limits};
 use protocol::PROTOCOL_VERSION;
 use serde::{Deserialize, Serialize};
 use std::{
@@ -6,7 +7,6 @@ use std::{
     fmt, fs,
     net::{IpAddr, Ipv4Addr, SocketAddr},
     path::{Path, PathBuf},
-    str::FromStr,
     time::Duration,
 };
 use thiserror::Error;
@@ -24,40 +24,6 @@ impl Secret {
 impl fmt::Debug for Secret {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str("Secret([REDACTED])")
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
-#[serde(rename_all = "kebab-case")]
-pub enum ProviderKind {
-    Mock,
-    ClaudeCode,
-    Codex,
-    OpenCode,
-}
-
-impl ProviderKind {
-    pub fn name(self) -> &'static str {
-        match self {
-            Self::Mock => "mock",
-            Self::ClaudeCode => "claude-code",
-            Self::Codex => "codex",
-            Self::OpenCode => "opencode",
-        }
-    }
-}
-
-impl FromStr for ProviderKind {
-    type Err = ConfigError;
-
-    fn from_str(value: &str) -> Result<Self, Self::Err> {
-        match value {
-            "mock" => Ok(Self::Mock),
-            "claude-code" => Ok(Self::ClaudeCode),
-            "codex" => Ok(Self::Codex),
-            "opencode" => Ok(Self::OpenCode),
-            _ => Err(ConfigError::UnsupportedProvider(value.to_owned())),
-        }
     }
 }
 
@@ -99,7 +65,7 @@ impl CliOverrides {
                     parsed.profile = Some(profile);
                 }
                 "--provider" => {
-                    parsed.provider = Some(value(&mut arguments)?.parse()?);
+                    parsed.provider = Some(parse_provider(&value(&mut arguments)?)?);
                 }
                 "--provider-model" => {
                     parsed.provider_model = Some(value(&mut arguments)?);
@@ -272,12 +238,8 @@ impl StandaloneConfig {
                 limits::MAX_SEMANTIC_TEXT_BYTES
             ));
         }
-        if self
-            .provider_model
-            .as_deref()
-            .is_some_and(|model| model.trim().is_empty())
-        {
-            errors.push("provider model must not be blank".to_owned());
+        if let Err(error) = ProviderSelection::new(self.provider, self.provider_model.clone()) {
+            errors.push(error.to_string());
         }
         for root in &self.repository_roots {
             if !root.is_absolute() {
@@ -336,11 +298,17 @@ fn merge_file(raw: &mut FileConfig, path: Option<&Path>) -> Result<(), ConfigErr
     merge(raw, parsed);
     Ok(())
 }
+fn parse_provider(value: &str) -> Result<ProviderKind, ConfigError> {
+    value
+        .parse()
+        .map_err(|_| ConfigError::UnsupportedProvider(value.to_owned()))
+}
+
 fn merge_env(raw: &mut FileConfig, env: &HashMap<String, String>) -> Result<(), ConfigError> {
     let parsed = FileConfig {
         provider: env
             .get("JET_BLACK_PROVIDER")
-            .map(|value| value.parse())
+            .map(|value| parse_provider(value))
             .transpose()?,
         provider_model: env.get("JET_BLACK_PROVIDER_MODEL").cloned(),
         bind: env

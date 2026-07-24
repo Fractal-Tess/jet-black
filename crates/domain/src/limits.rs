@@ -12,3 +12,4 @@ pub const MAX_FINDINGS_PER_CHANGESET: usize = 1_000;
 pub const MAX_REVIEW_TIMEOUT_SECONDS: u64 = 10 * 60;
 pub const MAX_CAPTURED_STREAM_BYTES: usize = 10 * 1024 * 1024;
 pub const MAX_LOCAL_ARTIFACT_BYTES: usize = 25 * 1024 * 1024;
+pub const MAX_PROVIDER_MODEL_BYTES: usize = 256;

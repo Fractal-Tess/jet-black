@@ -11,8 +11,8 @@ use crate::{
 };
 use domain::{
     ActionKind, ActionProposal, ApprovalScope, Changeset, ChangesetMutationKind, ChangesetState,
-    Checkpoint, ControlPlaneId, ExecutionTargetId, Finding, FindingState, RelativePath, Run,
-    RunKind, RunState, TicketRef, WorktreeState,
+    Checkpoint, ControlPlaneId, ExecutionTargetId, Finding, FindingState, ProviderKind,
+    ProviderSelection, RelativePath, Run, RunKind, RunState, TicketRef, WorktreeState,
 };
 use ts_rs::TS;
 
@@ -29,6 +29,8 @@ pub fn declarations() -> String {
         exported_decl::<ChangesetState>(),
         exported_decl::<RunKind>(),
         exported_decl::<RunState>(),
+        exported_decl::<ProviderKind>(),
+        exported_decl::<ProviderSelection>(),
         exported_decl::<WorktreeState>(),
         exported_decl::<FindingState>(),
         exported_decl::<ApprovedRepositorySummary>(),

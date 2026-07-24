@@ -67,6 +67,7 @@ const snapshot = ({
     state,
     proposal_digest: pendingApproval?.digest ?? null,
     kind: "mutation",
+    provider_selection: null,
     version: 1,
   },
   worktree: null,

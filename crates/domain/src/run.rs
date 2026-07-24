@@ -1,4 +1,4 @@
-use crate::{DomainError, Id};
+use crate::{DomainError, Id, ProviderSelection};
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 
@@ -57,6 +57,8 @@ pub struct Run {
     #[serde(default)]
     kind: RunKind,
     #[serde(default)]
+    provider_selection: Option<ProviderSelection>,
+    #[serde(default)]
     #[ts(type = "number")]
     version: u64,
 }
@@ -67,12 +69,25 @@ impl Run {
     }
 
     pub fn new_kind(changeset_id: Id, kind: RunKind) -> Self {
+        Self::new_kind_with_provider(changeset_id, kind, None)
+    }
+
+    pub fn new_with_provider(changeset_id: Id, provider_selection: ProviderSelection) -> Self {
+        Self::new_kind_with_provider(changeset_id, RunKind::Mutation, Some(provider_selection))
+    }
+
+    pub fn new_kind_with_provider(
+        changeset_id: Id,
+        kind: RunKind,
+        provider_selection: Option<ProviderSelection>,
+    ) -> Self {
         Self {
             id: Id::new_v4(),
             changeset_id,
             state: RunState::Queued,
             proposal_digest: None,
             kind,
+            provider_selection,
             version: 0,
         }
     }
@@ -137,6 +152,10 @@ impl Run {
 
     pub fn kind(&self) -> RunKind {
         self.kind
+    }
+
+    pub fn provider_selection(&self) -> Option<&ProviderSelection> {
+        self.provider_selection.as_ref()
     }
 
     pub fn version(&self) -> u64 {
