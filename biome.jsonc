@@ -11,6 +11,7 @@
       "!convex/convex/_generated",
       "!convex/convex/betterAuth/_generated",
       "!.claude/worktrees",
+      "!.omo/run-continuation",
       "!references"
     ]
   },

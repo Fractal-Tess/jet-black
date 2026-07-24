@@ -30,10 +30,19 @@ let {
 } = $props();
 
 let editing = $state(false);
-let name = $state(issueState.name);
-let color = $state(issueState.color);
+let name = $state("");
+let color = $state("");
 let busy = $state(false);
 let error = $state("");
+
+$effect(() => {
+  if (editing) {
+    return;
+  }
+
+  name = issueState.name;
+  color = issueState.color;
+});
 
 function startEdit() {
   name = issueState.name;

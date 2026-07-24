@@ -16,10 +16,19 @@ let {
 } = $props();
 
 let editing = $state(false);
-let name = $state(label.name);
-let color = $state(label.color);
+let name = $state("");
+let color = $state("");
 let busy = $state(false);
 let error = $state("");
+
+$effect(() => {
+  if (editing) {
+    return;
+  }
+
+  name = label.name;
+  color = label.color;
+});
 
 function startEdit() {
   name = label.name;
