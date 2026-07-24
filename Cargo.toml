@@ -4,6 +4,7 @@ members = [
   "apps/standalone",
   "crates/agents",
   "crates/config",
+  "crates/control-plane",
   "crates/domain",
   "crates/execution",
   "crates/git",
@@ -30,12 +31,14 @@ execution = { path = "crates/execution" }
 agents = { path = "crates/agents" }
 policy = { path = "crates/policy" }
 config = { path = "crates/config" }
+control-plane = { path = "crates/control-plane" }
 review = { path = "crates/review" }
 server = { path = "crates/server" }
 axum = "0.8"
 base64 = "0.22"
 async-stream = "0.3"
 getrandom = "0.3"
+argon2 = "0.5"
 http = "1"
 landlock = "0.4.5"
 serde = { version = "1", features = ["derive"] }

@@ -42,5 +42,27 @@
       "use": "Reusable worktree, execution, review, worker, and workflow implementation reference",
       "implementation_rule": "reuse-permitted-with-provenance"
     }
+  ],
+  "adaptations": [
+    {
+      "target": "crates/control-plane",
+      "sources": [
+        {
+          "reference": "Vibe Kanban@4deb7eca8f381f7cbc1f9d15515a9ab8f8009053",
+          "files": [
+            "crates/db/src/lib.rs",
+            "crates/db/migrations/20250617183714_init.sql"
+          ]
+        },
+        {
+          "reference": "T3 Code@32c6012dabdbd0eb178b25ea4225d889ec8f6475",
+          "files": [
+            "apps/server/src/persistence/AuthSessions.ts",
+            "apps/server/src/persistence/Migrations/031_AuthAuthorizationScopes.ts"
+          ]
+        }
+      ],
+      "summary": "Adapted explicit SQLite migration and connection setup plus opaque revocable session storage into the Rust product control plane."
+    }
   ]
 }

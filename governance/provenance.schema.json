@@ -4,7 +4,13 @@
   "title": "Jet Black reference provenance register",
   "type": "object",
   "additionalProperties": false,
-  "required": ["status", "distributionReadiness", "notes", "references"],
+  "required": [
+    "status",
+    "distributionReadiness",
+    "notes",
+    "references",
+    "adaptations"
+  ],
   "properties": {
     "$schema": { "type": "string" },
     "status": { "const": "reference-inventory-only" },
@@ -33,6 +39,35 @@
           "revision": { "type": "string", "pattern": "^[0-9a-f]{40}$" },
           "use": { "type": "string", "minLength": 1 },
           "implementation_rule": { "type": "string", "minLength": 1 }
+        }
+      }
+    },
+    "adaptations": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["target", "sources", "summary"],
+        "properties": {
+          "target": { "type": "string", "minLength": 1 },
+          "sources": {
+            "type": "array",
+            "minItems": 1,
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["reference", "files"],
+              "properties": {
+                "reference": { "type": "string", "minLength": 1 },
+                "files": {
+                  "type": "array",
+                  "minItems": 1,
+                  "items": { "type": "string", "minLength": 1 }
+                }
+              }
+            }
+          },
+          "summary": { "type": "string", "minLength": 1 }
         }
       }
     }
