@@ -20,8 +20,9 @@ pub use errors::StructuredError;
 pub use events::{EventCursor, EventPage, OrderedRunEvent, SemanticEventKind};
 pub use product::{
     ProductClientMessage, ProductCommand, ProductCommandResponse, ProductEvent, ProductEventPage,
-    ProductProject, ProductServerMessage, ProductSnapshot, ProductTicket, ProductTicketPriority,
-    ProductUser, ProductWorkspace, ProductWorkspaceRole,
+    ProductIntakeItem, ProductModule, ProductPage, ProductProject, ProductServerMessage,
+    ProductSnapshot, ProductSprint, ProductTicket, ProductTicketPriority, ProductUser,
+    ProductWorkflowState, ProductWorkspace, ProductWorkspaceRole,
 };
 pub use typescript::declarations as typescript_declarations;
 pub use worker::{

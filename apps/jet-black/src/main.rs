@@ -98,7 +98,8 @@ impl ApplicationConfig {
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let config = ApplicationConfig::load()?;
     std::fs::create_dir_all(&config.data_dir)?;
-    let database_path = config.data_dir.join("jet-black.sqlite3");
+    let data_dir = std::fs::canonicalize(&config.data_dir)?;
+    let database_path = data_dir.join("jet-black.sqlite3");
     let execution_store = SqliteStore::open(&database_path)?;
     let store = ControlPlaneStore::open(&database_path)?;
     if config.development_seed {
@@ -107,7 +108,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let environment = env::vars().collect::<HashMap<_, _>>();
     let search_path = environment.get("PATH").cloned().unwrap_or_default();
-    let provider_state = config.data_dir.join("providers");
+    let provider_state = data_dir.join("providers");
     let default_provider = ProviderSelection::new(config.provider, config.provider_model.clone())?;
     let claude_code = ClaudeCodeProviderFactory::discover(
         &search_path,
@@ -138,13 +139,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         opencode,
     )?;
     let provider_availability = providers.available_kinds();
-    let git = GitService::new(
-        config.repository_roots.clone(),
-        config.data_dir.join("worktrees"),
-    )?;
+    let git = GitService::new(config.repository_roots.clone(), data_dir.join("worktrees"))?;
     let artifact_store = LocalArtifactStore::new(
         execution_store.clone(),
-        config.data_dir.join("artifacts"),
+        data_dir.join("artifacts"),
         ArtifactPolicy::default(),
     )?;
     let runtime = Arc::new(
@@ -188,7 +186,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         "Jet Black {} control plane ready at {}; data: {}",
         config.profile,
         public_origin,
-        config.data_dir.display()
+        data_dir.display()
     );
     println!(
         "Execution recovery: {} recoverable, {} interrupted, {} failed, {} actions",

@@ -448,3 +448,101 @@ fn worker_credentials_leases_outbox_and_fencing_are_enforced() {
         Err(ControlPlaneError::InvalidWorkerCredential)
     ));
 }
+
+#[test]
+fn project_planning_records_and_ticket_workflow_are_durable() {
+    let (_directory, store) = store();
+    let seed = store
+        .seed_development("development password")
+        .expect("development seed");
+    let sprint = store
+        .create_sprint(
+            seed.user.id,
+            seed.project.id,
+            "Sprint 1",
+            "Ship the slice",
+            Some(100),
+            Some(200),
+        )
+        .expect("sprint");
+    let module = store
+        .create_module(
+            seed.user.id,
+            seed.project.id,
+            "Control plane",
+            "Rust services",
+            Some(300),
+        )
+        .expect("module");
+    let page = store
+        .create_page(
+            seed.user.id,
+            seed.project.id,
+            "Architecture",
+            "One Rust process",
+        )
+        .expect("page");
+    let intake = store
+        .create_intake_item(
+            seed.user.id,
+            seed.project.id,
+            "Remote worker",
+            "Run on another device",
+            Some("REQUESTER@EXAMPLE.COM"),
+        )
+        .expect("intake");
+    assert_eq!(
+        store
+            .sprints_for_user(seed.user.id, Some(seed.workspace.id), 10)
+            .expect("sprints"),
+        vec![sprint]
+    );
+    assert_eq!(
+        store
+            .modules_for_user(seed.user.id, Some(seed.workspace.id), 10)
+            .expect("modules"),
+        vec![module]
+    );
+    assert_eq!(
+        store
+            .pages_for_user(seed.user.id, Some(seed.workspace.id), 10)
+            .expect("pages"),
+        vec![page]
+    );
+    assert_eq!(
+        store
+            .intake_for_user(seed.user.id, Some(seed.workspace.id), 10)
+            .expect("intake"),
+        vec![intake]
+    );
+
+    let ticket = store
+        .create_ticket(
+            seed.user.id,
+            seed.project.id,
+            "Move me",
+            "",
+            TicketPriority::Medium,
+            Some("move-me"),
+            QuotaLimits::default(),
+        )
+        .expect("ticket");
+    let moved = store
+        .move_ticket(seed.user.id, ticket.id, "started", ticket.version)
+        .expect("move ticket");
+    let states = store
+        .workflow_states_for_user(seed.user.id, Some(seed.workspace.id), 10)
+        .expect("workflow states");
+    assert_eq!(
+        states
+            .iter()
+            .find(|state| Some(state.id) == moved.state_id)
+            .expect("moved state")
+            .state_group,
+        "started"
+    );
+    assert!(matches!(
+        store.move_ticket(seed.user.id, ticket.id, "completed", ticket.version),
+        Err(ControlPlaneError::VersionConflict)
+    ));
+}

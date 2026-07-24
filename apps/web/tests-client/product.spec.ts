@@ -34,6 +34,14 @@ test("authenticates, creates a ticket, and preserves deep links", async ({
   await page.getByLabel("Priority").selectOption("high");
   await page.getByRole("button", { name: "Create ticket" }).click();
   await expect(page.getByRole("heading", { name: title })).toBeVisible();
+  await page.getByRole("button", { name: title, exact: false }).click();
+  await page.getByLabel("Workflow state").selectOption("started");
+  await expect(
+    page
+      .locator(".board-column")
+      .filter({ hasText: "IN PROGRESS" })
+      .getByRole("heading", { name: title })
+  ).toBeVisible();
 
   await page.getByRole("button", { name: "Analytics" }).click();
   await expect(page).toHaveURL(ANALYTICS_PATH);
@@ -59,4 +67,61 @@ test("can point the static client at another instance", async ({ page }) => {
   await page.getByRole("button", { name: "Save and reconnect" }).click();
   await expect(page).toHaveURL(SETTINGS_PATH);
   await expect(page.getByLabel("Instance URL")).toHaveValue("");
+});
+
+test("creates durable intake, sprint, module, and page records", async ({
+  page,
+}) => {
+  await signIn(page);
+  const suffix = crypto.randomUUID().slice(0, 8);
+
+  await page.getByRole("button", { name: "Intake", exact: true }).click();
+  await page.getByRole("button", { name: "New intake item" }).click();
+  await page.getByLabel("Name").fill(`Request ${suffix}`);
+  await page.getByLabel("Description").fill("Incoming product request");
+  await page.getByLabel("Submitter email").fill("requester@example.com");
+  await page
+    .locator(".modal-card")
+    .getByRole("button", { exact: true, name: "Create intake" })
+    .click();
+  await expect(
+    page.getByRole("heading", { name: `Request ${suffix}` })
+  ).toBeVisible();
+
+  await page.getByRole("button", { name: "Sprints", exact: true }).click();
+  await page.getByRole("button", { name: "New sprint" }).click();
+  await page.getByLabel("Name").fill(`Sprint ${suffix}`);
+  await page.getByLabel("Starts").fill("2026-07-27");
+  await page.getByLabel("Ends").fill("2026-08-07");
+  await page
+    .locator(".modal-card")
+    .getByRole("button", { exact: true, name: "Create sprint" })
+    .click();
+  await expect(
+    page.getByRole("heading", { name: `Sprint ${suffix}` })
+  ).toBeVisible();
+
+  await page.getByRole("button", { name: "Modules", exact: true }).click();
+  await page.getByRole("button", { name: "New module" }).click();
+  await page.getByLabel("Name").fill(`Module ${suffix}`);
+  await page.getByLabel("Target date").fill("2026-08-31");
+  await page
+    .locator(".modal-card")
+    .getByRole("button", { exact: true, name: "Create module" })
+    .click();
+  await expect(
+    page.getByRole("heading", { name: `Module ${suffix}` })
+  ).toBeVisible();
+
+  await page.getByRole("button", { name: "Pages", exact: true }).click();
+  await page.getByRole("button", { name: "New page" }).click();
+  await page.getByLabel("Title").fill(`Architecture ${suffix}`);
+  await page.getByLabel("Content").fill("Durable control-plane context");
+  await page
+    .locator(".modal-card")
+    .getByRole("button", { exact: true, name: "Create page" })
+    .click();
+  await expect(
+    page.getByRole("heading", { name: `Architecture ${suffix}` })
+  ).toBeVisible();
 });

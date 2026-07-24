@@ -47,6 +47,20 @@ pub struct ProductProject {
     pub version: u64,
 }
 
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
+pub struct ProductWorkflowState {
+    #[ts(type = "Id")]
+    pub id: Uuid,
+    #[ts(type = "Id")]
+    pub project_id: Uuid,
+    pub name: String,
+    pub state_group: String,
+    pub color: String,
+    pub position: f64,
+    #[ts(type = "number")]
+    pub version: u64,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "snake_case")]
 pub enum ProductTicketPriority {
@@ -77,11 +91,78 @@ pub struct ProductTicket {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+pub struct ProductSprint {
+    #[ts(type = "Id")]
+    pub id: Uuid,
+    #[ts(type = "Id")]
+    pub project_id: Uuid,
+    pub name: String,
+    pub description: String,
+    #[ts(type = "number | null")]
+    pub starts_at_ms: Option<i64>,
+    #[ts(type = "number | null")]
+    pub ends_at_ms: Option<i64>,
+    pub status: String,
+    #[ts(type = "number")]
+    pub version: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+pub struct ProductModule {
+    #[ts(type = "Id")]
+    pub id: Uuid,
+    #[ts(type = "Id")]
+    pub project_id: Uuid,
+    pub name: String,
+    pub description: String,
+    pub status: String,
+    #[ts(type = "number | null")]
+    pub target_at_ms: Option<i64>,
+    #[ts(type = "number")]
+    pub version: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+pub struct ProductPage {
+    #[ts(type = "Id")]
+    pub id: Uuid,
+    #[ts(type = "Id")]
+    pub project_id: Uuid,
+    pub title: String,
+    pub content: String,
+    #[ts(type = "Id")]
+    pub created_by_id: Uuid,
+    #[ts(type = "number")]
+    pub version: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+pub struct ProductIntakeItem {
+    #[ts(type = "Id")]
+    pub id: Uuid,
+    #[ts(type = "Id")]
+    pub project_id: Uuid,
+    pub title: String,
+    pub description: String,
+    pub submitter_email: Option<String>,
+    pub status: String,
+    #[ts(type = "Id | null")]
+    pub ticket_id: Option<Uuid>,
+    #[ts(type = "number")]
+    pub version: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
 pub struct ProductSnapshot {
     pub user: ProductUser,
     pub workspaces: Vec<ProductWorkspace>,
     pub projects: Vec<ProductProject>,
+    pub workflow_states: Vec<ProductWorkflowState>,
     pub tickets: Vec<ProductTicket>,
+    pub sprints: Vec<ProductSprint>,
+    pub modules: Vec<ProductModule>,
+    pub pages: Vec<ProductPage>,
+    pub intake: Vec<ProductIntakeItem>,
     #[ts(type = "number")]
     pub event_cursor: u64,
     pub truncated: bool,
@@ -110,6 +191,44 @@ pub enum ProductCommand {
         priority: ProductTicketPriority,
         idempotency_key: String,
     },
+    CreateSprint {
+        #[ts(type = "Id")]
+        project_id: Uuid,
+        name: String,
+        description: String,
+        #[ts(type = "number | null")]
+        starts_at_ms: Option<i64>,
+        #[ts(type = "number | null")]
+        ends_at_ms: Option<i64>,
+    },
+    CreateModule {
+        #[ts(type = "Id")]
+        project_id: Uuid,
+        name: String,
+        description: String,
+        #[ts(type = "number | null")]
+        target_at_ms: Option<i64>,
+    },
+    CreatePage {
+        #[ts(type = "Id")]
+        project_id: Uuid,
+        title: String,
+        content: String,
+    },
+    CreateIntakeItem {
+        #[ts(type = "Id")]
+        project_id: Uuid,
+        title: String,
+        description: String,
+        submitter_email: Option<String>,
+    },
+    MoveTicket {
+        #[ts(type = "Id")]
+        ticket_id: Uuid,
+        state_group: String,
+        #[ts(type = "number")]
+        expected_version: u64,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
@@ -118,6 +237,11 @@ pub enum ProductCommandResponse {
     WorkspaceCreated(ProductWorkspace),
     ProjectCreated(ProductProject),
     TicketCreated(ProductTicket),
+    SprintCreated(ProductSprint),
+    ModuleCreated(ProductModule),
+    PageCreated(ProductPage),
+    IntakeItemCreated(ProductIntakeItem),
+    TicketMoved(ProductTicket),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]

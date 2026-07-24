@@ -15,15 +15,16 @@ use axum::{
 };
 use config::PublicBootstrap;
 use control_plane::{
-    AuthenticatedSession, ControlPlaneError, ControlPlaneStore, EventRecordsPage, Project,
-    QuotaLimits, Ticket, TicketPriority, User, WorkerAssignment, WorkerDevice, WorkspaceAccess,
-    WorkspaceRole,
+    AuthenticatedSession, ControlPlaneError, ControlPlaneStore, EventRecordsPage, IntakeItem,
+    Project, ProjectModule, ProjectPage, QuotaLimits, Sprint, Ticket, TicketPriority, User,
+    WorkerAssignment, WorkerDevice, WorkflowState, WorkspaceAccess, WorkspaceRole,
 };
 use protocol::{
     CreateRemoteAssignmentRequest, EnrollWorkerRequest, EnrolledWorker, Envelope, LocalCommand,
     LocalCommandResponse, PROTOCOL_VERSION, ProductClientMessage, ProductCommand,
-    ProductCommandResponse, ProductEvent, ProductEventPage, ProductProject, ProductServerMessage,
-    ProductSnapshot, ProductTicket, ProductTicketPriority, ProductUser, ProductWorker,
+    ProductCommandResponse, ProductEvent, ProductEventPage, ProductIntakeItem, ProductModule,
+    ProductPage, ProductProject, ProductServerMessage, ProductSnapshot, ProductSprint,
+    ProductTicket, ProductTicketPriority, ProductUser, ProductWorker, ProductWorkflowState,
     ProductWorkspace, ProductWorkspaceRole, RemoteAssignment, ResponseEnvelope, StructuredError,
     WorkerClaimResponse, WorkerEventAck, WorkerEventRequest, WorkerHeartbeatRequest,
 };
@@ -348,10 +349,36 @@ async fn snapshot(
         state
             .store
             .tickets_for_user(session.user.id, query.workspace_id, SNAPSHOT_LIMIT + 1)?;
+    let workflow_states = state.store.workflow_states_for_user(
+        session.user.id,
+        query.workspace_id,
+        SNAPSHOT_LIMIT + 1,
+    )?;
+    let sprints =
+        state
+            .store
+            .sprints_for_user(session.user.id, query.workspace_id, SNAPSHOT_LIMIT + 1)?;
+    let modules =
+        state
+            .store
+            .modules_for_user(session.user.id, query.workspace_id, SNAPSHOT_LIMIT + 1)?;
+    let pages =
+        state
+            .store
+            .pages_for_user(session.user.id, query.workspace_id, SNAPSHOT_LIMIT + 1)?;
+    let intake =
+        state
+            .store
+            .intake_for_user(session.user.id, query.workspace_id, SNAPSHOT_LIMIT + 1)?;
     let user_id = session.user.id;
     let truncated = workspaces.len() > SNAPSHOT_LIMIT
         || projects.len() > SNAPSHOT_LIMIT
-        || tickets.len() > SNAPSHOT_LIMIT;
+        || tickets.len() > SNAPSHOT_LIMIT
+        || workflow_states.len() > SNAPSHOT_LIMIT
+        || sprints.len() > SNAPSHOT_LIMIT
+        || modules.len() > SNAPSHOT_LIMIT
+        || pages.len() > SNAPSHOT_LIMIT
+        || intake.len() > SNAPSHOT_LIMIT;
     Ok(Json(ProductSnapshot {
         user: product_user(session.user),
         workspaces: workspaces
@@ -364,10 +391,35 @@ async fn snapshot(
             .take(SNAPSHOT_LIMIT)
             .map(product_project)
             .collect(),
+        workflow_states: workflow_states
+            .into_iter()
+            .take(SNAPSHOT_LIMIT)
+            .map(product_workflow_state)
+            .collect(),
         tickets: tickets
             .into_iter()
             .take(SNAPSHOT_LIMIT)
             .map(product_ticket)
+            .collect(),
+        sprints: sprints
+            .into_iter()
+            .take(SNAPSHOT_LIMIT)
+            .map(product_sprint)
+            .collect(),
+        modules: modules
+            .into_iter()
+            .take(SNAPSHOT_LIMIT)
+            .map(product_module)
+            .collect(),
+        pages: pages
+            .into_iter()
+            .take(SNAPSHOT_LIMIT)
+            .map(product_page)
+            .collect(),
+        intake: intake
+            .into_iter()
+            .take(SNAPSHOT_LIMIT)
+            .map(product_intake)
             .collect(),
         event_cursor: state
             .store
@@ -833,6 +885,63 @@ async fn dispatch_product_command(
                 QuotaLimits::default(),
             )
             .map(|ticket| ProductCommandResponse::TicketCreated(product_ticket(ticket))),
+        ProductCommand::CreateSprint {
+            project_id,
+            name,
+            description,
+            starts_at_ms,
+            ends_at_ms,
+        } => state
+            .store
+            .create_sprint(
+                actor_id,
+                project_id,
+                &name,
+                &description,
+                starts_at_ms,
+                ends_at_ms,
+            )
+            .map(|sprint| ProductCommandResponse::SprintCreated(product_sprint(sprint))),
+        ProductCommand::CreateModule {
+            project_id,
+            name,
+            description,
+            target_at_ms,
+        } => state
+            .store
+            .create_module(actor_id, project_id, &name, &description, target_at_ms)
+            .map(|module| ProductCommandResponse::ModuleCreated(product_module(module))),
+        ProductCommand::CreatePage {
+            project_id,
+            title,
+            content,
+        } => state
+            .store
+            .create_page(actor_id, project_id, &title, &content)
+            .map(|page| ProductCommandResponse::PageCreated(product_page(page))),
+        ProductCommand::CreateIntakeItem {
+            project_id,
+            title,
+            description,
+            submitter_email,
+        } => state
+            .store
+            .create_intake_item(
+                actor_id,
+                project_id,
+                &title,
+                &description,
+                submitter_email.as_deref(),
+            )
+            .map(|item| ProductCommandResponse::IntakeItemCreated(product_intake(item))),
+        ProductCommand::MoveTicket {
+            ticket_id,
+            state_group,
+            expected_version,
+        } => state
+            .store
+            .move_ticket(actor_id, ticket_id, &state_group, expected_version)
+            .map(|ticket| ProductCommandResponse::TicketMoved(product_ticket(ticket))),
     };
     match result {
         Ok(response) => {
@@ -861,6 +970,21 @@ fn response_workspace_id(
         ProductCommandResponse::WorkspaceCreated(workspace) => Ok(workspace.id),
         ProductCommandResponse::ProjectCreated(project) => Ok(project.workspace_id),
         ProductCommandResponse::TicketCreated(ticket) => {
+            state.store.workspace_for_project(ticket.project_id)
+        }
+        ProductCommandResponse::SprintCreated(sprint) => {
+            state.store.workspace_for_project(sprint.project_id)
+        }
+        ProductCommandResponse::ModuleCreated(module) => {
+            state.store.workspace_for_project(module.project_id)
+        }
+        ProductCommandResponse::PageCreated(page) => {
+            state.store.workspace_for_project(page.project_id)
+        }
+        ProductCommandResponse::IntakeItemCreated(item) => {
+            state.store.workspace_for_project(item.project_id)
+        }
+        ProductCommandResponse::TicketMoved(ticket) => {
             state.store.workspace_for_project(ticket.project_id)
         }
     }
@@ -991,6 +1115,18 @@ fn product_project(project: Project) -> ProductProject {
     }
 }
 
+fn product_workflow_state(state: WorkflowState) -> ProductWorkflowState {
+    ProductWorkflowState {
+        id: state.id,
+        project_id: state.project_id,
+        name: state.name,
+        state_group: state.state_group,
+        color: state.color,
+        position: state.position,
+        version: state.version,
+    }
+}
+
 fn product_ticket(ticket: Ticket) -> ProductTicket {
     ProductTicket {
         id: ticket.id,
@@ -1002,6 +1138,55 @@ fn product_ticket(ticket: Ticket) -> ProductTicket {
         priority: product_ticket_priority(ticket.priority),
         created_by_id: ticket.created_by_id,
         version: ticket.version,
+    }
+}
+
+fn product_sprint(sprint: Sprint) -> ProductSprint {
+    ProductSprint {
+        id: sprint.id,
+        project_id: sprint.project_id,
+        name: sprint.name,
+        description: sprint.description,
+        starts_at_ms: sprint.starts_at_ms,
+        ends_at_ms: sprint.ends_at_ms,
+        status: sprint.status,
+        version: sprint.version,
+    }
+}
+
+fn product_module(module: ProjectModule) -> ProductModule {
+    ProductModule {
+        id: module.id,
+        project_id: module.project_id,
+        name: module.name,
+        description: module.description,
+        status: module.status,
+        target_at_ms: module.target_at_ms,
+        version: module.version,
+    }
+}
+
+fn product_page(page: ProjectPage) -> ProductPage {
+    ProductPage {
+        id: page.id,
+        project_id: page.project_id,
+        title: page.title,
+        content: page.content,
+        created_by_id: page.created_by_id,
+        version: page.version,
+    }
+}
+
+fn product_intake(item: IntakeItem) -> ProductIntakeItem {
+    ProductIntakeItem {
+        id: item.id,
+        project_id: item.project_id,
+        title: item.title,
+        description: item.description,
+        submitter_email: item.submitter_email,
+        status: item.status,
+        ticket_id: item.ticket_id,
+        version: item.version,
     }
 }
 
@@ -1136,6 +1321,11 @@ fn structured_control_plane_error(error: &ControlPlaneError) -> StructuredError 
             false,
         ),
         ControlPlaneError::Forbidden => ("forbidden", "Action is forbidden", false),
+        ControlPlaneError::VersionConflict => (
+            "version_conflict",
+            "Record changed; refresh before retrying",
+            true,
+        ),
         ControlPlaneError::NotFound(_) => ("not_found", "Requested resource was not found", false),
         ControlPlaneError::QuotaExceeded(_) => {
             ("quota_exceeded", "Workspace quota was exceeded", false)
@@ -1201,6 +1391,7 @@ impl From<ControlPlaneError> for ProductApiError {
             | ControlPlaneError::InvalidLaunchToken
             | ControlPlaneError::InvalidWorkerCredential => StatusCode::UNAUTHORIZED,
             ControlPlaneError::Forbidden => StatusCode::FORBIDDEN,
+            ControlPlaneError::VersionConflict => StatusCode::CONFLICT,
             ControlPlaneError::NotFound(_) => StatusCode::NOT_FOUND,
             ControlPlaneError::InvalidInput(_) => StatusCode::BAD_REQUEST,
             ControlPlaneError::StaleWorkerFence | ControlPlaneError::WorkerEventSequence { .. } => {

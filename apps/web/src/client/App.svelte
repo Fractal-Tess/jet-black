@@ -13,7 +13,6 @@ import type {
 } from "@workspace/shared/protocol";
 import {
   Activity,
-  Archive,
   BarChart3,
   Blocks,
   Bot,
@@ -35,7 +34,6 @@ import {
   Search,
   Settings,
   Sparkles,
-  Terminal,
   Users,
   Wifi,
   WifiOff,
@@ -69,7 +67,16 @@ let submitting = $state(false);
 let connected = $state(false);
 let sidebarOpen = $state(false);
 let createMenuOpen = $state(false);
-let modal = $state<"project" | "ticket" | "workspace" | null>(null);
+let modal = $state<
+  | "intake"
+  | "module"
+  | "page"
+  | "project"
+  | "sprint"
+  | "ticket"
+  | "workspace"
+  | null
+>(null);
 let errorMessage = $state("");
 let loginEmail = $state("dev@jet-black.local");
 let loginPassword = $state("");
@@ -84,6 +91,13 @@ let repositoryIdentity = $state("");
 let ticketTitle = $state("");
 let ticketDescription = $state("");
 let ticketPriority = $state<ProductTicketPriority>("none");
+let recordName = $state("");
+let recordDescription = $state("");
+let recordContent = $state("");
+let recordEmail = $state("");
+let recordStartDate = $state("");
+let recordEndDate = $state("");
+let recordTargetDate = $state("");
 let realtimeCleanup: (() => void) | undefined;
 let runPollTimer: ReturnType<typeof setTimeout> | undefined;
 let selectedTicketId = $state<string | null>(null);
@@ -123,6 +137,22 @@ const projectTickets = $derived(
         .toLowerCase()
         .includes(search.toLowerCase())
   ) ?? []
+);
+const projectSprints = $derived(
+  snapshot?.sprints.filter(
+    (sprint) => sprint.project_id === activeProject?.id
+  ) ?? []
+);
+const projectModules = $derived(
+  snapshot?.modules.filter(
+    (module) => module.project_id === activeProject?.id
+  ) ?? []
+);
+const projectPages = $derived(
+  snapshot?.pages.filter((page) => page.project_id === activeProject?.id) ?? []
+);
+const projectIntake = $derived(
+  snapshot?.intake.filter((item) => item.project_id === activeProject?.id) ?? []
 );
 const urgentTickets = $derived(
   projectTickets.filter(
@@ -304,6 +334,46 @@ async function submitModal(event: SubmitEvent): Promise<void> {
           title: ticketTitle,
         },
       };
+    } else if (modal === "sprint" && activeProject) {
+      command = {
+        type: "create_sprint",
+        data: {
+          description: recordDescription,
+          ends_at_ms: dateToTimestamp(recordEndDate),
+          name: recordName,
+          project_id: activeProject.id,
+          starts_at_ms: dateToTimestamp(recordStartDate),
+        },
+      };
+    } else if (modal === "module" && activeProject) {
+      command = {
+        type: "create_module",
+        data: {
+          description: recordDescription,
+          name: recordName,
+          project_id: activeProject.id,
+          target_at_ms: dateToTimestamp(recordTargetDate),
+        },
+      };
+    } else if (modal === "page" && activeProject) {
+      command = {
+        type: "create_page",
+        data: {
+          content: recordContent,
+          project_id: activeProject.id,
+          title: recordName,
+        },
+      };
+    } else if (modal === "intake" && activeProject) {
+      command = {
+        type: "create_intake_item",
+        data: {
+          description: recordDescription,
+          project_id: activeProject.id,
+          submitter_email: recordEmail || null,
+          title: recordName,
+        },
+      };
     } else {
       return;
     }
@@ -334,6 +404,29 @@ function resetModal(): void {
   ticketTitle = "";
   ticketDescription = "";
   ticketPriority = "none";
+  recordName = "";
+  recordDescription = "";
+  recordContent = "";
+  recordEmail = "";
+  recordStartDate = "";
+  recordEndDate = "";
+  recordTargetDate = "";
+}
+
+function dateToTimestamp(value: string): number | null {
+  return value ? new Date(`${value}T00:00:00Z`).getTime() : null;
+}
+
+function openFeatureModal(): void {
+  if (activeView === "sprints") {
+    modal = "sprint";
+  } else if (activeView === "modules") {
+    modal = "module";
+  } else if (activeView === "pages") {
+    modal = "page";
+  } else if (activeView === "intake") {
+    modal = "intake";
+  }
 }
 
 function saveInstance(event: SubmitEvent): void {
@@ -384,6 +477,41 @@ function priorityLabel(priority: ProductTicketPriority): string {
 
 function ticketKey(ticket: ProductTicket): string {
   return `${activeProject?.identifier ?? "JB"}-${ticket.sequence_number}`;
+}
+
+function ticketStateGroup(ticket: ProductTicket): string {
+  return (
+    snapshot?.workflow_states.find((state) => state.id === ticket.state_id)
+      ?.state_group ?? "backlog"
+  );
+}
+
+function ticketsInState(stateGroup: string): ProductTicket[] {
+  return projectTickets.filter(
+    (ticket) => ticketStateGroup(ticket) === stateGroup
+  );
+}
+
+async function moveTicket(stateGroup: string): Promise<void> {
+  if (!selectedTicket) {
+    return;
+  }
+  submitting = true;
+  try {
+    await client.command({
+      type: "move_ticket",
+      data: {
+        expected_version: selectedTicket.version,
+        state_group: stateGroup,
+        ticket_id: selectedTicket.id,
+      },
+    });
+    await refreshSnapshot();
+  } catch (error) {
+    errorMessage = readableError(error);
+  } finally {
+    submitting = false;
+  }
 }
 
 async function openTicket(ticket: ProductTicket): Promise<void> {
@@ -754,9 +882,9 @@ async function reviewChanges(): Promise<void> {
           {#if ticketLayout === "board"}
             <div class="ticket-board">
               <section class="board-column accent-slate">
-                <header><span><CircleDot size={14} /> BACKLOG</span><b>{projectTickets.length}</b></header>
+                <header><span><CircleDot size={14} /> BACKLOG</span><b>{ticketsInState("backlog").length}</b></header>
                 <div class="ticket-stack">
-                  {#each projectTickets as ticket (ticket.id)}
+                  {#each ticketsInState("backlog") as ticket (ticket.id)}
                     <button class="ticket-card" onclick={() => openTicket(ticket)} type="button">
                       <div><span class="ticket-key">{ticketKey(ticket)}</span><span class:urgent={ticket.priority === "urgent"} class="priority">{priorityLabel(ticket.priority)}</span></div>
                       <h2>{ticket.title}</h2>
@@ -769,13 +897,24 @@ async function reviewChanges(): Promise<void> {
                 </div>
               </section>
               {#each [
-                { label: "TODO", className: "accent-cyan" },
-                { label: "IN PROGRESS", className: "accent-amber" },
-                { label: "DONE", className: "accent-green" },
-              ] as column (column.label)}
+                { label: "TODO", className: "accent-cyan", stateGroup: "unstarted" },
+                { label: "IN PROGRESS", className: "accent-amber", stateGroup: "started" },
+                { label: "DONE", className: "accent-green", stateGroup: "completed" },
+              ] as column (column.stateGroup)}
                 <section class={`board-column ${column.className}`}>
-                  <header><span><CircleDot size={14} /> {column.label}</span><b>0</b></header>
-                  <div class="column-placeholder"><span></span><p>Drop tickets here as work moves.</p></div>
+                  <header><span><CircleDot size={14} /> {column.label}</span><b>{ticketsInState(column.stateGroup).length}</b></header>
+                  <div class="ticket-stack">
+                    {#each ticketsInState(column.stateGroup) as ticket (ticket.id)}
+                      <button class="ticket-card" onclick={() => openTicket(ticket)} type="button">
+                        <div><span class="ticket-key">{ticketKey(ticket)}</span><span class:urgent={ticket.priority === "urgent"} class="priority">{priorityLabel(ticket.priority)}</span></div>
+                        <h2>{ticket.title}</h2>
+                        {#if ticket.description}<p>{ticket.description}</p>{/if}
+                        <footer><span class="agent-hint"><Bot size={13} /> Ready for agent</span><span>v{ticket.version}</span></footer>
+                      </button>
+                    {:else}
+                      <div class="column-placeholder"><span></span><p>Move tickets here as work progresses.</p></div>
+                    {/each}
+                  </div>
                 </section>
               {/each}
             </div>
@@ -783,7 +922,7 @@ async function reviewChanges(): Promise<void> {
             <div class="ticket-list">
               <header><span>Ticket</span><span>Priority</span><span>Status</span><span>Agent</span></header>
               {#each projectTickets as ticket (ticket.id)}
-                <button class="ticket-list-row" onclick={() => openTicket(ticket)} type="button"><span><b>{ticketKey(ticket)}</b>{ticket.title}</span><span>{priorityLabel(ticket.priority)}</span><span class="status-badge">Backlog</span><span class="agent-hint"><Bot size={13} /> Ready</span></button>
+                <button class="ticket-list-row" onclick={() => openTicket(ticket)} type="button"><span><b>{ticketKey(ticket)}</b>{ticket.title}</span><span>{priorityLabel(ticket.priority)}</span><span class="status-badge">{ticketStateGroup(ticket).replaceAll("_", " ")}</span><span class="agent-hint"><Bot size={13} /> Ready</span></button>
               {:else}
                 <div class="list-empty">No tickets match this view.</div>
               {/each}
@@ -825,17 +964,28 @@ async function reviewChanges(): Promise<void> {
         </section>
       {:else}
         <section class="content-view">
-          <div class="view-title"><div><p class="eyebrow">PROJECT SYSTEM</p><h1>{activeView[0].toUpperCase() + activeView.slice(1)}</h1><span>Organize the context around every delivery.</span></div></div>
-          <div class="feature-grid">
-            <article class="feature-hero">
-              {#if activeView === "intake"}<Inbox size={28} />{:else if activeView === "sprints"}<Gauge size={28} />{:else if activeView === "modules"}<Layers3 size={28} />{:else}<FileText size={28} />{/if}
-              <p class="eyebrow">{activeView.toUpperCase()}</p>
-              <h2>Your {activeView} live beside the code</h2>
-              <p>The Rust control plane is ready for this project domain. Create and organize records here as the workspace evolves.</p>
-              <button class="secondary-button" type="button"><Plus size={15} /> Create {activeView === "intake" ? "intake item" : activeView.slice(0, -1)}</button>
-            </article>
-            <article><Terminal size={18} /><h3>Agent context</h3><p>Every record can become structured, repository-scoped execution context.</p></article>
-            <article><Archive size={18} /><h3>Durable history</h3><p>SQLite keeps product state and semantic events together on your instance.</p></article>
+          <div class="view-title">
+            <div><p class="eyebrow">PROJECT SYSTEM</p><h1>{activeView[0].toUpperCase() + activeView.slice(1)}</h1><span>Organize the context around every delivery.</span></div>
+            <button class="primary-button compact" onclick={openFeatureModal} type="button"><Plus size={15} /> New {activeView === "intake" ? "intake item" : activeView.slice(0, -1)}</button>
+          </div>
+          <div class="record-grid">
+            {#if activeView === "sprints"}
+              {#each projectSprints as sprint (sprint.id)}
+                <article><div><Gauge size={17} /><span class="status-badge">{sprint.status}</span></div><h2>{sprint.name}</h2><p>{sprint.description || "No sprint brief yet."}</p><footer><span>{sprint.starts_at_ms ? new Date(sprint.starts_at_ms).toLocaleDateString() : "No start"}</span><span>{sprint.ends_at_ms ? new Date(sprint.ends_at_ms).toLocaleDateString() : "No end"}</span></footer></article>
+              {:else}<div class="record-empty"><Gauge size={28} /><h2>Plan the next sprint</h2><p>Time-box a clear delivery goal for the team and its agents.</p><button class="secondary-button" onclick={openFeatureModal} type="button">Create sprint</button></div>{/each}
+            {:else if activeView === "modules"}
+              {#each projectModules as module (module.id)}
+                <article><div><Layers3 size={17} /><span class="status-badge">{module.status.replaceAll("_", " ")}</span></div><h2>{module.name}</h2><p>{module.description || "No module brief yet."}</p><footer><span>Target</span><span>{module.target_at_ms ? new Date(module.target_at_ms).toLocaleDateString() : "Open"}</span></footer></article>
+              {:else}<div class="record-empty"><Layers3 size={28} /><h2>Group work into a module</h2><p>Give a larger product outcome a durable home.</p><button class="secondary-button" onclick={openFeatureModal} type="button">Create module</button></div>{/each}
+            {:else if activeView === "pages"}
+              {#each projectPages as page (page.id)}
+                <article><div><FileText size={17} /><span>v{page.version}</span></div><h2>{page.title}</h2><p>{page.content || "Empty page"}</p><footer><span>Project knowledge</span><span>SQLite</span></footer></article>
+              {:else}<div class="record-empty"><FileText size={28} /><h2>Write the first page</h2><p>Keep product context close to the work it informs.</p><button class="secondary-button" onclick={openFeatureModal} type="button">Create page</button></div>{/each}
+            {:else}
+              {#each projectIntake as item (item.id)}
+                <article><div><Inbox size={17} /><span class="status-badge">{item.status}</span></div><h2>{item.title}</h2><p>{item.description || "No additional context."}</p><footer><span>{item.submitter_email ?? "Internal"}</span><span>{item.ticket_id ? "Accepted" : "Untriaged"}</span></footer></article>
+              {:else}<div class="record-empty"><Inbox size={28} /><h2>Capture incoming work</h2><p>Collect requests before committing them to delivery.</p><button class="secondary-button" onclick={openFeatureModal} type="button">Create intake item</button></div>{/each}
+            {/if}
           </div>
         </section>
       {/if}
@@ -858,6 +1008,7 @@ async function reviewChanges(): Promise<void> {
               <span><small>PRIORITY</small>{priorityLabel(selectedTicket.priority)}</span>
               <span><small>VERSION</small>{selectedTicket.version}</span>
             </div>
+            <label class="ticket-state-control"><span>Workflow state</span><select disabled={submitting} onchange={(event) => moveTicket(event.currentTarget.value)} value={ticketStateGroup(selectedTicket)}><option value="backlog">Backlog</option><option value="unstarted">Todo</option><option value="started">In progress</option><option value="completed">Done</option><option value="cancelled">Cancelled</option></select></label>
             <section class="agent-panel">
               <div class="agent-panel-title"><div><Bot size={17} /><span><small>EXECUTION</small><strong>Agent run</strong></span></div>{#if runSnapshot}<span class={`run-state state-${runSnapshot.run.state}`}>{runSnapshot.run.state.replaceAll("_", " ")}</span>{/if}</div>
               {#if executionLoading && !executionBootstrap}
@@ -921,10 +1072,24 @@ async function reviewChanges(): Promise<void> {
           <label><span>Project name</span><input bind:value={projectName} placeholder="Platform" required /></label>
         </div>
         <label><span>Repository identity <small>optional</small></span><input bind:value={repositoryIdentity} placeholder="github:org/repository" /></label>
-      {:else}
+      {:else if modal === "ticket"}
         <label><span>Title</span><input bind:value={ticketTitle} placeholder="What needs to ship?" required /></label>
         <label><span>Description</span><textarea bind:value={ticketDescription} placeholder="Give the team and agents enough context to act."></textarea></label>
         <label><span>Priority</span><select bind:value={ticketPriority}><option value="none">No priority</option><option value="urgent">Urgent</option><option value="high">High</option><option value="medium">Medium</option><option value="low">Low</option></select></label>
+      {:else}
+        <label><span>{modal === "page" ? "Title" : "Name"}</span><input bind:value={recordName} placeholder={modal === "page" ? "Architecture notes" : "Platform reliability"} required /></label>
+        {#if modal === "page"}
+          <label><span>Content</span><textarea bind:value={recordContent} placeholder="Write durable project context…"></textarea></label>
+        {:else}
+          <label><span>Description</span><textarea bind:value={recordDescription} placeholder="What should the team know?"></textarea></label>
+        {/if}
+        {#if modal === "sprint"}
+          <div class="field-row"><label><span>Starts</span><input bind:value={recordStartDate} type="date" /></label><label><span>Ends</span><input bind:value={recordEndDate} type="date" /></label></div>
+        {:else if modal === "module"}
+          <label><span>Target date</span><input bind:value={recordTargetDate} type="date" /></label>
+        {:else if modal === "intake"}
+          <label><span>Submitter email <small>optional</small></span><input bind:value={recordEmail} placeholder="requester@example.com" type="email" /></label>
+        {/if}
       {/if}
       <footer><button class="ghost-button" onclick={resetModal} type="button">Cancel</button><button class="primary-button compact" disabled={submitting} type="submit">{submitting ? "Creating…" : `Create ${modal}`}</button></footer>
     </form>

@@ -116,6 +116,17 @@ pub struct Project {
     pub version: u64,
 }
 
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct WorkflowState {
+    pub id: Uuid,
+    pub project_id: Uuid,
+    pub name: String,
+    pub state_group: String,
+    pub color: String,
+    pub position: f64,
+    pub version: u64,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum TicketPriority {
@@ -148,6 +159,51 @@ pub struct Ticket {
     pub state_id: Option<Uuid>,
     pub priority: TicketPriority,
     pub created_by_id: Uuid,
+    pub version: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Sprint {
+    pub id: Uuid,
+    pub project_id: Uuid,
+    pub name: String,
+    pub description: String,
+    pub starts_at_ms: Option<i64>,
+    pub ends_at_ms: Option<i64>,
+    pub status: String,
+    pub version: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ProjectModule {
+    pub id: Uuid,
+    pub project_id: Uuid,
+    pub name: String,
+    pub description: String,
+    pub status: String,
+    pub target_at_ms: Option<i64>,
+    pub version: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ProjectPage {
+    pub id: Uuid,
+    pub project_id: Uuid,
+    pub title: String,
+    pub content: String,
+    pub created_by_id: Uuid,
+    pub version: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct IntakeItem {
+    pub id: Uuid,
+    pub project_id: Uuid,
+    pub title: String,
+    pub description: String,
+    pub submitter_email: Option<String>,
+    pub status: String,
+    pub ticket_id: Option<Uuid>,
     pub version: u64,
 }
 
@@ -797,6 +853,60 @@ impl ControlPlaneStore {
         })
     }
 
+    pub fn workflow_states_for_user(
+        &self,
+        user_id: Uuid,
+        workspace_id: Option<Uuid>,
+        limit: usize,
+    ) -> Result<Vec<WorkflowState>, ControlPlaneError> {
+        let limit = bounded_limit(limit);
+        self.with_connection(|connection| {
+            let mut statement = connection.prepare(
+                "SELECT workflow_states.id, workflow_states.project_id, workflow_states.name,
+                        workflow_states.state_group, workflow_states.color,
+                        workflow_states.position, workflow_states.version
+                 FROM workflow_states
+                 JOIN projects ON projects.id = workflow_states.project_id
+                 JOIN workspace_members ON workspace_members.workspace_id = projects.workspace_id
+                 WHERE workspace_members.user_id = ?1
+                   AND (?2 IS NULL OR projects.workspace_id = ?2)
+                 ORDER BY workflow_states.position, workflow_states.id LIMIT ?3",
+            )?;
+            statement
+                .query_map(
+                    params![
+                        user_id.to_string(),
+                        workspace_id.map(|id| id.to_string()),
+                        limit as i64
+                    ],
+                    |row| {
+                        Ok((
+                            row.get::<_, String>(0)?,
+                            row.get::<_, String>(1)?,
+                            row.get::<_, String>(2)?,
+                            row.get::<_, String>(3)?,
+                            row.get::<_, String>(4)?,
+                            row.get::<_, f64>(5)?,
+                            row.get::<_, u64>(6)?,
+                        ))
+                    },
+                )?
+                .map(|row| {
+                    let row = row?;
+                    Ok(WorkflowState {
+                        id: parse_uuid(&row.0)?,
+                        project_id: parse_uuid(&row.1)?,
+                        name: row.2,
+                        state_group: row.3,
+                        color: row.4,
+                        position: row.5,
+                        version: row.6,
+                    })
+                })
+                .collect()
+        })
+    }
+
     pub fn tickets_for_user(
         &self,
         user_id: Uuid,
@@ -827,6 +937,222 @@ impl ControlPlaneStore {
                 decode_ticket,
             )?;
             rows.map(|row| ticket_from_row(row?)).collect()
+        })
+    }
+
+    pub fn sprints_for_user(
+        &self,
+        user_id: Uuid,
+        workspace_id: Option<Uuid>,
+        limit: usize,
+    ) -> Result<Vec<Sprint>, ControlPlaneError> {
+        let limit = bounded_limit(limit);
+        self.with_connection(|connection| {
+            let mut statement = connection.prepare(
+                "SELECT sprints.id, sprints.project_id, sprints.name, sprints.description,
+                        sprints.starts_at_ms, sprints.ends_at_ms, sprints.status, sprints.version
+                 FROM sprints
+                 JOIN projects ON projects.id = sprints.project_id
+                 JOIN workspace_members ON workspace_members.workspace_id = projects.workspace_id
+                 WHERE workspace_members.user_id = ?1
+                   AND (?2 IS NULL OR projects.workspace_id = ?2)
+                 ORDER BY sprints.updated_at_ms DESC, sprints.id LIMIT ?3",
+            )?;
+            statement
+                .query_map(
+                    params![
+                        user_id.to_string(),
+                        workspace_id.map(|id| id.to_string()),
+                        limit as i64
+                    ],
+                    |row| {
+                        Ok((
+                            row.get::<_, String>(0)?,
+                            row.get::<_, String>(1)?,
+                            row.get::<_, String>(2)?,
+                            row.get::<_, String>(3)?,
+                            row.get::<_, Option<i64>>(4)?,
+                            row.get::<_, Option<i64>>(5)?,
+                            row.get::<_, String>(6)?,
+                            row.get::<_, u64>(7)?,
+                        ))
+                    },
+                )?
+                .map(|row| {
+                    let row = row?;
+                    Ok(Sprint {
+                        id: parse_uuid(&row.0)?,
+                        project_id: parse_uuid(&row.1)?,
+                        name: row.2,
+                        description: row.3,
+                        starts_at_ms: row.4,
+                        ends_at_ms: row.5,
+                        status: row.6,
+                        version: row.7,
+                    })
+                })
+                .collect()
+        })
+    }
+
+    pub fn modules_for_user(
+        &self,
+        user_id: Uuid,
+        workspace_id: Option<Uuid>,
+        limit: usize,
+    ) -> Result<Vec<ProjectModule>, ControlPlaneError> {
+        let limit = bounded_limit(limit);
+        self.with_connection(|connection| {
+            let mut statement = connection.prepare(
+                "SELECT modules.id, modules.project_id, modules.name, modules.description,
+                        modules.status, modules.target_at_ms, modules.version
+                 FROM modules
+                 JOIN projects ON projects.id = modules.project_id
+                 JOIN workspace_members ON workspace_members.workspace_id = projects.workspace_id
+                 WHERE workspace_members.user_id = ?1
+                   AND (?2 IS NULL OR projects.workspace_id = ?2)
+                 ORDER BY modules.updated_at_ms DESC, modules.id LIMIT ?3",
+            )?;
+            statement
+                .query_map(
+                    params![
+                        user_id.to_string(),
+                        workspace_id.map(|id| id.to_string()),
+                        limit as i64
+                    ],
+                    |row| {
+                        Ok((
+                            row.get::<_, String>(0)?,
+                            row.get::<_, String>(1)?,
+                            row.get::<_, String>(2)?,
+                            row.get::<_, String>(3)?,
+                            row.get::<_, String>(4)?,
+                            row.get::<_, Option<i64>>(5)?,
+                            row.get::<_, u64>(6)?,
+                        ))
+                    },
+                )?
+                .map(|row| {
+                    let row = row?;
+                    Ok(ProjectModule {
+                        id: parse_uuid(&row.0)?,
+                        project_id: parse_uuid(&row.1)?,
+                        name: row.2,
+                        description: row.3,
+                        status: row.4,
+                        target_at_ms: row.5,
+                        version: row.6,
+                    })
+                })
+                .collect()
+        })
+    }
+
+    pub fn pages_for_user(
+        &self,
+        user_id: Uuid,
+        workspace_id: Option<Uuid>,
+        limit: usize,
+    ) -> Result<Vec<ProjectPage>, ControlPlaneError> {
+        let limit = bounded_limit(limit);
+        self.with_connection(|connection| {
+            let mut statement = connection.prepare(
+                "SELECT pages.id, pages.project_id, pages.title, pages.content,
+                        pages.created_by_id, pages.version
+                 FROM pages
+                 JOIN projects ON projects.id = pages.project_id
+                 JOIN workspace_members ON workspace_members.workspace_id = projects.workspace_id
+                 WHERE workspace_members.user_id = ?1
+                   AND (?2 IS NULL OR projects.workspace_id = ?2)
+                   AND pages.archived_at_ms IS NULL
+                 ORDER BY pages.updated_at_ms DESC, pages.id LIMIT ?3",
+            )?;
+            statement
+                .query_map(
+                    params![
+                        user_id.to_string(),
+                        workspace_id.map(|id| id.to_string()),
+                        limit as i64
+                    ],
+                    |row| {
+                        Ok((
+                            row.get::<_, String>(0)?,
+                            row.get::<_, String>(1)?,
+                            row.get::<_, String>(2)?,
+                            row.get::<_, String>(3)?,
+                            row.get::<_, String>(4)?,
+                            row.get::<_, u64>(5)?,
+                        ))
+                    },
+                )?
+                .map(|row| {
+                    let row = row?;
+                    Ok(ProjectPage {
+                        id: parse_uuid(&row.0)?,
+                        project_id: parse_uuid(&row.1)?,
+                        title: row.2,
+                        content: row.3,
+                        created_by_id: parse_uuid(&row.4)?,
+                        version: row.5,
+                    })
+                })
+                .collect()
+        })
+    }
+
+    pub fn intake_for_user(
+        &self,
+        user_id: Uuid,
+        workspace_id: Option<Uuid>,
+        limit: usize,
+    ) -> Result<Vec<IntakeItem>, ControlPlaneError> {
+        let limit = bounded_limit(limit);
+        self.with_connection(|connection| {
+            let mut statement = connection.prepare(
+                "SELECT intake_items.id, intake_items.project_id, intake_items.title,
+                        intake_items.description, intake_items.submitter_email,
+                        intake_items.status, intake_items.ticket_id, intake_items.version
+                 FROM intake_items
+                 JOIN projects ON projects.id = intake_items.project_id
+                 JOIN workspace_members ON workspace_members.workspace_id = projects.workspace_id
+                 WHERE workspace_members.user_id = ?1
+                   AND (?2 IS NULL OR projects.workspace_id = ?2)
+                 ORDER BY intake_items.updated_at_ms DESC, intake_items.id LIMIT ?3",
+            )?;
+            statement
+                .query_map(
+                    params![
+                        user_id.to_string(),
+                        workspace_id.map(|id| id.to_string()),
+                        limit as i64
+                    ],
+                    |row| {
+                        Ok((
+                            row.get::<_, String>(0)?,
+                            row.get::<_, String>(1)?,
+                            row.get::<_, String>(2)?,
+                            row.get::<_, String>(3)?,
+                            row.get::<_, Option<String>>(4)?,
+                            row.get::<_, String>(5)?,
+                            row.get::<_, Option<String>>(6)?,
+                            row.get::<_, u64>(7)?,
+                        ))
+                    },
+                )?
+                .map(|row| {
+                    let row = row?;
+                    Ok(IntakeItem {
+                        id: parse_uuid(&row.0)?,
+                        project_id: parse_uuid(&row.1)?,
+                        title: row.2,
+                        description: row.3,
+                        submitter_email: row.4,
+                        status: row.5,
+                        ticket_id: row.6.as_deref().map(parse_uuid).transpose()?,
+                        version: row.7,
+                    })
+                })
+                .collect()
         })
     }
 
@@ -1095,6 +1421,311 @@ impl ControlPlaneStore {
             transaction.commit()?;
             Ok(ticket)
         })
+    }
+
+    pub fn move_ticket(
+        &self,
+        actor_id: Uuid,
+        ticket_id: Uuid,
+        state_group: &str,
+        expected_version: u64,
+    ) -> Result<Ticket, ControlPlaneError> {
+        if !matches!(
+            state_group,
+            "backlog" | "unstarted" | "started" | "completed" | "cancelled"
+        ) {
+            return Err(ControlPlaneError::InvalidInput(
+                "unknown workflow state group".to_owned(),
+            ));
+        }
+        let workspace_id =
+            self.with_connection(|connection| workspace_for_ticket(connection, ticket_id))?;
+        self.require_permission(actor_id, workspace_id, Permission::ManageTickets)?;
+        let now = now_ms()?;
+        self.with_connection(|connection| {
+            let transaction =
+                connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+            let changed = transaction.execute(
+                "UPDATE tickets SET
+                    state_id = (
+                        SELECT workflow_states.id FROM workflow_states
+                        WHERE workflow_states.project_id = tickets.project_id
+                          AND workflow_states.state_group = ?1
+                        ORDER BY workflow_states.position LIMIT 1
+                    ),
+                    updated_at_ms = ?2,
+                    version = version + 1
+                 WHERE id = ?3 AND version = ?4",
+                params![state_group, now, ticket_id.to_string(), expected_version],
+            )?;
+            if changed == 0 {
+                let exists: bool = transaction.query_row(
+                    "SELECT EXISTS(SELECT 1 FROM tickets WHERE id = ?1)",
+                    [ticket_id.to_string()],
+                    |row| row.get(0),
+                )?;
+                return Err(if exists {
+                    ControlPlaneError::VersionConflict
+                } else {
+                    ControlPlaneError::NotFound("ticket")
+                });
+            }
+            let ticket = transaction.query_row(
+                "SELECT id, project_id, sequence_number, title, description,
+                        state_id, priority, created_by_id, version
+                 FROM tickets WHERE id = ?1",
+                [ticket_id.to_string()],
+                decode_ticket,
+            )?;
+            let ticket = ticket_from_row(ticket)?;
+            append_event(
+                &transaction,
+                workspace_id,
+                "ticket",
+                ticket.id,
+                ticket.version,
+                "ticket.moved",
+                actor_id,
+                None,
+                &format!("{{\"state_group\":\"{state_group}\"}}"),
+                now,
+            )?;
+            transaction.commit()?;
+            Ok(ticket)
+        })
+    }
+
+    pub fn create_sprint(
+        &self,
+        actor_id: Uuid,
+        project_id: Uuid,
+        name: &str,
+        description: &str,
+        starts_at_ms: Option<i64>,
+        ends_at_ms: Option<i64>,
+    ) -> Result<Sprint, ControlPlaneError> {
+        validate_non_empty("sprint name", name)?;
+        if matches!((starts_at_ms, ends_at_ms), (Some(start), Some(end)) if end < start) {
+            return Err(ControlPlaneError::InvalidInput(
+                "sprint end cannot precede its start".to_owned(),
+            ));
+        }
+        let workspace_id = self.workspace_for_project(project_id)?;
+        self.require_permission(actor_id, workspace_id, Permission::ManageTickets)?;
+        let sprint = Sprint {
+            id: Uuid::new_v4(),
+            project_id,
+            name: name.trim().to_owned(),
+            description: description.trim().to_owned(),
+            starts_at_ms,
+            ends_at_ms,
+            status: "draft".to_owned(),
+            version: 1,
+        };
+        let now = now_ms()?;
+        self.with_connection(|connection| {
+            let transaction =
+                connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+            transaction.execute(
+                "INSERT INTO sprints (
+                    id, project_id, name, description, starts_at_ms, ends_at_ms,
+                    status, created_at_ms, updated_at_ms
+                 ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, 'draft', ?7, ?7)",
+                params![
+                    sprint.id.to_string(),
+                    project_id.to_string(),
+                    sprint.name,
+                    sprint.description,
+                    starts_at_ms,
+                    ends_at_ms,
+                    now
+                ],
+            )?;
+            append_event(
+                &transaction,
+                workspace_id,
+                "sprint",
+                sprint.id,
+                1,
+                "sprint.created",
+                actor_id,
+                None,
+                "{}",
+                now,
+            )?;
+            transaction.commit()?;
+            Ok(())
+        })?;
+        Ok(sprint)
+    }
+
+    pub fn create_module(
+        &self,
+        actor_id: Uuid,
+        project_id: Uuid,
+        name: &str,
+        description: &str,
+        target_at_ms: Option<i64>,
+    ) -> Result<ProjectModule, ControlPlaneError> {
+        validate_non_empty("module name", name)?;
+        let workspace_id = self.workspace_for_project(project_id)?;
+        self.require_permission(actor_id, workspace_id, Permission::ManageTickets)?;
+        let module = ProjectModule {
+            id: Uuid::new_v4(),
+            project_id,
+            name: name.trim().to_owned(),
+            description: description.trim().to_owned(),
+            status: "backlog".to_owned(),
+            target_at_ms,
+            version: 1,
+        };
+        let now = now_ms()?;
+        self.with_connection(|connection| {
+            let transaction =
+                connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+            transaction.execute(
+                "INSERT INTO modules (
+                    id, project_id, name, description, status, target_at_ms,
+                    created_at_ms, updated_at_ms
+                 ) VALUES (?1, ?2, ?3, ?4, 'backlog', ?5, ?6, ?6)",
+                params![
+                    module.id.to_string(),
+                    project_id.to_string(),
+                    module.name,
+                    module.description,
+                    target_at_ms,
+                    now
+                ],
+            )?;
+            append_event(
+                &transaction,
+                workspace_id,
+                "module",
+                module.id,
+                1,
+                "module.created",
+                actor_id,
+                None,
+                "{}",
+                now,
+            )?;
+            transaction.commit()?;
+            Ok(())
+        })?;
+        Ok(module)
+    }
+
+    pub fn create_page(
+        &self,
+        actor_id: Uuid,
+        project_id: Uuid,
+        title: &str,
+        content: &str,
+    ) -> Result<ProjectPage, ControlPlaneError> {
+        validate_non_empty("page title", title)?;
+        let workspace_id = self.workspace_for_project(project_id)?;
+        self.require_permission(actor_id, workspace_id, Permission::ManageTickets)?;
+        let page = ProjectPage {
+            id: Uuid::new_v4(),
+            project_id,
+            title: title.trim().to_owned(),
+            content: content.to_owned(),
+            created_by_id: actor_id,
+            version: 1,
+        };
+        let now = now_ms()?;
+        self.with_connection(|connection| {
+            let transaction =
+                connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+            transaction.execute(
+                "INSERT INTO pages (
+                    id, project_id, title, content, created_by_id, created_at_ms, updated_at_ms
+                 ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?6)",
+                params![
+                    page.id.to_string(),
+                    project_id.to_string(),
+                    page.title,
+                    page.content,
+                    actor_id.to_string(),
+                    now
+                ],
+            )?;
+            append_event(
+                &transaction,
+                workspace_id,
+                "page",
+                page.id,
+                1,
+                "page.created",
+                actor_id,
+                None,
+                "{}",
+                now,
+            )?;
+            transaction.commit()?;
+            Ok(())
+        })?;
+        Ok(page)
+    }
+
+    pub fn create_intake_item(
+        &self,
+        actor_id: Uuid,
+        project_id: Uuid,
+        title: &str,
+        description: &str,
+        submitter_email: Option<&str>,
+    ) -> Result<IntakeItem, ControlPlaneError> {
+        validate_non_empty("intake title", title)?;
+        let workspace_id = self.workspace_for_project(project_id)?;
+        self.require_permission(actor_id, workspace_id, Permission::ManageTickets)?;
+        let intake = IntakeItem {
+            id: Uuid::new_v4(),
+            project_id,
+            title: title.trim().to_owned(),
+            description: description.trim().to_owned(),
+            submitter_email: submitter_email
+                .map(str::trim)
+                .filter(|email| !email.is_empty())
+                .map(str::to_lowercase),
+            status: "pending".to_owned(),
+            ticket_id: None,
+            version: 1,
+        };
+        let now = now_ms()?;
+        self.with_connection(|connection| {
+            let transaction =
+                connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+            transaction.execute(
+                "INSERT INTO intake_items (
+                    id, project_id, title, description, submitter_email, status,
+                    created_at_ms, updated_at_ms
+                 ) VALUES (?1, ?2, ?3, ?4, ?5, 'pending', ?6, ?6)",
+                params![
+                    intake.id.to_string(),
+                    project_id.to_string(),
+                    intake.title,
+                    intake.description,
+                    intake.submitter_email,
+                    now
+                ],
+            )?;
+            append_event(
+                &transaction,
+                workspace_id,
+                "intake",
+                intake.id,
+                1,
+                "intake.created",
+                actor_id,
+                None,
+                "{}",
+                now,
+            )?;
+            transaction.commit()?;
+            Ok(())
+        })?;
+        Ok(intake)
     }
 
     pub fn register_attachment(
@@ -1744,11 +2375,44 @@ fn run_migrations(connection: &mut Connection) -> Result<(), ControlPlaneError> 
             applied_at_ms INTEGER NOT NULL
          ) STRICT;",
     )?;
-    let version: u32 = connection.query_row(
+    let mut version: u32 = connection.query_row(
         "SELECT COALESCE(MAX(version), 0) FROM product_schema_migrations",
         [],
         |row| row.get(0),
     )?;
+    if version == 0 {
+        let has_product_schema: bool = connection.query_row(
+            "SELECT EXISTS(
+                SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'users'
+             )",
+            [],
+            |row| row.get(0),
+        )?;
+        if has_product_schema {
+            connection.execute(
+                "INSERT OR IGNORE INTO product_schema_migrations (version, applied_at_ms)
+                 VALUES (1, ?1)",
+                [now_ms()?],
+            )?;
+            version = 1;
+        }
+        let has_worker_schema: bool = connection.query_row(
+            "SELECT EXISTS(
+                SELECT 1 FROM sqlite_master
+                WHERE type = 'table' AND name = 'worker_devices'
+             )",
+            [],
+            |row| row.get(0),
+        )?;
+        if has_worker_schema {
+            connection.execute(
+                "INSERT OR IGNORE INTO product_schema_migrations (version, applied_at_ms)
+                 VALUES (2, ?1)",
+                [now_ms()?],
+            )?;
+            version = 2;
+        }
+    }
     if version > CURRENT_SCHEMA_VERSION {
         return Err(ControlPlaneError::NewerSchema {
             database: version,
@@ -2326,6 +2990,8 @@ pub enum ControlPlaneError {
     WorkerEventSequence { expected: u64, received: u64 },
     #[error("forbidden")]
     Forbidden,
+    #[error("record version changed")]
+    VersionConflict,
     #[error("{0} not found")]
     NotFound(&'static str),
     #[error("user is the owner of one or more workspaces")]

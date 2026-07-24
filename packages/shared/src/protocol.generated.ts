@@ -59,15 +59,25 @@ export type ProductWorkspace = { id: Id, slug: string, name: string, role: Produ
 
 export type ProductProject = { id: Id, workspace_id: Id, identifier: string, name: string, description: string, repository_identity: string | null, version: number, };
 
+export type ProductWorkflowState = { id: Id, project_id: Id, name: string, state_group: string, color: string, position: number, version: number, };
+
 export type ProductTicketPriority = "none" | "urgent" | "high" | "medium" | "low";
 
 export type ProductTicket = { id: Id, project_id: Id, sequence_number: number, title: string, description: string, state_id: Id | null, priority: ProductTicketPriority, created_by_id: Id, version: number, };
 
-export type ProductSnapshot = { user: ProductUser, workspaces: Array<ProductWorkspace>, projects: Array<ProductProject>, tickets: Array<ProductTicket>, event_cursor: number, truncated: boolean, };
+export type ProductSprint = { id: Id, project_id: Id, name: string, description: string, starts_at_ms: number | null, ends_at_ms: number | null, status: string, version: number, };
 
-export type ProductCommand = { "type": "create_workspace", "data": { slug: string, name: string, } } | { "type": "create_project", "data": { workspace_id: Id, identifier: string, name: string, description: string, repository_identity: string | null, } } | { "type": "create_ticket", "data": { project_id: Id, title: string, description: string, priority: ProductTicketPriority, idempotency_key: string, } };
+export type ProductModule = { id: Id, project_id: Id, name: string, description: string, status: string, target_at_ms: number | null, version: number, };
 
-export type ProductCommandResponse = { "type": "workspace_created", "data": ProductWorkspace } | { "type": "project_created", "data": ProductProject } | { "type": "ticket_created", "data": ProductTicket };
+export type ProductPage = { id: Id, project_id: Id, title: string, content: string, created_by_id: Id, version: number, };
+
+export type ProductIntakeItem = { id: Id, project_id: Id, title: string, description: string, submitter_email: string | null, status: string, ticket_id: Id | null, version: number, };
+
+export type ProductSnapshot = { user: ProductUser, workspaces: Array<ProductWorkspace>, projects: Array<ProductProject>, workflow_states: Array<ProductWorkflowState>, tickets: Array<ProductTicket>, sprints: Array<ProductSprint>, modules: Array<ProductModule>, pages: Array<ProductPage>, intake: Array<ProductIntakeItem>, event_cursor: number, truncated: boolean, };
+
+export type ProductCommand = { "type": "create_workspace", "data": { slug: string, name: string, } } | { "type": "create_project", "data": { workspace_id: Id, identifier: string, name: string, description: string, repository_identity: string | null, } } | { "type": "create_ticket", "data": { project_id: Id, title: string, description: string, priority: ProductTicketPriority, idempotency_key: string, } } | { "type": "create_sprint", "data": { project_id: Id, name: string, description: string, starts_at_ms: number | null, ends_at_ms: number | null, } } | { "type": "create_module", "data": { project_id: Id, name: string, description: string, target_at_ms: number | null, } } | { "type": "create_page", "data": { project_id: Id, title: string, content: string, } } | { "type": "create_intake_item", "data": { project_id: Id, title: string, description: string, submitter_email: string | null, } } | { "type": "move_ticket", "data": { ticket_id: Id, state_group: string, expected_version: number, } };
+
+export type ProductCommandResponse = { "type": "workspace_created", "data": ProductWorkspace } | { "type": "project_created", "data": ProductProject } | { "type": "ticket_created", "data": ProductTicket } | { "type": "sprint_created", "data": ProductSprint } | { "type": "module_created", "data": ProductModule } | { "type": "page_created", "data": ProductPage } | { "type": "intake_item_created", "data": ProductIntakeItem } | { "type": "ticket_moved", "data": ProductTicket };
 
 export type ProductEvent = { cursor: number, workspace_id: Id, aggregate_kind: string, aggregate_id: Id, aggregate_version: number, event_kind: string, actor_id: Id | null, body: string, created_at_ms: number, };
 

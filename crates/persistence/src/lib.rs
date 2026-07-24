@@ -1836,7 +1836,52 @@ pub struct ProcessSupervisionRecord {
 }
 
 fn migrate(connection: &mut Connection) -> Result<(), PersistenceError> {
-    let version: u32 = connection.pragma_query_value(None, "user_version", |row| row.get(0))?;
+    connection.execute_batch(
+        "CREATE TABLE IF NOT EXISTS execution_schema_migrations (
+            version INTEGER PRIMARY KEY,
+            applied_at_unix_ms INTEGER NOT NULL
+         ) STRICT;",
+    )?;
+    let recorded_version: u32 = connection.query_row(
+        "SELECT COALESCE(MAX(version), 0) FROM execution_schema_migrations",
+        [],
+        |row| row.get(0),
+    )?;
+    let has_execution_schema: bool = connection.query_row(
+        "SELECT EXISTS(
+            SELECT 1 FROM sqlite_master
+            WHERE type = 'table' AND name = 'repositories'
+         )",
+        [],
+        |row| row.get(0),
+    )?;
+    let has_product_schema: bool = connection.query_row(
+        "SELECT EXISTS(
+            SELECT 1 FROM sqlite_master
+            WHERE type = 'table' AND name = 'product_schema_migrations'
+         )",
+        [],
+        |row| row.get(0),
+    )?;
+    let legacy_version: u32 =
+        connection.pragma_query_value(None, "user_version", |row| row.get(0))?;
+    if recorded_version == 0
+        && !has_execution_schema
+        && !has_product_schema
+        && legacy_version > CURRENT_SCHEMA_VERSION
+    {
+        return Err(PersistenceError::UnsupportedSchemaVersion {
+            database: legacy_version,
+            runtime: CURRENT_SCHEMA_VERSION,
+        });
+    }
+    let version = if recorded_version > 0 {
+        recorded_version
+    } else if has_execution_schema {
+        legacy_version.min(CURRENT_SCHEMA_VERSION)
+    } else {
+        0
+    };
     if version > CURRENT_SCHEMA_VERSION {
         return Err(PersistenceError::UnsupportedSchemaVersion {
             database: version,
@@ -1854,6 +1899,11 @@ fn migrate(connection: &mut Connection) -> Result<(), PersistenceError> {
             5 => migrate_to_version_5(&transaction)?,
             _ => unreachable!("all schema migrations are explicitly ordered"),
         }
+        transaction.execute(
+            "INSERT INTO execution_schema_migrations (version, applied_at_unix_ms)
+             VALUES (?1, CAST(unixepoch('subsec') * 1000 AS INTEGER))",
+            [target_version],
+        )?;
         transaction.pragma_update(None, "user_version", target_version)?;
         transaction.commit()?;
     }
