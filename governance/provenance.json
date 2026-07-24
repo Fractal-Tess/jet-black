@@ -63,6 +63,26 @@
         }
       ],
       "summary": "Adapted explicit SQLite migration and connection setup plus opaque revocable session storage into the Rust product control plane."
+    },
+    {
+      "target": "crates/server/src/product.rs",
+      "sources": [
+        {
+          "reference": "T3 Code@32c6012dabdbd0eb178b25ea4225d889ec8f6475",
+          "files": [
+            "apps/server/src/ws.ts",
+            "apps/server/src/auth/EnvironmentAuth.ts"
+          ]
+        },
+        {
+          "reference": "Vibe Kanban@4deb7eca8f381f7cbc1f9d15515a9ab8f8009053",
+          "files": [
+            "crates/server/src/middleware/signed_ws.rs",
+            "crates/server/src/routes/workspaces/streams.rs"
+          ]
+        }
+      ],
+      "summary": "Adapted authenticated WebSocket upgrade, bounded message handling, subscriptions, and replay patterns for the Rust product transport."
     }
   ]
 }

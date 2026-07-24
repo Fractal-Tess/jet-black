@@ -2,6 +2,7 @@ mod commands;
 mod envelopes;
 mod errors;
 mod events;
+mod product;
 mod typescript;
 
 pub use commands::{
@@ -16,4 +17,9 @@ pub use commands::{
 pub use envelopes::{CommandResult, Envelope, PROTOCOL_VERSION, ResponseEnvelope};
 pub use errors::StructuredError;
 pub use events::{EventCursor, EventPage, OrderedRunEvent, SemanticEventKind};
+pub use product::{
+    ProductClientMessage, ProductCommand, ProductCommandResponse, ProductEvent, ProductEventPage,
+    ProductProject, ProductServerMessage, ProductSnapshot, ProductTicket, ProductTicketPriority,
+    ProductUser, ProductWorkspace, ProductWorkspaceRole,
+};
 pub use typescript::declarations as typescript_declarations;

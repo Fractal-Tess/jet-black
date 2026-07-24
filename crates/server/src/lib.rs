@@ -1,4 +1,7 @@
 mod auth;
+mod product;
+
+pub use product::{ProductServer, ProductServerConfig};
 
 use agents::ProviderResolver;
 use async_stream::stream;

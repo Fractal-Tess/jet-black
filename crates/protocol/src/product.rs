@@ -1,0 +1,184 @@
+use crate::{Envelope, ResponseEnvelope, StructuredError};
+use serde::{Deserialize, Serialize};
+use ts_rs::TS;
+use uuid::Uuid;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "snake_case")]
+pub enum ProductWorkspaceRole {
+    Owner,
+    Admin,
+    Member,
+    Guest,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+pub struct ProductUser {
+    #[ts(type = "Id")]
+    pub id: Uuid,
+    pub email: String,
+    pub display_name: String,
+    #[ts(type = "number")]
+    pub version: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+pub struct ProductWorkspace {
+    #[ts(type = "Id")]
+    pub id: Uuid,
+    pub slug: String,
+    pub name: String,
+    pub role: ProductWorkspaceRole,
+    #[ts(type = "number")]
+    pub version: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+pub struct ProductProject {
+    #[ts(type = "Id")]
+    pub id: Uuid,
+    #[ts(type = "Id")]
+    pub workspace_id: Uuid,
+    pub identifier: String,
+    pub name: String,
+    pub description: String,
+    pub repository_identity: Option<String>,
+    #[ts(type = "number")]
+    pub version: u64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "snake_case")]
+pub enum ProductTicketPriority {
+    None,
+    Urgent,
+    High,
+    Medium,
+    Low,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+pub struct ProductTicket {
+    #[ts(type = "Id")]
+    pub id: Uuid,
+    #[ts(type = "Id")]
+    pub project_id: Uuid,
+    #[ts(type = "number")]
+    pub sequence_number: u64,
+    pub title: String,
+    pub description: String,
+    #[ts(type = "Id | null")]
+    pub state_id: Option<Uuid>,
+    pub priority: ProductTicketPriority,
+    #[ts(type = "Id")]
+    pub created_by_id: Uuid,
+    #[ts(type = "number")]
+    pub version: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+pub struct ProductSnapshot {
+    pub user: ProductUser,
+    pub workspaces: Vec<ProductWorkspace>,
+    pub projects: Vec<ProductProject>,
+    pub tickets: Vec<ProductTicket>,
+    #[ts(type = "number")]
+    pub event_cursor: u64,
+    pub truncated: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(tag = "type", content = "data", rename_all = "snake_case")]
+pub enum ProductCommand {
+    CreateWorkspace {
+        slug: String,
+        name: String,
+    },
+    CreateProject {
+        #[ts(type = "Id")]
+        workspace_id: Uuid,
+        identifier: String,
+        name: String,
+        description: String,
+        repository_identity: Option<String>,
+    },
+    CreateTicket {
+        #[ts(type = "Id")]
+        project_id: Uuid,
+        title: String,
+        description: String,
+        priority: ProductTicketPriority,
+        idempotency_key: String,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(tag = "type", content = "data", rename_all = "snake_case")]
+pub enum ProductCommandResponse {
+    WorkspaceCreated(ProductWorkspace),
+    ProjectCreated(ProductProject),
+    TicketCreated(ProductTicket),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+pub struct ProductEvent {
+    #[ts(type = "number")]
+    pub cursor: u64,
+    #[ts(type = "Id")]
+    pub workspace_id: Uuid,
+    pub aggregate_kind: String,
+    #[ts(type = "Id")]
+    pub aggregate_id: Uuid,
+    #[ts(type = "number")]
+    pub aggregate_version: u64,
+    pub event_kind: String,
+    #[ts(type = "Id | null")]
+    pub actor_id: Option<Uuid>,
+    pub body: String,
+    #[ts(type = "number")]
+    pub created_at_ms: i64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+pub struct ProductEventPage {
+    pub events: Vec<ProductEvent>,
+    #[ts(type = "number")]
+    pub next_cursor: u64,
+    pub has_more: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(tag = "type", content = "data", rename_all = "snake_case")]
+pub enum ProductClientMessage {
+    Subscribe {
+        #[ts(type = "Id")]
+        workspace_id: Uuid,
+        #[ts(type = "number")]
+        after_cursor: u64,
+    },
+    Command(Envelope<ProductCommand>),
+    Acknowledge {
+        #[ts(type = "number")]
+        cursor: u64,
+    },
+    Ping,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(tag = "type", content = "data", rename_all = "snake_case")]
+pub enum ProductServerMessage {
+    Ready {
+        #[ts(type = "Id")]
+        session_id: Uuid,
+    },
+    CommandResult(ResponseEnvelope<ProductCommandResponse>),
+    Events(ProductEventPage),
+    Subscribed {
+        #[ts(type = "Id")]
+        workspace_id: Uuid,
+        #[ts(type = "number")]
+        cursor: u64,
+    },
+    Error(StructuredError),
+    Pong,
+}

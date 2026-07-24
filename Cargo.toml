@@ -53,5 +53,5 @@ uuid = { version = "1", features = ["v4", "serde"] }
 tempfile = "3"
 fs2 = "0.4"
 futures-core = "0.3"
-futures-util = { version = "0.3", default-features = false, features = ["std"] }
+futures-util = { version = "0.3", default-features = false, features = ["sink", "std"] }
 ts-rs = { version = "11", features = ["serde-compat", "uuid-impl"] }

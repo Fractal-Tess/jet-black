@@ -8,11 +8,13 @@ rust-version.workspace = true
 [dependencies]
 agents.workspace = true
 async-stream.workspace = true
-axum.workspace = true
+axum = { workspace = true, features = ["ws"] }
 base64.workspace = true
 config.workspace = true
+control-plane.workspace = true
 domain.workspace = true
 futures-core.workspace = true
+futures-util.workspace = true
 getrandom.workspace = true
 http.workspace = true
 orchestration.workspace = true
@@ -23,6 +25,7 @@ subtle.workspace = true
 thiserror.workspace = true
 tokio.workspace = true
 tower-http.workspace = true
+uuid.workspace = true
 
 [dev-dependencies]
 execution.workspace = true
@@ -32,3 +35,4 @@ persistence.workspace = true
 review.workspace = true
 tempfile.workspace = true
 tower.workspace = true
+tokio-tungstenite = "0.29"

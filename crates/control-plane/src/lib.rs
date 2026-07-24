@@ -180,6 +180,32 @@ pub struct DevelopmentSeed {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WorkspaceAccess {
+    pub workspace: Workspace,
+    pub role: WorkspaceRole,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProductEventRecord {
+    pub cursor: u64,
+    pub workspace_id: Uuid,
+    pub aggregate_kind: String,
+    pub aggregate_id: Uuid,
+    pub aggregate_version: u64,
+    pub event_kind: String,
+    pub actor_id: Option<Uuid>,
+    pub body: String,
+    pub created_at_ms: i64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EventRecordsPage {
+    pub events: Vec<ProductEventRecord>,
+    pub next_cursor: u64,
+    pub has_more: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct IssuedSession {
     pub session_id: Uuid,
     pub token: String,
@@ -611,6 +637,235 @@ impl ControlPlaneStore {
                 .optional()?
                 .map(|value| WorkspaceRole::parse(&value))
                 .transpose()
+        })
+    }
+
+    pub fn user(&self, user_id: Uuid) -> Result<Option<User>, ControlPlaneError> {
+        self.with_connection(|connection| {
+            connection
+                .query_row(
+                    "SELECT id, email, display_name, disabled_at_ms, version
+                     FROM users WHERE id = ?1 AND disabled_at_ms IS NULL",
+                    [user_id.to_string()],
+                    decode_user,
+                )
+                .optional()?
+                .map(user_from_row)
+                .transpose()
+        })
+    }
+
+    pub fn workspaces_for_user(
+        &self,
+        user_id: Uuid,
+        limit: usize,
+    ) -> Result<Vec<WorkspaceAccess>, ControlPlaneError> {
+        let limit = bounded_limit(limit);
+        self.with_connection(|connection| {
+            let mut statement = connection.prepare(
+                "SELECT workspaces.id, workspaces.slug, workspaces.name,
+                        workspaces.created_by_id, workspaces.version, workspace_members.role
+                 FROM workspace_members
+                 JOIN workspaces ON workspaces.id = workspace_members.workspace_id
+                 WHERE workspace_members.user_id = ?1
+                 ORDER BY workspaces.name, workspaces.id LIMIT ?2",
+            )?;
+            let rows = statement.query_map(params![user_id.to_string(), limit as i64], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                    row.get::<_, String>(3)?,
+                    row.get::<_, u64>(4)?,
+                    row.get::<_, String>(5)?,
+                ))
+            })?;
+            rows.map(|row| {
+                let row = row?;
+                Ok(WorkspaceAccess {
+                    workspace: Workspace {
+                        id: parse_uuid(&row.0)?,
+                        slug: row.1,
+                        name: row.2,
+                        created_by_id: parse_uuid(&row.3)?,
+                        version: row.4,
+                    },
+                    role: WorkspaceRole::parse(&row.5)?,
+                })
+            })
+            .collect()
+        })
+    }
+
+    pub fn projects_for_user(
+        &self,
+        user_id: Uuid,
+        workspace_id: Option<Uuid>,
+        limit: usize,
+    ) -> Result<Vec<Project>, ControlPlaneError> {
+        let limit = bounded_limit(limit);
+        self.with_connection(|connection| {
+            let mut statement = connection.prepare(
+                "SELECT projects.id, projects.workspace_id, projects.identifier,
+                        projects.name, projects.description, projects.repository_identity,
+                        projects.version
+                 FROM projects
+                 JOIN workspace_members
+                   ON workspace_members.workspace_id = projects.workspace_id
+                 WHERE workspace_members.user_id = ?1
+                   AND (?2 IS NULL OR projects.workspace_id = ?2)
+                   AND projects.archived_at_ms IS NULL
+                 ORDER BY projects.name, projects.id LIMIT ?3",
+            )?;
+            let rows = statement.query_map(
+                params![
+                    user_id.to_string(),
+                    workspace_id.map(|id| id.to_string()),
+                    limit as i64
+                ],
+                |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, String>(2)?,
+                        row.get::<_, String>(3)?,
+                        row.get::<_, String>(4)?,
+                        row.get::<_, Option<String>>(5)?,
+                        row.get::<_, u64>(6)?,
+                    ))
+                },
+            )?;
+            rows.map(|row| {
+                let row = row?;
+                Ok(Project {
+                    id: parse_uuid(&row.0)?,
+                    workspace_id: parse_uuid(&row.1)?,
+                    identifier: row.2,
+                    name: row.3,
+                    description: row.4,
+                    repository_identity: row.5,
+                    version: row.6,
+                })
+            })
+            .collect()
+        })
+    }
+
+    pub fn tickets_for_user(
+        &self,
+        user_id: Uuid,
+        workspace_id: Option<Uuid>,
+        limit: usize,
+    ) -> Result<Vec<Ticket>, ControlPlaneError> {
+        let limit = bounded_limit(limit);
+        self.with_connection(|connection| {
+            let mut statement = connection.prepare(
+                "SELECT tickets.id, tickets.project_id, tickets.sequence_number,
+                        tickets.title, tickets.description, tickets.state_id,
+                        tickets.priority, tickets.created_by_id, tickets.version
+                 FROM tickets
+                 JOIN projects ON projects.id = tickets.project_id
+                 JOIN workspace_members
+                   ON workspace_members.workspace_id = projects.workspace_id
+                 WHERE workspace_members.user_id = ?1
+                   AND (?2 IS NULL OR projects.workspace_id = ?2)
+                   AND tickets.archived_at_ms IS NULL
+                 ORDER BY tickets.updated_at_ms DESC, tickets.id LIMIT ?3",
+            )?;
+            let rows = statement.query_map(
+                params![
+                    user_id.to_string(),
+                    workspace_id.map(|id| id.to_string()),
+                    limit as i64
+                ],
+                decode_ticket,
+            )?;
+            rows.map(|row| ticket_from_row(row?)).collect()
+        })
+    }
+
+    pub fn latest_event_cursor(
+        &self,
+        user_id: Uuid,
+        workspace_id: Option<Uuid>,
+    ) -> Result<u64, ControlPlaneError> {
+        self.with_connection(|connection| {
+            connection
+                .query_row(
+                    "SELECT COALESCE(MAX(product_events.cursor), 0)
+                     FROM product_events
+                     JOIN workspace_members
+                       ON workspace_members.workspace_id = product_events.workspace_id
+                     WHERE workspace_members.user_id = ?1
+                       AND (?2 IS NULL OR product_events.workspace_id = ?2)",
+                    params![user_id.to_string(), workspace_id.map(|id| id.to_string())],
+                    |row| row.get(0),
+                )
+                .map_err(Into::into)
+        })
+    }
+
+    pub fn events_after(
+        &self,
+        user_id: Uuid,
+        workspace_id: Uuid,
+        after_cursor: u64,
+        limit: usize,
+    ) -> Result<EventRecordsPage, ControlPlaneError> {
+        self.require_permission(user_id, workspace_id, Permission::Read)?;
+        let limit = bounded_limit(limit);
+        self.with_connection(|connection| {
+            let mut statement = connection.prepare(
+                "SELECT cursor, workspace_id, aggregate_kind, aggregate_id,
+                        aggregate_version, event_kind, actor_id, body, created_at_ms
+                 FROM product_events
+                 WHERE workspace_id = ?1 AND cursor > ?2
+                 ORDER BY cursor LIMIT ?3",
+            )?;
+            let rows = statement.query_map(
+                params![
+                    workspace_id.to_string(),
+                    after_cursor,
+                    limit.saturating_add(1) as i64
+                ],
+                |row| {
+                    Ok((
+                        row.get::<_, u64>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, String>(2)?,
+                        row.get::<_, String>(3)?,
+                        row.get::<_, u64>(4)?,
+                        row.get::<_, String>(5)?,
+                        row.get::<_, Option<String>>(6)?,
+                        row.get::<_, String>(7)?,
+                        row.get::<_, i64>(8)?,
+                    ))
+                },
+            )?;
+            let mut events = rows
+                .map(|row| {
+                    let row = row?;
+                    Ok(ProductEventRecord {
+                        cursor: row.0,
+                        workspace_id: parse_uuid(&row.1)?,
+                        aggregate_kind: row.2,
+                        aggregate_id: parse_uuid(&row.3)?,
+                        aggregate_version: row.4,
+                        event_kind: row.5,
+                        actor_id: row.6.as_deref().map(parse_uuid).transpose()?,
+                        body: row.7,
+                        created_at_ms: row.8,
+                    })
+                })
+                .collect::<Result<Vec<_>, ControlPlaneError>>()?;
+            let has_more = events.len() > limit;
+            events.truncate(limit);
+            let next_cursor = events.last().map_or(after_cursor, |event| event.cursor);
+            Ok(EventRecordsPage {
+                events,
+                next_cursor,
+                has_more,
+            })
         })
     }
 
@@ -1092,7 +1347,7 @@ impl ControlPlaneStore {
         Ok(issued)
     }
 
-    fn workspace_for_project(&self, project_id: Uuid) -> Result<Uuid, ControlPlaneError> {
+    pub fn workspace_for_project(&self, project_id: Uuid) -> Result<Uuid, ControlPlaneError> {
         self.with_connection(|connection| {
             let value = connection
                 .query_row(
@@ -1228,6 +1483,28 @@ type TicketRow = (
     String,
     u64,
 );
+
+type UserRow = (String, String, String, Option<i64>, u64);
+
+fn decode_user(row: &rusqlite::Row<'_>) -> rusqlite::Result<UserRow> {
+    Ok((
+        row.get(0)?,
+        row.get(1)?,
+        row.get(2)?,
+        row.get(3)?,
+        row.get(4)?,
+    ))
+}
+
+fn user_from_row(row: UserRow) -> Result<User, ControlPlaneError> {
+    Ok(User {
+        id: parse_uuid(&row.0)?,
+        email: row.1,
+        display_name: row.2,
+        disabled_at_ms: row.3,
+        version: row.4,
+    })
+}
 
 fn decode_ticket(row: &rusqlite::Row<'_>) -> rusqlite::Result<TicketRow> {
     Ok((
@@ -1393,6 +1670,10 @@ fn validate_identifier(identifier: &str) -> Result<(), ControlPlaneError> {
         ));
     }
     Ok(())
+}
+
+fn bounded_limit(limit: usize) -> usize {
+    limit.clamp(1, 1_001)
 }
 
 #[derive(Debug, Error)]
