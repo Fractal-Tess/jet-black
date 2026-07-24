@@ -8,6 +8,5 @@ description = "Ignore generated and local-only dependency/build material; tracke
 paths = [
   '''(^|/)node_modules/''',
   '''(^|/)target/''',
-  '''(^|/)\.svelte-kit/''',
   '''(^|/)test-results/''',
 ]

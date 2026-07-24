@@ -1,50 +1,74 @@
-# jet-black
+# Jet Black
 
-An agile agentic development platform with a Rust control plane, SQLite, local
-or remote execution workers, and a shared Svelte web/desktop interface.
+Jet Black is an agile agentic development platform. One Rust process owns the
+product control plane, SQLite database, realtime transport, Git worktrees,
+provider execution, approvals, artifacts, and local review. The same static
+Svelte client runs in a browser or the Tauri desktop shell.
 
-## Stack
+## Repository
 
-- `apps/standalone`: the current Rust composition root and local web host.
-- `apps/web`: the shared Svelte interface, transitioning to a static Rust-served client.
-- `crates/*`: domain, protocol, persistence, Git, execution, providers, review, policy, and HTTP services.
-- `packages/shared`: TypeScript contracts generated from the Rust protocol.
-- `packages/ui`: shared Svelte 5 components and Tailwind theme.
-- `convex`: transitional backend retained only until Rust product-domain parity and cutover.
+- `apps/jet-black`: the Rust composition root for standalone, server, and
+  desktop profiles.
+- `apps/web`: the static Svelte client and Playwright product tests.
+- `apps/desktop/src-tauri`: the native shell; it starts the same Rust platform
+  in-process.
+- `apps/worker`: an outbound-only device daemon for fenced remote execution.
+- `crates/control-plane`: users, sessions, roles, projects, tickets, planning
+  records, workers, quotas, events, and migrations.
+- `crates/protocol`: versioned Rust contracts and generated TypeScript.
+- `crates/persistence`, `git`, `execution`, `agents`, `orchestration`, and
+  `review`: the supervised execution substrate.
+- `packages/shared`: generated browser-safe protocol types.
 
-## Quickstart
+Convex, Better Auth, SvelteKit server routes, and the Node production server
+have been removed. See [ADR-007](docs/adr/007-rust-control-plane.md).
+
+## Run locally
 
 ```bash
 bun install
-direnv allow
 bun run dev
 ```
 
-The current web development command still uses the transitional Convex
-backend. See [ADR-007](docs/adr/007-rust-control-plane.md) for the accepted
-replacement architecture.
+The development seed is enabled by that command:
 
-## UI package
+- email: `dev@jet-black.local`
+- password: `jet-black-development`
+- URL: `http://127.0.0.1:4317`
 
-The package follows SveltePlex's shared-package structure. Add components with:
-
-```bash
-bunx shadcn-svelte@latest add button -c packages/ui
-```
-
-Import components from the workspace:
-
-```svelte
-<script lang="ts">
-  import { Button } from "@workspace/ui/components/button";
-</script>
-```
-
-## Verification
+Approve repositories for local execution:
 
 ```bash
-bun run --cwd packages/ui typecheck
+JET_BLACK_REPOSITORY_ROOTS=/absolute/repository bun run dev
+```
+
+Multiple roots use the platform path separator (`:` on Linux/macOS). Provider
+selection uses `JET_BLACK_PROVIDER=mock|claude_code|codex|open_code`.
+
+Remote worker enrollment is intentionally separate from user login. An
+administrator creates a device credential through the control-plane API, then
+starts `jet-black-worker` with its control-plane origin, token, advertised
+repositories, and an absolute handler executable. The handler protocol and
+deployment details are in [docs/operations.md](docs/operations.md).
+
+## Build and verify
+
+```bash
+bun run build
+cargo test --workspace
 bun run --cwd apps/web typecheck
-bun run --cwd apps/web build
+bun run --cwd apps/web test
 bun x ultracite check
 ```
+
+On Linux, checking the Tauri target requires GTK/WebKit development packages.
+With Nix:
+
+```bash
+nix-shell -p pkg-config gtk3 webkitgtk_4_1 --run \
+  'cargo check -p jet-black-desktop'
+```
+
+Development and operations details are in
+[docs/development.md](docs/development.md) and
+[docs/operations.md](docs/operations.md).

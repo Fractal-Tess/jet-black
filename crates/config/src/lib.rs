@@ -269,11 +269,8 @@ impl StandaloneConfig {
             protocol_version: PROTOCOL_VERSION.to_owned(),
             enabled_features: vec!["local_execution".to_owned()],
             provider_availability,
-            default_provider: ProviderSelection::new(
-                self.provider,
-                self.provider_model.clone(),
-            )
-            .expect("validated standalone provider selection must remain valid"),
+            default_provider: ProviderSelection::new(self.provider, self.provider_model.clone())
+                .expect("validated standalone provider selection must remain valid"),
         }
     }
 }

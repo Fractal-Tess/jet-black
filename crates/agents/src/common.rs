@@ -113,10 +113,10 @@ fn provider_confinement(
         fs::canonicalize(directory).is_ok_and(|directory| executable.starts_with(directory))
     });
     let mut runtime_read_execute = vec![executable.to_path_buf()];
-    if !executable_is_in_search_path
-        && let Some(installation_root) = executable.parent().and_then(Path::parent)
-    {
-        runtime_read_execute.push(installation_root.to_path_buf());
+    if !executable_is_in_search_path {
+        if let Some(installation_root) = executable.parent().and_then(Path::parent) {
+            runtime_read_execute.push(installation_root.to_path_buf());
+        }
     }
     let shell_uses_nix_store =
         fs::canonicalize("/bin/sh").is_ok_and(|path| path.starts_with("/nix/store"));

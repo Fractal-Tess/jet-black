@@ -3,7 +3,7 @@ resolver = "2"
 members = [
   "apps/desktop/src-tauri",
   "apps/jet-black",
-  "apps/standalone",
+  "apps/worker",
   "crates/agents",
   "crates/config",
   "crates/control-plane",
@@ -21,7 +21,7 @@ members = [
 [workspace.package]
 edition = "2024"
 license = "UNLICENSED"
-rust-version = "1.85"
+rust-version = "1.86"
 
 [workspace.dependencies]
 domain = { path = "crates/domain" }
@@ -36,6 +36,7 @@ config = { path = "crates/config" }
 control-plane = { path = "crates/control-plane" }
 review = { path = "crates/review" }
 server = { path = "crates/server" }
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
 axum = "0.8"
 base64 = "0.22"
 async-stream = "0.3"

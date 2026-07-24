@@ -1,21 +1,14 @@
-# web
+# Jet Black web client
 
-This app reads local configuration from the repository `.env.local` file.
-
-Expected envs:
-
-- `CONVEX_URL`
-- `CONVEX_SITE_URL`
-- `PUBLIC_CONVEX_URL` optional public deployment URL
-
-Server env access uses SvelteKit's `$env/dynamic/private` module.
-
-Use the existing scripts:
+This package is a static Vite/Svelte client. It contains no server loaders and
+does not own authentication or product data.
 
 ```bash
-bun run --cwd apps/web dev
+bun run --cwd apps/web typecheck
 bun run --cwd apps/web build
-bun run --cwd apps/web start
+bun run --cwd apps/web test
 ```
 
-Copy the repository `.env.example` to `.env.local` and set the values needed by your local workflow.
+Production assets are emitted to `build-client` and served by the `jet-black`
+Rust binary. Choosing another instance in Settings navigates to that server so
+session cookies and WebSockets remain same-origin.

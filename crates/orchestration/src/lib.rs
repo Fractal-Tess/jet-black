@@ -683,27 +683,27 @@ impl<R: ProviderResolver> LocalOrchestrator<R> {
             !self.run_provider_drive_started(run.id)?
         } else {
             let interrupted_before_drive = run.state() == RunState::Starting;
-            if let Some(record) = self.store.latest_process_supervision_for_run(run_id)?
-                && record.metadata.state != SupervisionState::Terminated
-            {
-                let termination = self
-                    .supervisor
-                    .terminate(&record.metadata)
-                    .map_err(OrchestrationError::Execution)?;
-                if !matches!(
-                    termination.status,
-                    TerminationStatus::Terminated | TerminationStatus::AlreadyExited
-                ) {
-                    return Err(OrchestrationError::ProcessTerminationUnverified);
+            if let Some(record) = self.store.latest_process_supervision_for_run(run_id)? {
+                if record.metadata.state != SupervisionState::Terminated {
+                    let termination = self
+                        .supervisor
+                        .terminate(&record.metadata)
+                        .map_err(OrchestrationError::Execution)?;
+                    if !matches!(
+                        termination.status,
+                        TerminationStatus::Terminated | TerminationStatus::AlreadyExited
+                    ) {
+                        return Err(OrchestrationError::ProcessTerminationUnverified);
+                    }
+                    let mut terminated_metadata = record.metadata;
+                    terminated_metadata.state = SupervisionState::Terminated;
+                    terminated_metadata.termination_reason = Some(TerminationReason::Requested);
+                    self.store.mark_process_supervision_terminated(
+                        run_id,
+                        &terminated_metadata,
+                        current_unix_ms(),
+                    )?;
                 }
-                let mut terminated_metadata = record.metadata;
-                terminated_metadata.state = SupervisionState::Terminated;
-                terminated_metadata.termination_reason = Some(TerminationReason::Requested);
-                self.store.mark_process_supervision_terminated(
-                    run_id,
-                    &terminated_metadata,
-                    current_unix_ms(),
-                )?;
             }
 
             run.interrupt()?;

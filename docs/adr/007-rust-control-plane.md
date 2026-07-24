@@ -2,7 +2,7 @@
 
 ## Status
 
-Accepted.
+Implemented.
 
 ## Supersedes
 
@@ -107,7 +107,7 @@ relevant files for traceability.
 ## Consequences
 
 - Convex, Better Auth's Convex adapter, and the Node production server are
-  transitional dependencies to be deleted.
+  removed.
 - The protocol expands from execution-only messages to the complete product
   domain.
 - Runtime profiles share code without conflating client, control-plane, and

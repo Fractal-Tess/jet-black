@@ -43,6 +43,10 @@ test("authenticates, creates a ticket, and preserves deep links", async ({
       .getByRole("heading", { name: title })
   ).toBeVisible();
 
+  await page
+    .getByRole("complementary", { name: "Ticket details" })
+    .getByRole("button", { name: "Close ticket details" })
+    .click();
   await page.getByRole("button", { name: "Analytics" }).click();
   await expect(page).toHaveURL(ANALYTICS_PATH);
   await expect(page.getByRole("heading", { name: "Analytics" })).toBeVisible();

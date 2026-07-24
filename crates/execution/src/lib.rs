@@ -987,16 +987,16 @@ mod platform {
         if !close_unlisted_fds(release_reader, ready_writer, ruleset_fd) {
             unsafe { libc::_exit(126) };
         }
-        if let Some(current_dir) = &state.current_dir
-            && unsafe { libc::chdir(current_dir.as_ptr()) } != 0
-        {
-            unsafe { libc::_exit(126) };
+        if let Some(current_dir) = &state.current_dir {
+            if unsafe { libc::chdir(current_dir.as_ptr()) } != 0 {
+                unsafe { libc::_exit(126) };
+            }
         }
-        if let Some(ruleset) = &state.confinement_ruleset
-            && !apply_landlock(ruleset.as_raw_fd())
-        {
-            let _ = write_child_byte(ready_writer, 2);
-            unsafe { libc::_exit(126) };
+        if let Some(ruleset) = &state.confinement_ruleset {
+            if !apply_landlock(ruleset.as_raw_fd()) {
+                let _ = write_child_byte(ready_writer, 2);
+                unsafe { libc::_exit(126) };
+            }
         }
         if !write_child_byte(ready_writer, 1) {
             unsafe { libc::_exit(126) };

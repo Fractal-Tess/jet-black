@@ -48,7 +48,7 @@
     build.exec = "bun run --cwd apps/web build";
     test.exec = "bun run --cwd apps/web test";
     lint.exec = "bun run lint";
-    format.exec = "bunx ultracite fix convex";
+    format.exec = "bun run format";
     typecheck.exec = "bun run --cwd apps/web typecheck";
   };
 
@@ -56,5 +56,5 @@
   # PROCESSES (start with `devenv up`)
   #=============================================================================
 
-  processes.web.exec = "bun run --cwd apps/web dev";
+  processes.web.exec = "bun run dev";
 }

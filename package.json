@@ -3,10 +3,12 @@
   "version": "0.1.0",
   "private": true,
   "scripts": {
-    "dev": "turbo dev --filter=@workspace/web",
+    "dev": "bun run --cwd apps/web build && JET_BLACK_DEV_SEED=1 cargo run -p jet-black",
+    "dev:web": "bun run --cwd apps/web dev",
+    "build": "bun run --cwd apps/web build && cargo build -p jet-black",
+    "test": "cargo test --workspace && bun run --cwd apps/web test",
     "lint": "bunx turbo run lint",
-    "format": "bunx ultracite fix convex",
-    "inventory:convex": "bun x tsx scripts/check-convex-inventory.ts --output artifacts/convex/inventory.json",
+    "format": "bunx ultracite fix apps/web/src/client apps/web/tests-client packages/shared/src",
     "generate:protocol": "cargo run -p protocol --bin generate-types -- packages/shared/src/protocol.generated.ts",
     "check:protocol": "bun run generate:protocol && git diff --exit-code -- packages/shared/src/protocol.generated.ts"
   },
@@ -21,27 +23,13 @@
   "packageManager": "bun@1.3.14",
   "overrides": {
     "brace-expansion": "5.0.7",
-    "drizzle-orm": "0.45.2",
-    "hono": "4.12.25",
-    "next": "16.2.11",
-    "sharp": "0.35.0",
     "vite": "8.1.5"
   },
   "engines": {
     "node": ">=20"
   },
   "workspaces": [
-    "convex",
     "apps/*",
     "packages/*"
-  ],
-  "dependencies": {
-    "@tiptap/core": "^2.22.3",
-    "@tiptap/extension-image": "^2.22.3",
-    "@tiptap/extension-link": "^2.22.3",
-    "@tiptap/extension-placeholder": "^2.22.3",
-    "@tiptap/pm": "^2.22.3",
-    "@tiptap/starter-kit": "^2.22.3",
-    "tiptap-markdown": "^0.8.10"
-  }
+  ]
 }

@@ -1,5 +1,0 @@
-@import "tailwindcss";
-@import "tw-animate-css";
-@import "./theme.css";
-@source "../../../apps/**/*.{html,svelte,ts}";
-@source "./**/*.{html,svelte,ts}";

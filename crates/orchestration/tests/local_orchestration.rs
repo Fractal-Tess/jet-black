@@ -1995,10 +1995,10 @@ fn interrupt_terminates_supervised_process_tree_and_compensates_run() {
         .join(changeset.id.to_string())
         .join("child.pid");
     let child_pid = loop {
-        if let Ok(contents) = fs::read_to_string(&child_pid_path)
-            && let Ok(pid) = contents.trim().parse::<u32>()
-        {
-            break pid;
+        if let Ok(contents) = fs::read_to_string(&child_pid_path) {
+            if let Ok(pid) = contents.trim().parse::<u32>() {
+                break pid;
+            }
         }
         assert!(
             Instant::now() < deadline,
@@ -2751,10 +2751,10 @@ fn startup_reconciliation_terminates_a_surviving_persisted_process_tree() {
 
     let deadline = Instant::now() + Duration::from_secs(5);
     let child_pid = loop {
-        if let Ok(contents) = fs::read_to_string(worktree_path.join("child.pid"))
-            && let Ok(pid) = contents.trim().parse::<u32>()
-        {
-            break pid;
+        if let Ok(contents) = fs::read_to_string(worktree_path.join("child.pid")) {
+            if let Ok(pid) = contents.trim().parse::<u32>() {
+                break pid;
+            }
         }
         assert!(
             Instant::now() < deadline,

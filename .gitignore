@@ -15,7 +15,6 @@ apps/desktop/src-tauri/gen
 .env.development.local
 .env.test.local
 .env.production.local
-docker/.env.prod
 
 # Testing
 coverage
@@ -25,18 +24,11 @@ test-results/
 # Turbo
 .turbo
 
-# Vercel
-.vercel
-
 # Build Outputs
 /target/
-.next/
-.svelte-kit/
 out/
 build
-build-standalone/
 dist
-.expo/
 
 
 # Debug

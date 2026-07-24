@@ -1,8 +1,0 @@
-@import "tailwindcss";
-@import "@workspace/ui/theme.css";
-@source "./**/*.{html,svelte,ts}";
-@source "../../../../packages/ui/src/lib/components/{badge,button,card,input,label}/**/*.{svelte,ts}";
-
-::selection {
-  background: color-mix(in oklch, var(--primary) 35%, transparent);
-}

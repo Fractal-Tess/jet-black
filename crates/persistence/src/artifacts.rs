@@ -858,10 +858,10 @@ fn create_private_directory(path: &Path, recursive: bool) -> Result<(), Persiste
     } else {
         fs::create_dir(path)
     };
-    if let Err(error) = result
-        && error.kind() != std::io::ErrorKind::AlreadyExists
-    {
-        return Err(error.into());
+    if let Err(error) = result {
+        if error.kind() != std::io::ErrorKind::AlreadyExists {
+            return Err(error.into());
+        }
     }
     validate_private_directory(path)?;
     secure_directory(path)
@@ -876,10 +876,10 @@ fn validate_private_directory(path: &Path) -> Result<(), PersistenceError> {
 }
 
 fn open_lock_file(path: &Path) -> Result<File, PersistenceError> {
-    if let Ok(metadata) = fs::symlink_metadata(path)
-        && (metadata.file_type().is_symlink() || !metadata.is_file())
-    {
-        return Err(PersistenceError::InvalidArtifactRoot);
+    if let Ok(metadata) = fs::symlink_metadata(path) {
+        if metadata.file_type().is_symlink() || !metadata.is_file() {
+            return Err(PersistenceError::InvalidArtifactRoot);
+        }
     }
     let file = OpenOptions::new()
         .create(true)

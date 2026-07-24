@@ -1,15 +1,8 @@
 {
   "$schema": "./node_modules/@biomejs/biome/configuration_schema.json",
   "extends": ["ultracite/biome/core", "ultracite/biome/vitest"],
-  "css": {
-    "parser": {
-      "tailwindDirectives": true
-    }
-  },
   "files": {
     "includes": [
-      "!convex/convex/_generated",
-      "!convex/convex/betterAuth/_generated",
       "!apps/web/build-client",
       "!.claude/worktrees",
       "!.omo/run-continuation",
@@ -45,20 +38,6 @@
             // Biome can't see Svelte template usage, so it wrongly
             // converts component imports to type-only imports.
             "useImportType": "off"
-          }
-        }
-      }
-    },
-    {
-      "includes": ["packages/ui/src/lib/components/**/index.ts"],
-      "linter": {
-        "rules": {
-          "performance": {
-            "noBarrelFile": "off"
-          },
-          "style": {
-            // shadcn-svelte index files re-export imported components.
-            "noExportedImports": "off"
           }
         }
       }

@@ -2,12 +2,8 @@ pre-commit:
   jobs:
     - name: ultracite
       glob:
-        - "convex/**/*.js"
-        - "convex/**/*.jsx"
-        - "convex/**/*.ts"
-        - "convex/**/*.tsx"
-        - "convex/**/*.json"
-        - "convex/**/*.jsonc"
-        - "convex/**/*.css"
+        - "apps/web/src/client/**/*.{js,ts,json,jsonc,css,svelte}"
+        - "apps/web/tests-client/**/*.{js,ts}"
+        - "packages/shared/src/**/*.{js,ts}"
       run: bun x ultracite fix {staged_files}
       stage_fixed: true
