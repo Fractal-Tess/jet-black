@@ -43,6 +43,11 @@ adapter, Convex, or a second authentication authority.
 Repository paths remain worker-local. Product records contain stable repository
 identities, never another device's filesystem path.
 
+On Linux the desktop sets `GDK_BACKEND=x11` before GTK starts. This avoids
+WebKitGTK fractional-scaling failures that can render the client at a fraction
+of its intended size under Wayland. Developers can test native Wayland
+explicitly with `JET_BLACK_GDK_BACKEND=wayland`.
+
 ## Worker handler contract
 
 `jet-black-worker` is an outbound transport and fencing boundary. It never

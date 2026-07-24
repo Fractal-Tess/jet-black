@@ -69,6 +69,11 @@ nix-shell -p pkg-config gtk3 webkitgtk_4_1 --run \
   'cargo check -p jet-black-desktop'
 ```
 
+The Linux desktop defaults to the X11 GTK backend because WebKitGTK can
+miscalculate CSS pixel scaling under fractional-scale Wayland compositors.
+Set `JET_BLACK_GDK_BACKEND=wayland` to opt into native Wayland where it renders
+correctly.
+
 Development and operations details are in
 [docs/development.md](docs/development.md) and
 [docs/operations.md](docs/operations.md).

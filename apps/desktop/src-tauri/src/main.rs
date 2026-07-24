@@ -1,6 +1,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 use std::{
+    env,
     net::{SocketAddr, TcpStream},
     thread,
     time::{Duration, Instant},
@@ -9,6 +10,7 @@ use std::{
 const LOCAL_ADDRESS: &str = "127.0.0.1:4317";
 
 fn main() {
+    configure_linux_webview_backend();
     thread::spawn(|| {
         let runtime = tokio::runtime::Builder::new_multi_thread()
             .enable_all()
@@ -28,6 +30,19 @@ fn main() {
         .run(tauri::generate_context!())
         .expect("run Jet Black desktop shell");
 }
+
+#[cfg(target_os = "linux")]
+fn configure_linux_webview_backend() {
+    let backend = env::var("JET_BLACK_GDK_BACKEND").unwrap_or_else(|_| "x11".to_owned());
+    // This is the first operation in main, before Tauri or application threads
+    // start reading the process environment.
+    unsafe {
+        env::set_var("GDK_BACKEND", backend);
+    }
+}
+
+#[cfg(not(target_os = "linux"))]
+fn configure_linux_webview_backend() {}
 
 fn wait_for_backend(address: SocketAddr, timeout: Duration) {
     let deadline = Instant::now() + timeout;
