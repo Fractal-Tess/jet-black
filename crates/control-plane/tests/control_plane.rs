@@ -28,6 +28,29 @@ fn migrates_reopens_and_prevents_multiple_owners() {
 }
 
 #[test]
+fn product_and_execution_migrations_share_one_database() {
+    let directory = tempfile::tempdir().expect("temporary directory");
+    let path = directory.path().join("jet-black.sqlite");
+    let execution = persistence::SqliteStore::open(&path).expect("execution store");
+    let product = ControlPlaneStore::open(&path).expect("product store");
+    let user = product
+        .create_user(
+            "shared@example.com",
+            "Shared database",
+            "correct horse battery",
+        )
+        .expect("product record");
+    assert_eq!(product.schema_version().expect("product schema"), 1);
+    assert_eq!(product.user(user.id).expect("user lookup"), Some(user));
+    assert_eq!(
+        execution
+            .repository(uuid::Uuid::new_v4())
+            .expect("execution query"),
+        None
+    );
+}
+
+#[test]
 fn password_sessions_rotate_revoke_and_require_csrf() {
     let (_directory, store) = store();
     let user = store

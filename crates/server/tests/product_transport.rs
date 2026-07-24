@@ -3,15 +3,18 @@ use axum::{
     body::{Body, to_bytes},
     http::{Request, StatusCode, header},
 };
+use config::PublicBootstrap;
 use control_plane::ControlPlaneStore;
+use domain::{ProviderSelection, RunState};
 use futures_util::{SinkExt, StreamExt};
 use protocol::{
-    CommandResult, Envelope, ProductClientMessage, ProductCommand, ProductCommandResponse,
-    ProductServerMessage, ResponseEnvelope,
+    CommandResult, Envelope, EventCursor, EventPage, LocalCommand, LocalCommandResponse,
+    ProductClientMessage, ProductCommand, ProductCommandResponse, ProductServerMessage,
+    RecoveryResponse, ResponseEnvelope, StructuredError,
 };
 use serde_json::Value;
-use server::{ProductServer, ProductServerConfig, StaticAssets};
-use std::{net::SocketAddr, time::Duration};
+use server::{ProductServer, ProductServerConfig, Runtime, StaticAssets};
+use std::{net::SocketAddr, sync::Arc, time::Duration};
 use tempfile::TempDir;
 use tokio::{net::TcpListener, task::JoinHandle};
 use tokio_tungstenite::{
@@ -27,6 +30,46 @@ struct TestServer {
     _directory: TempDir,
     store: ControlPlaneStore,
     router: Router,
+}
+
+struct ProductExecutionFixture;
+
+impl Runtime for ProductExecutionFixture {
+    fn dispatch(&self, command: LocalCommand) -> Result<LocalCommandResponse, StructuredError> {
+        match command {
+            LocalCommand::GetRecovery => Ok(LocalCommandResponse::Recovery(RecoveryResponse {
+                actions: Vec::new(),
+            })),
+            _ => Err(StructuredError {
+                code: "unsupported_fixture_command".to_owned(),
+                message: "fixture command is unsupported".to_owned(),
+                retryable: false,
+            }),
+        }
+    }
+
+    fn drive_run_to_approval(&self, _run_id: uuid::Uuid) -> Result<(), StructuredError> {
+        Ok(())
+    }
+
+    fn run_state(&self, _run_id: uuid::Uuid) -> Result<RunState, StructuredError> {
+        Ok(RunState::Completed)
+    }
+
+    fn events_after(
+        &self,
+        run_id: uuid::Uuid,
+        after_sequence: u64,
+        _limit: usize,
+    ) -> Result<EventPage, StructuredError> {
+        Ok(EventPage {
+            events: Vec::new(),
+            next_cursor: EventCursor {
+                run_id,
+                after_sequence,
+            },
+        })
+    }
 }
 
 fn test_server() -> TestServer {
@@ -516,4 +559,74 @@ async fn static_assets_use_index_fallback_without_shadowing_api_routes() {
         .await
         .expect("API response");
     assert_eq!(missing_api.status(), StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
+async fn product_session_authorizes_the_composed_execution_runtime() {
+    let directory = tempfile::tempdir().expect("temporary directory");
+    let store =
+        ControlPlaneStore::open(directory.path().join("product.sqlite")).expect("control plane");
+    store
+        .seed_development("development password")
+        .expect("development seed");
+    let server = ProductServer::new(
+        ProductServerConfig {
+            address: ADDRESS.parse().expect("address"),
+            public_origin: ORIGIN.to_owned(),
+            profile: "standalone".to_owned(),
+        },
+        store,
+    )
+    .expect("server")
+    .with_execution(
+        PublicBootstrap {
+            profile: "standalone".to_owned(),
+            version: "test".to_owned(),
+            protocol_version: protocol::PROTOCOL_VERSION.to_owned(),
+            enabled_features: vec!["local-execution".to_owned()],
+            provider_availability: vec![domain::ProviderKind::Mock],
+            default_provider: ProviderSelection::new(domain::ProviderKind::Mock, None)
+                .expect("provider selection"),
+        },
+        Arc::new(ProductExecutionFixture),
+    );
+    let router = server.router();
+    let (cookie, csrf) = login(&router).await;
+
+    let bootstrap = router
+        .clone()
+        .oneshot(
+            Request::get("/api/execution/bootstrap")
+                .header(header::HOST, ADDRESS)
+                .header(header::COOKIE, &cookie)
+                .body(Body::empty())
+                .expect("bootstrap request"),
+        )
+        .await
+        .expect("bootstrap response");
+    assert_eq!(bootstrap.status(), StatusCode::OK);
+
+    let command = Envelope::new(LocalCommand::GetRecovery);
+    let response = router
+        .oneshot(
+            Request::post("/api/execution/commands")
+                .header(header::HOST, ADDRESS)
+                .header(header::ORIGIN, ORIGIN)
+                .header(header::COOKIE, cookie)
+                .header("x-csrf-token", csrf)
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(
+                    serde_json::to_vec(&command).expect("serialize command"),
+                ))
+                .expect("command request"),
+        )
+        .await
+        .expect("command response");
+    let response: ResponseEnvelope<LocalCommandResponse> =
+        serde_json::from_value(response_json(response).await).expect("response envelope");
+    assert!(matches!(
+        response.result,
+        CommandResult::Ok(LocalCommandResponse::Recovery(RecoveryResponse { actions }))
+            if actions.is_empty()
+    ));
 }

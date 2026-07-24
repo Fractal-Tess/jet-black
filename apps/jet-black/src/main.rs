@@ -1,9 +1,22 @@
+use agents::{
+    ClaudeCodeProviderFactory, CodexProviderFactory, LocalProviderRegistry, MockProvider,
+    OpenCodeProviderFactory, ProviderResolver,
+};
+use config::{ProviderKind, PublicBootstrap};
 use control_plane::ControlPlaneStore;
+use domain::ProviderSelection;
+use git::GitService;
+use orchestration::{DEFAULT_APPROVAL_TTL, LocalOrchestrator};
+use persistence::{ArtifactPolicy, LocalArtifactStore, SqliteStore};
+use review::ReviewOptions;
 use server::{ProductServer, ProductServerConfig, StaticAssets};
 use std::{
+    collections::HashMap,
     env,
     net::{IpAddr, Ipv4Addr, SocketAddr},
     path::PathBuf,
+    sync::Arc,
+    time::Duration,
 };
 use tokio::net::TcpListener;
 
@@ -16,6 +29,9 @@ struct ApplicationConfig {
     static_assets: PathBuf,
     development_seed: bool,
     development_password: String,
+    provider: ProviderKind,
+    provider_model: Option<String>,
+    repository_roots: Vec<PathBuf>,
 }
 
 impl ApplicationConfig {
@@ -44,6 +60,25 @@ impl ApplicationConfig {
             .unwrap_or(false);
         let development_password = env::var("JET_BLACK_DEV_PASSWORD")
             .unwrap_or_else(|_| "jet-black-development".to_owned());
+        let provider = env::var("JET_BLACK_PROVIDER")
+            .unwrap_or_else(|_| "mock".to_owned())
+            .parse()
+            .map_err(|_| "JET_BLACK_PROVIDER is invalid")?;
+        let provider_model = env::var("JET_BLACK_PROVIDER_MODEL").ok();
+        let repository_roots: Vec<PathBuf> = env::var("JET_BLACK_REPOSITORY_ROOTS")
+            .map(|value| {
+                value
+                    .split(':')
+                    .filter(|path| !path.is_empty())
+                    .map(PathBuf::from)
+                    .collect()
+            })
+            .unwrap_or_default();
+        for root in &repository_roots {
+            if !root.is_absolute() {
+                return Err(format!("repository root must be absolute: {}", root.display()).into());
+            }
+        }
         Ok(Self {
             bind,
             data_dir,
@@ -52,6 +87,9 @@ impl ApplicationConfig {
             static_assets,
             development_seed,
             development_password,
+            provider,
+            provider_model,
+            repository_roots,
         })
     }
 }
@@ -60,10 +98,74 @@ impl ApplicationConfig {
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let config = ApplicationConfig::load()?;
     std::fs::create_dir_all(&config.data_dir)?;
-    let store = ControlPlaneStore::open(config.data_dir.join("jet-black.sqlite3"))?;
+    let database_path = config.data_dir.join("jet-black.sqlite3");
+    let execution_store = SqliteStore::open(&database_path)?;
+    let store = ControlPlaneStore::open(&database_path)?;
     if config.development_seed {
         store.seed_development(&config.development_password)?;
     }
+
+    let environment = env::vars().collect::<HashMap<_, _>>();
+    let search_path = environment.get("PATH").cloned().unwrap_or_default();
+    let provider_state = config.data_dir.join("providers");
+    let default_provider = ProviderSelection::new(config.provider, config.provider_model.clone())?;
+    let claude_code = ClaudeCodeProviderFactory::discover(
+        &search_path,
+        environment.get("ANTHROPIC_API_KEY").cloned(),
+        &provider_state.join(ProviderKind::ClaudeCode.name()),
+        Duration::from_secs(900),
+    )
+    .ok();
+    let codex = CodexProviderFactory::discover(
+        &search_path,
+        environment.get("OPENAI_API_KEY").cloned(),
+        &provider_state.join(ProviderKind::Codex.name()),
+        Duration::from_secs(900),
+    )
+    .ok();
+    let opencode = OpenCodeProviderFactory::discover(
+        &search_path,
+        &environment,
+        &provider_state.join(ProviderKind::OpenCode.name()),
+        Duration::from_secs(900),
+    )
+    .ok();
+    let providers = LocalProviderRegistry::new(
+        default_provider.clone(),
+        Some(MockProvider::deterministic()),
+        claude_code,
+        codex,
+        opencode,
+    )?;
+    let provider_availability = providers.available_kinds();
+    let git = GitService::new(
+        config.repository_roots.clone(),
+        config.data_dir.join("worktrees"),
+    )?;
+    let artifact_store = LocalArtifactStore::new(
+        execution_store.clone(),
+        config.data_dir.join("artifacts"),
+        ArtifactPolicy::default(),
+    )?;
+    let runtime = Arc::new(
+        LocalOrchestrator::new(execution_store, git, providers, DEFAULT_APPROVAL_TTL)
+            .with_approved_repositories(config.repository_roots.clone())?
+            .with_artifact_store(artifact_store)
+            .with_review_options(ReviewOptions::default(), &search_path)?,
+    );
+    let recovery = runtime.recover()?;
+    let execution_bootstrap = PublicBootstrap {
+        profile: config.profile.clone(),
+        version: env!("CARGO_PKG_VERSION").to_owned(),
+        protocol_version: protocol::PROTOCOL_VERSION.to_owned(),
+        enabled_features: vec![
+            "product-control-plane".to_owned(),
+            "local-execution".to_owned(),
+            "local-review".to_owned(),
+        ],
+        provider_availability,
+        default_provider,
+    };
 
     let listener = TcpListener::bind(config.bind).await?;
     let address = listener.local_addr()?;
@@ -79,6 +181,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         },
         store,
     )?
+    .with_execution(execution_bootstrap, runtime)
     .with_static_assets(static_assets);
 
     println!(
@@ -86,6 +189,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         config.profile,
         public_origin,
         config.data_dir.display()
+    );
+    println!(
+        "Execution recovery: {} recoverable, {} interrupted, {} failed, {} actions",
+        recovery.recoverable.len(),
+        recovery.interrupted.len(),
+        recovery.failed.len(),
+        recovery.actions.len()
     );
     if config.development_seed {
         println!("Development user: dev@jet-black.local");

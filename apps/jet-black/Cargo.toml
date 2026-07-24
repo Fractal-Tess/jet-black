@@ -6,6 +6,14 @@ license.workspace = true
 rust-version.workspace = true
 
 [dependencies]
+agents.workspace = true
+config.workspace = true
 control-plane.workspace = true
+domain.workspace = true
+git.workspace = true
+orchestration.workspace = true
+persistence.workspace = true
+protocol.workspace = true
+review.workspace = true
 server.workspace = true
 tokio.workspace = true

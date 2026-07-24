@@ -200,6 +200,7 @@ dependencies = [
  "base64",
  "fs2",
  "getrandom 0.3.4",
+ "persistence",
  "rusqlite",
  "serde",
  "sha2",
@@ -583,7 +584,15 @@ checksum = "8f42a60cbdf9a97f5d2305f08a87dc4e09308d1276d28c869c684d7777685682"
 name = "jet-black"
 version = "0.1.0"
 dependencies = [
+ "agents",
+ "config",
  "control-plane",
+ "domain",
+ "git",
+ "orchestration",
+ "persistence",
+ "protocol",
+ "review",
  "server",
  "tokio",
 ]

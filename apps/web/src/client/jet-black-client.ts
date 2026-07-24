@@ -1,4 +1,6 @@
 import {
+  type LocalCommand,
+  type LocalCommandResponse,
   PROTOCOL_VERSION,
   type ProductClientMessage,
   type ProductCommand,
@@ -107,6 +109,43 @@ export class JetBlackClient {
     const response = await this.#request<
       ResponseEnvelope<ProductCommandResponse>
     >("/api/product/commands", {
+      body: JSON.stringify(envelope),
+      headers: {
+        "content-type": "application/json",
+        ...this.#mutationHeaders(),
+      },
+      method: "POST",
+    });
+    if (response.result.status === "error") {
+      throw new JetBlackClientError(
+        response.result.data.code,
+        response.result.data.message,
+        400
+      );
+    }
+    return response.result.data;
+  }
+
+  async executionBootstrap(): Promise<{
+    default_provider: { kind: string; model: string | null };
+    enabled_features: string[];
+    profile: string;
+    protocol_version: string;
+    provider_availability: string[];
+    version: string;
+  }> {
+    return await this.#request("/api/execution/bootstrap");
+  }
+
+  async executionCommand(command: LocalCommand): Promise<LocalCommandResponse> {
+    const envelope = {
+      version: PROTOCOL_VERSION,
+      request_id: crypto.randomUUID(),
+      payload: command,
+    };
+    const response = await this.#request<
+      ResponseEnvelope<LocalCommandResponse>
+    >("/api/execution/commands", {
       body: JSON.stringify(envelope),
       headers: {
         "content-type": "application/json",

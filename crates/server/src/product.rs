@@ -1,4 +1,7 @@
-use super::{StaticAssets, apply_security_headers};
+use super::{
+    MAX_ADMITTED_RUNS, MAX_CONCURRENT_COMMANDS, MAX_CONCURRENT_REVIEWS, MAX_CONCURRENT_RUN_WORKERS,
+    Runtime, StaticAssets, apply_security_headers, schedule_run_worker,
+};
 use axum::{
     Json, Router,
     extract::{
@@ -10,22 +13,27 @@ use axum::{
     response::{IntoResponse, Response},
     routing::{any, get, post},
 };
+use config::PublicBootstrap;
 use control_plane::{
     AuthenticatedSession, ControlPlaneError, ControlPlaneStore, EventRecordsPage, Project,
     QuotaLimits, Ticket, TicketPriority, User, WorkspaceAccess, WorkspaceRole,
 };
 use protocol::{
-    Envelope, PROTOCOL_VERSION, ProductClientMessage, ProductCommand, ProductCommandResponse,
-    ProductEvent, ProductEventPage, ProductProject, ProductServerMessage, ProductSnapshot,
-    ProductTicket, ProductTicketPriority, ProductUser, ProductWorkspace, ProductWorkspaceRole,
-    ResponseEnvelope, StructuredError,
+    Envelope, LocalCommand, LocalCommandResponse, PROTOCOL_VERSION, ProductClientMessage,
+    ProductCommand, ProductCommandResponse, ProductEvent, ProductEventPage, ProductProject,
+    ProductServerMessage, ProductSnapshot, ProductTicket, ProductTicketPriority, ProductUser,
+    ProductWorkspace, ProductWorkspaceRole, ResponseEnvelope, StructuredError,
 };
 use serde::{Deserialize, Serialize};
 use std::{net::SocketAddr, path::PathBuf, sync::Arc};
 use thiserror::Error;
 use tokio::{
     net::TcpListener,
-    sync::broadcast::{self, Receiver, Sender},
+    runtime::Handle,
+    sync::{
+        Semaphore,
+        broadcast::{self, Receiver, Sender},
+    },
 };
 use tower_http::services::{ServeDir, ServeFile};
 use uuid::Uuid;
@@ -52,6 +60,12 @@ struct ProductState {
     profile: Arc<str>,
     store: ControlPlaneStore,
     event_sender: Sender<EventSignal>,
+    execution_bootstrap: Option<Arc<PublicBootstrap>>,
+    runtime: Option<Arc<dyn Runtime>>,
+    command_slots: Arc<Semaphore>,
+    review_slots: Arc<Semaphore>,
+    run_admission_slots: Arc<Semaphore>,
+    run_slots: Arc<Semaphore>,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -85,6 +99,12 @@ impl ProductServer {
                 profile: config.profile.into(),
                 store,
                 event_sender,
+                execution_bootstrap: None,
+                runtime: None,
+                command_slots: Arc::new(Semaphore::new(MAX_CONCURRENT_COMMANDS)),
+                review_slots: Arc::new(Semaphore::new(MAX_CONCURRENT_REVIEWS)),
+                run_admission_slots: Arc::new(Semaphore::new(MAX_ADMITTED_RUNS)),
+                run_slots: Arc::new(Semaphore::new(MAX_CONCURRENT_RUN_WORKERS)),
             },
             static_assets: None,
         })
@@ -92,6 +112,12 @@ impl ProductServer {
 
     pub fn with_static_assets(mut self, static_assets: StaticAssets) -> Self {
         self.static_assets = Some(static_assets);
+        self
+    }
+
+    pub fn with_execution(mut self, bootstrap: PublicBootstrap, runtime: Arc<dyn Runtime>) -> Self {
+        self.state.execution_bootstrap = Some(Arc::new(bootstrap));
+        self.state.runtime = Some(runtime);
         self
     }
 
@@ -107,6 +133,8 @@ impl ProductServer {
             .route("/api/product/snapshot", get(snapshot))
             .route("/api/product/commands", post(product_command))
             .route("/api/product/events", get(product_events))
+            .route("/api/execution/bootstrap", get(execution_bootstrap))
+            .route("/api/execution/commands", post(execution_command))
             .route("/api/ws", get(websocket_upgrade))
             .route("/api", any(api_not_found))
             .route("/api/{*path}", any(api_not_found))
@@ -368,6 +396,89 @@ async fn product_events(
         query.after_cursor,
         EVENT_PAGE_SIZE,
     )?)))
+}
+
+async fn execution_bootstrap(
+    State(state): State<ProductState>,
+    headers: HeaderMap,
+) -> Result<Json<PublicBootstrap>, ProductApiError> {
+    authenticate(&state, &headers, false)?;
+    state
+        .execution_bootstrap
+        .as_ref()
+        .map(|bootstrap| Json((**bootstrap).clone()))
+        .ok_or_else(|| {
+            ProductApiError::new(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "execution_unavailable",
+                "This instance does not provide local execution",
+            )
+        })
+}
+
+async fn execution_command(
+    State(state): State<ProductState>,
+    headers: HeaderMap,
+    Json(envelope): Json<Envelope<LocalCommand>>,
+) -> Result<Json<ResponseEnvelope<LocalCommandResponse>>, ProductApiError> {
+    validate_origin(&state, &headers)?;
+    authenticate(&state, &headers, true)?;
+    let request_id = envelope.request_id;
+    if let Err(error) = envelope.validate_version() {
+        return Ok(Json(ResponseEnvelope::error(request_id, error)));
+    }
+    let runtime = state.runtime.as_ref().cloned().ok_or_else(|| {
+        ProductApiError::new(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "execution_unavailable",
+            "This instance does not provide local execution",
+        )
+    })?;
+    let starts_run = matches!(&envelope.payload, LocalCommand::StartRun { .. });
+    let runs_review = matches!(&envelope.payload, LocalCommand::ReviewChangeset { .. });
+    let run_admission = if starts_run {
+        Some(
+            Arc::clone(&state.run_admission_slots)
+                .acquire_owned()
+                .await
+                .map_err(|_| ProductApiError::internal("run executor is unavailable"))?,
+        )
+    } else {
+        None
+    };
+    let runtime_handle = Handle::current();
+    let run_slots = Arc::clone(&state.run_slots);
+    let executor_slots = if runs_review {
+        Arc::clone(&state.review_slots)
+    } else {
+        Arc::clone(&state.command_slots)
+    };
+    let executor_permit = executor_slots
+        .acquire_owned()
+        .await
+        .map_err(|_| ProductApiError::internal("command executor is unavailable"))?;
+    let result = tokio::task::spawn_blocking(move || {
+        let _executor_permit = executor_permit;
+        let result = runtime.dispatch(envelope.payload);
+        if let (Some(admission_permit), Ok(LocalCommandResponse::RunStarted(started))) =
+            (run_admission, &result)
+        {
+            schedule_run_worker(
+                &runtime_handle,
+                runtime,
+                run_slots,
+                started.run_id,
+                admission_permit,
+            );
+        }
+        result
+    })
+    .await
+    .map_err(|_| ProductApiError::internal("command worker failed"))?;
+    Ok(Json(match result {
+        Ok(response) => ResponseEnvelope::success(request_id, response),
+        Err(error) => ResponseEnvelope::error(request_id, error),
+    }))
 }
 
 async fn websocket_upgrade(

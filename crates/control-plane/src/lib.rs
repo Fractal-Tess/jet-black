@@ -1325,7 +1325,11 @@ impl ControlPlaneStore {
     pub fn schema_version(&self) -> Result<u32, ControlPlaneError> {
         self.with_connection(|connection| {
             connection
-                .pragma_query_value(None, "user_version", |row| row.get(0))
+                .query_row(
+                    "SELECT COALESCE(MAX(version), 0) FROM product_schema_migrations",
+                    [],
+                    |row| row.get(0),
+                )
                 .map_err(Into::into)
         })
     }
@@ -1371,7 +1375,17 @@ fn configure_connection(connection: &Connection) -> Result<(), ControlPlaneError
 }
 
 fn run_migrations(connection: &mut Connection) -> Result<(), ControlPlaneError> {
-    let version: u32 = connection.pragma_query_value(None, "user_version", |row| row.get(0))?;
+    connection.execute_batch(
+        "CREATE TABLE IF NOT EXISTS product_schema_migrations (
+            version INTEGER PRIMARY KEY,
+            applied_at_ms INTEGER NOT NULL
+         ) STRICT;",
+    )?;
+    let version: u32 = connection.query_row(
+        "SELECT COALESCE(MAX(version), 0) FROM product_schema_migrations",
+        [],
+        |row| row.get(0),
+    )?;
     if version > CURRENT_SCHEMA_VERSION {
         return Err(ControlPlaneError::NewerSchema {
             database: version,
@@ -1381,7 +1395,11 @@ fn run_migrations(connection: &mut Connection) -> Result<(), ControlPlaneError> 
     if version < 1 {
         let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
         transaction.execute_batch(include_str!("../migrations/001_product.sql"))?;
-        transaction.pragma_update(None, "user_version", 1)?;
+        transaction.execute(
+            "INSERT INTO product_schema_migrations (version, applied_at_ms)
+             VALUES (1, ?1)",
+            [now_ms()?],
+        )?;
         transaction.commit()?;
     }
     Ok(())

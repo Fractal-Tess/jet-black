@@ -1,11 +1,15 @@
 <script lang="ts">
 import type {
+  ApprovedRepositorySummary,
   ProductCommand,
   ProductProject,
   ProductSnapshot,
   ProductTicket,
   ProductTicketPriority,
   ProductWorkspace,
+  ProviderKind,
+  ReviewReport,
+  RunSnapshot,
 } from "@workspace/shared/protocol";
 import {
   Activity,
@@ -81,6 +85,18 @@ let ticketTitle = $state("");
 let ticketDescription = $state("");
 let ticketPriority = $state<ProductTicketPriority>("none");
 let realtimeCleanup: (() => void) | undefined;
+let runPollTimer: ReturnType<typeof setTimeout> | undefined;
+let selectedTicketId = $state<string | null>(null);
+let executionLoading = $state(false);
+let executionBootstrap = $state<{
+  default_provider: { kind: string; model: string | null };
+  provider_availability: string[];
+} | null>(null);
+let approvedRepositories = $state<ApprovedRepositorySummary[]>([]);
+let selectedRepositoryId = $state("");
+let selectedProvider = $state<ProviderKind>("mock");
+let runSnapshot = $state<RunSnapshot | null>(null);
+let reviewReport = $state<ReviewReport | null>(null);
 
 const activeWorkspace = $derived(
   snapshot?.workspaces.find(
@@ -113,6 +129,9 @@ const urgentTickets = $derived(
     (ticket) => ticket.priority === "urgent" || ticket.priority === "high"
   ).length
 );
+const selectedTicket = $derived(
+  projectTickets.find((ticket) => ticket.id === selectedTicketId) ?? null
+);
 
 onMount(() => {
   const requestedView = viewFromPath(window.location.pathname);
@@ -126,6 +145,9 @@ onMount(() => {
   window.addEventListener("popstate", popstate);
   return () => {
     realtimeCleanup?.();
+    if (runPollTimer) {
+      clearTimeout(runPollTimer);
+    }
     window.removeEventListener("popstate", popstate);
   };
 });
@@ -363,6 +385,171 @@ function priorityLabel(priority: ProductTicketPriority): string {
 function ticketKey(ticket: ProductTicket): string {
   return `${activeProject?.identifier ?? "JB"}-${ticket.sequence_number}`;
 }
+
+async function openTicket(ticket: ProductTicket): Promise<void> {
+  selectedTicketId = ticket.id;
+  runSnapshot = null;
+  reviewReport = null;
+  executionLoading = true;
+  errorMessage = "";
+  try {
+    const [bootstrap, repositories] = await Promise.all([
+      client.executionBootstrap(),
+      client.executionCommand({ type: "list_approved_repositories" }),
+    ]);
+    executionBootstrap = bootstrap;
+    selectedProvider = bootstrap.default_provider.kind as ProviderKind;
+    if (repositories.type === "approved_repositories") {
+      approvedRepositories = repositories.data.repositories;
+      selectedRepositoryId = approvedRepositories[0]?.id ?? "";
+    }
+  } catch (error) {
+    errorMessage = readableError(error);
+  } finally {
+    executionLoading = false;
+  }
+}
+
+async function startTicketRun(): Promise<void> {
+  if (!(selectedTicket && activeProject && activeWorkspace)) {
+    return;
+  }
+  if (!selectedRepositoryId) {
+    errorMessage =
+      "Approve a repository in this instance before starting a run.";
+    return;
+  }
+  executionLoading = true;
+  errorMessage = "";
+  try {
+    const repository = await client.executionCommand({
+      type: "register_repository",
+      data: { approved_repository_id: selectedRepositoryId },
+    });
+    if (repository.type !== "repository_registered") {
+      throw new Error(
+        "Repository registration returned an unexpected response."
+      );
+    }
+    const changeset = await client.executionCommand({
+      type: "create_changeset",
+      data: {
+        base_sha: repository.data.base_sha,
+        repository_id: repository.data.id,
+        ticket: {
+          control_plane_id: null,
+          identifier: ticketKey(selectedTicket),
+          project_id: activeProject.id,
+          ticket_id: selectedTicket.id,
+          title: selectedTicket.title,
+          workspace_id: activeWorkspace.id,
+        },
+      },
+    });
+    if (changeset.type !== "changeset_created") {
+      throw new Error("Changeset creation returned an unexpected response.");
+    }
+    const started = await client.executionCommand({
+      type: "start_run",
+      data: {
+        changeset_id: changeset.data.id,
+        provider_selection: { kind: selectedProvider, model: null },
+      },
+    });
+    if (started.type !== "run_started") {
+      throw new Error("Run start returned an unexpected response.");
+    }
+    await pollRun(started.data.run_id);
+  } catch (error) {
+    errorMessage = readableError(error);
+  } finally {
+    executionLoading = false;
+  }
+}
+
+async function pollRun(runId: string): Promise<void> {
+  const response = await client.executionCommand({
+    type: "get_snapshot",
+    data: { run_id: runId },
+  });
+  if (response.type !== "snapshot") {
+    throw new Error("Run snapshot returned an unexpected response.");
+  }
+  runSnapshot = response.data;
+  if (["queued", "starting", "running"].includes(response.data.run.state)) {
+    runPollTimer = setTimeout(() => {
+      pollRun(runId).catch((error) => {
+        errorMessage = readableError(error);
+      });
+    }, 500);
+  }
+}
+
+async function respondToApproval(approved: boolean): Promise<void> {
+  const pending = runSnapshot?.pending_approval;
+  if (!(runSnapshot && pending)) {
+    return;
+  }
+  executionLoading = true;
+  try {
+    await client.executionCommand({
+      type: "respond_to_approval",
+      data: {
+        approved,
+        run_id: runSnapshot.run.id,
+        scope: pending.scope,
+      },
+    });
+    await pollRun(runSnapshot.run.id);
+  } catch (error) {
+    errorMessage = readableError(error);
+  } finally {
+    executionLoading = false;
+  }
+}
+
+async function interruptRun(): Promise<void> {
+  if (!runSnapshot) {
+    return;
+  }
+  executionLoading = true;
+  try {
+    await client.executionCommand({
+      type: "interrupt_run",
+      data: { run_id: runSnapshot.run.id },
+    });
+    await pollRun(runSnapshot.run.id);
+  } catch (error) {
+    errorMessage = readableError(error);
+  } finally {
+    executionLoading = false;
+  }
+}
+
+async function reviewChanges(): Promise<void> {
+  if (!runSnapshot) {
+    return;
+  }
+  executionLoading = true;
+  try {
+    const response = await client.executionCommand({
+      type: "review_changeset",
+      data: {
+        changeset_id: runSnapshot.changeset.id,
+        checks: ["format", "typecheck", "test", "secret_scan"],
+        expected_head_sha: runSnapshot.changeset.head_sha,
+        expected_version: runSnapshot.changeset.version,
+      },
+    });
+    if (response.type === "review_completed") {
+      reviewReport = response.data;
+    }
+  } catch (error) {
+    errorMessage = readableError(error);
+  } finally {
+    executionLoading = false;
+  }
+}
 </script>
 
 <svelte:head>
@@ -570,12 +757,12 @@ function ticketKey(ticket: ProductTicket): string {
                 <header><span><CircleDot size={14} /> BACKLOG</span><b>{projectTickets.length}</b></header>
                 <div class="ticket-stack">
                   {#each projectTickets as ticket (ticket.id)}
-                    <article class="ticket-card">
+                    <button class="ticket-card" onclick={() => openTicket(ticket)} type="button">
                       <div><span class="ticket-key">{ticketKey(ticket)}</span><span class:urgent={ticket.priority === "urgent"} class="priority">{priorityLabel(ticket.priority)}</span></div>
                       <h2>{ticket.title}</h2>
                       {#if ticket.description}<p>{ticket.description}</p>{/if}
                       <footer><span class="agent-hint"><Bot size={13} /> Ready for agent</span><span>v{ticket.version}</span></footer>
-                    </article>
+                    </button>
                   {:else}
                     <button class="column-empty" onclick={() => (modal = "ticket")} type="button"><Plus size={18} /><span>Create the first ticket</span></button>
                   {/each}
@@ -596,7 +783,7 @@ function ticketKey(ticket: ProductTicket): string {
             <div class="ticket-list">
               <header><span>Ticket</span><span>Priority</span><span>Status</span><span>Agent</span></header>
               {#each projectTickets as ticket (ticket.id)}
-                <article><span><b>{ticketKey(ticket)}</b>{ticket.title}</span><span>{priorityLabel(ticket.priority)}</span><span class="status-badge">Backlog</span><span class="agent-hint"><Bot size={13} /> Ready</span></article>
+                <button class="ticket-list-row" onclick={() => openTicket(ticket)} type="button"><span><b>{ticketKey(ticket)}</b>{ticket.title}</span><span>{priorityLabel(ticket.priority)}</span><span class="status-badge">Backlog</span><span class="agent-hint"><Bot size={13} /> Ready</span></button>
               {:else}
                 <div class="list-empty">No tickets match this view.</div>
               {/each}
@@ -651,6 +838,67 @@ function ticketKey(ticket: ProductTicket): string {
             <article><Archive size={18} /><h3>Durable history</h3><p>SQLite keeps product state and semantic events together on your instance.</p></article>
           </div>
         </section>
+      {/if}
+
+      {#if selectedTicket}
+        <button
+          aria-label="Close ticket details"
+          class="drawer-scrim"
+          onclick={() => (selectedTicketId = null)}
+          type="button"
+        ></button>
+        <aside aria-label="Ticket details" class="ticket-drawer">
+          <header>
+            <div><span class="ticket-key">{ticketKey(selectedTicket)}</span><h2>{selectedTicket.title}</h2></div>
+            <button aria-label="Close ticket details" class="icon-button" onclick={() => (selectedTicketId = null)} type="button"><X size={17} /></button>
+          </header>
+          <div class="drawer-body">
+            {#if selectedTicket.description}<p class="ticket-description">{selectedTicket.description}</p>{/if}
+            <div class="ticket-meta">
+              <span><small>PRIORITY</small>{priorityLabel(selectedTicket.priority)}</span>
+              <span><small>VERSION</small>{selectedTicket.version}</span>
+            </div>
+            <section class="agent-panel">
+              <div class="agent-panel-title"><div><Bot size={17} /><span><small>EXECUTION</small><strong>Agent run</strong></span></div>{#if runSnapshot}<span class={`run-state state-${runSnapshot.run.state}`}>{runSnapshot.run.state.replaceAll("_", " ")}</span>{/if}</div>
+              {#if executionLoading && !executionBootstrap}
+                <p class="panel-note">Loading execution capabilities…</p>
+              {:else if !runSnapshot}
+                <p class="panel-note">Create an isolated changeset and let a local provider work against this ticket under supervision.</p>
+                <label><span>Repository</span><select bind:value={selectedRepositoryId} disabled={approvedRepositories.length === 0}><option value="">{approvedRepositories.length === 0 ? "No approved repositories" : "Select repository"}</option>{#each approvedRepositories as repository (repository.id)}<option value={repository.id}>{repository.display_name}</option>{/each}</select></label>
+                <label><span>Provider</span><select bind:value={selectedProvider}>{#each executionBootstrap?.provider_availability ?? ["mock"] as provider (provider)}<option value={provider}>{provider}</option>{/each}</select></label>
+                <button class="primary-button" disabled={executionLoading || !selectedRepositoryId} onclick={startTicketRun} type="button"><Sparkles size={15} /> Start agent run</button>
+                {#if approvedRepositories.length === 0}<p class="repo-hint">Start the instance with <code>JET_BLACK_REPOSITORY_ROOTS=/absolute/repository</code> to approve local execution.</p>{/if}
+              {:else}
+                <div class="run-timeline">
+                  <span class:complete={true}><i><Check size={12} /></i><b>Changeset created</b><small>{runSnapshot.changeset.id.slice(0, 8)}</small></span>
+                  <span class:complete={!["queued", "starting"].includes(runSnapshot.run.state)}><i>{#if !["queued", "starting"].includes(runSnapshot.run.state)}<Check size={12} />{:else}<CircleDot size={12} />{/if}</i><b>Provider execution</b><small>{runSnapshot.run.provider_selection?.kind ?? "provider"}</small></span>
+                  <span class:complete={Boolean(runSnapshot.pending_approval) || ["completed", "reviewable"].includes(runSnapshot.run.state)}><i><CircleDot size={12} /></i><b>Scoped approval</b><small>Exact revision</small></span>
+                </div>
+                {#if runSnapshot.pending_approval}
+                  <div class="approval-card">
+                    <p class="eyebrow">APPROVAL REQUIRED</p>
+                    <strong>{runSnapshot.pending_approval.scope.proposal.action.replaceAll("_", " ")}</strong>
+                    <code>{runSnapshot.pending_approval.scope.proposal.target_path}</code>
+                    <div><button class="ghost-button" disabled={executionLoading} onclick={() => respondToApproval(false)} type="button">Reject</button><button class="primary-button compact" disabled={executionLoading} onclick={() => respondToApproval(true)} type="button"><Check size={14} /> Approve exact change</button></div>
+                  </div>
+                {/if}
+                {#if ["queued", "starting", "running", "awaiting_approval"].includes(runSnapshot.run.state)}
+                  <button class="danger-button" disabled={executionLoading} onclick={interruptRun} type="button">Interrupt run</button>
+                {/if}
+                {#if runSnapshot.changeset.state === "reviewable"}
+                  <button class="secondary-button" disabled={executionLoading} onclick={reviewChanges} type="button"><Search size={14} /> Run local review</button>
+                {/if}
+                {#if reviewReport}
+                  <div class="review-summary">
+                    <p class="eyebrow">REVIEW REPORT</p>
+                    <div>{#each reviewReport.checks as check (check.kind)}<span class:passed={check.status === "passed"}><b>{check.kind.replaceAll("_", " ")}</b><small>{check.status}</small></span>{/each}</div>
+                    <p>{reviewReport.findings.length} findings · {reviewReport.changed_paths.length} changed files</p>
+                  </div>
+                {/if}
+              {/if}
+            </section>
+          </div>
+        </aside>
       {/if}
     </main>
   </div>
