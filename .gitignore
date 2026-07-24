@@ -5,6 +5,7 @@ node_modules
 .playwright-data
 apps/web/.playwright-data
 apps/web/build-client
+apps/desktop/src-tauri/gen
 .pnp
 .pnp.js
 

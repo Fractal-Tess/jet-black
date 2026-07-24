@@ -63,6 +63,11 @@ test("supports the mobile navigation and list view", async ({ page }) => {
 test("can point the static client at another instance", async ({ page }) => {
   await signIn(page);
   await page.getByRole("button", { name: "Settings" }).click();
+  const instanceOrigin = new URL(page.url()).origin;
+  await page.getByLabel("Instance URL").fill(instanceOrigin);
+  await page.getByRole("button", { name: "Save and reconnect" }).click();
+  await expect(page).toHaveURL(SETTINGS_PATH);
+  await expect(page.getByRole("heading", { name: "Settings" })).toBeVisible();
   await page.getByLabel("Instance URL").fill("");
   await page.getByRole("button", { name: "Save and reconnect" }).click();
   await expect(page).toHaveURL(SETTINGS_PATH);

@@ -103,6 +103,27 @@
         }
       ],
       "summary": "Adapted separate device credentials, authenticated outbound worker communication, leases, ordered outbox acknowledgements, revocation, and fencing into the Rust control plane."
+    },
+    {
+      "target": "apps/desktop/src-tauri",
+      "sources": [
+        {
+          "reference": "Vibe Kanban@4deb7eca8f381f7cbc1f9d15515a9ab8f8009053",
+          "files": [
+            "crates/tauri-app/Cargo.toml",
+            "crates/tauri-app/tauri.conf.json",
+            "crates/tauri-app/src/main.rs"
+          ]
+        },
+        {
+          "reference": "SveltePlex@b2469197bc4f45d824f7419ffa4c608ccccff2e6",
+          "files": [
+            "apps/desktop/src-tauri/Cargo.toml",
+            "apps/desktop/src-tauri/tauri.conf.json"
+          ]
+        }
+      ],
+      "summary": "Adapted the Tauri 2 application shell and in-process backend startup pattern to host the shared static Svelte client and Rust platform in desktop profile."
     }
   ]
 }

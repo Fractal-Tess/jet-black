@@ -274,13 +274,7 @@ export function configuredInstance(): string {
   if (typeof window === "undefined") {
     return "";
   }
-  const query = new URLSearchParams(window.location.search).get("instance");
-  if (query) {
-    const normalized = normalizeBaseUrl(query);
-    localStorage.setItem(INSTANCE_STORAGE_KEY, normalized);
-    return normalized;
-  }
-  return localStorage.getItem(INSTANCE_STORAGE_KEY) ?? "";
+  return "";
 }
 
 export function saveConfiguredInstance(value: string): string {

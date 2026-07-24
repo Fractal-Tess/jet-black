@@ -1,0 +1,30 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "Jet Black",
+  "version": "0.1.0",
+  "identifier": "dev.jet-black.desktop",
+  "build": {
+    "beforeBuildCommand": "bun run --cwd ../../web build",
+    "frontendDist": "../../web/build-client"
+  },
+  "app": {
+    "windows": [
+      {
+        "title": "Jet Black",
+        "url": "http://127.0.0.1:4317",
+        "width": 1440,
+        "height": 900,
+        "minWidth": 960,
+        "minHeight": 640,
+        "resizable": true
+      }
+    ],
+    "security": {
+      "csp": null
+    }
+  },
+  "bundle": {
+    "active": false,
+    "icon": ["../../web/static/app-icon-192.png"]
+  }
+}

@@ -433,13 +433,12 @@ function saveInstance(event: SubmitEvent): void {
   event.preventDefault();
   try {
     const instance = saveConfiguredInstance(instanceDraft);
-    const nextUrl = new URL(window.location.href);
     if (instance) {
-      nextUrl.searchParams.set("instance", instance);
-    } else {
-      nextUrl.searchParams.delete("instance");
+      const remoteUrl = new URL(window.location.pathname, instance);
+      window.location.assign(remoteUrl);
+      return;
     }
-    window.location.assign(nextUrl);
+    window.location.reload();
   } catch (error) {
     errorMessage = readableError(error);
   }
