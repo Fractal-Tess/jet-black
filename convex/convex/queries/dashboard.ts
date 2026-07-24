@@ -605,8 +605,8 @@ export const overviewForWorkspace = query({
       };
     };
 
-    const recentIssues = activeIssues
-      .toSorted(
+    const recentIssues = [...activeIssues]
+      .sort(
         (left, right) =>
           (right.createdAt ?? right._creationTime) -
           (left.createdAt ?? left._creationTime)
@@ -616,7 +616,7 @@ export const overviewForWorkspace = query({
 
     const myIssues = activeIssues
       .filter((issue) => issue.assigneeUserId === user._id && !isClosed(issue))
-      .toSorted((left, right) => right.updatedAt - left.updatedAt)
+      .sort((left, right) => right.updatedAt - left.updatedAt)
       .slice(0, MY_ISSUE_LIMIT)
       .map(summarizeIssue);
 

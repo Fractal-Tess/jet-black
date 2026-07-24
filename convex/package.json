@@ -20,10 +20,10 @@
     "./dataModel": "./convex/_generated/dataModel.d.ts"
   },
   "dependencies": {
-    "@convex-dev/better-auth": "^0.12.2",
+    "@convex-dev/better-auth": "0.12.5",
     "@workspace/shared": "workspace:*",
-    "better-auth": "1.6.13",
-    "convex": "^1.39.1"
+    "better-auth": "1.6.24",
+    "convex": "1.42.3"
   },
   "devDependencies": {
     "@types/bun": "latest",
