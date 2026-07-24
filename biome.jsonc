@@ -10,6 +10,7 @@
     "includes": [
       "!convex/convex/_generated",
       "!convex/convex/betterAuth/_generated",
+      "!apps/web/build-client",
       "!.claude/worktrees",
       "!.omo/run-continuation",
       "!references"
