@@ -3,54 +3,44 @@
   "status": "reference-inventory-only",
   "distributionReadiness": false,
   "notes": [
-    "This register records design references and their observed licenses; it is not a product license decision or a distribution clearance.",
-    "Any future code adaptation requires a separately recorded provenance and license review before merge."
+    "This register records reusable implementation references and revisions for traceability.",
+    "Reference code may be copied or adapted when it fits Jet Black; substantial adaptations record the source files."
   ],
   "references": [
     {
       "name": "Aperant",
       "repository": "https://github.com/AndyMik90/Aperant.git",
       "revision": "20250db069a849ab001ac6ab9e3e9779886ab9e2",
-      "license": "AGPL-3.0-only",
-      "licenseEvidence": "LICENSE and package metadata at the recorded revision",
-      "use": "Architecture and workflow reference only",
-      "implementation_rule": "clean-room-preferred"
+      "use": "Reusable architecture, workflow, orchestration, and validation implementation reference",
+      "implementation_rule": "reuse-permitted-with-provenance"
     },
     {
       "name": "Plane",
       "repository": "https://github.com/makeplane/plane.git",
       "revision": "4fc79a2d7e93e769f2e6251cb4e0436b8ae4d2e7",
-      "license": "AGPL-3.0-only",
-      "licenseEvidence": "LICENSE.txt and package metadata at the recorded revision",
-      "use": "Product behavior and information-architecture reference only",
-      "implementation_rule": "clean-room-no-copy-or-translation"
+      "use": "Reusable product behavior, information architecture, schema, and UI implementation reference",
+      "implementation_rule": "reuse-permitted-with-provenance"
     },
     {
       "name": "SveltePlex",
       "repository": "https://github.com/Pandoks/svelteplex.git",
       "revision": "b2469197bc4f45d824f7419ffa4c608ccccff2e6",
-      "license": "NOASSERTION",
-      "licenseEvidence": "No root license file or package license field observed at the recorded revision",
-      "use": "Project-structure reference only; no code may be reused without license clarification",
-      "implementation_rule": "clean-room-required-until-reviewed"
+      "use": "Reusable Svelte monorepo, application, and shared UI implementation reference",
+      "implementation_rule": "reuse-permitted-with-provenance"
     },
     {
       "name": "T3 Code",
       "repository": "https://github.com/pingdotgg/t3code.git",
       "revision": "32c6012dabdbd0eb178b25ea4225d889ec8f6475",
-      "license": "MIT",
-      "licenseEvidence": "LICENSE at the recorded revision",
-      "use": "Architecture and interaction reference; adaptation still requires provenance recording",
-      "implementation_rule": "review-before-adaptation"
+      "use": "Reusable provider, transport, remote-connection, and interaction implementation reference",
+      "implementation_rule": "reuse-permitted-with-provenance"
     },
     {
       "name": "Vibe Kanban",
       "repository": "https://github.com/BloopAI/vibe-kanban.git",
       "revision": "4deb7eca8f381f7cbc1f9d15515a9ab8f8009053",
-      "license": "Apache-2.0",
-      "licenseEvidence": "LICENSE at the recorded revision",
-      "use": "Architecture and workflow reference; adaptation still requires provenance recording",
-      "implementation_rule": "review-before-adaptation"
+      "use": "Reusable worktree, execution, review, worker, and workflow implementation reference",
+      "implementation_rule": "reuse-permitted-with-provenance"
     }
   ]
 }

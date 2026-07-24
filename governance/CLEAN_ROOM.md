@@ -1,15 +1,20 @@
-# Clean-room reference rule
+# Reference reuse rule
 
-The projects in `governance/provenance.json` are references, not source pools. A reference may inform requirements, observable behavior, architecture tradeoffs, and independently written tests. Reuse or adaptation of implementation material requires an explicit provenance entry and license review before merge.
+The projects in `governance/provenance.json` are reusable source material.
+Inspect their code whenever it can reduce uncertainty or avoid rebuilding an
+already solved capability.
 
-Plane is licensed under AGPL-3.0-only at the recorded reference revision. Plane source code, pseudocode, comments, tests, schemas, styles, assets, and other implementation expression must not be copied into Jet Black and must not be translated line-by-line, mechanically, or semantically into another language or framework.
+When a reference implementation matches Jet Black's requirement:
 
-When implementing behavior observed in Plane:
+1. Prefer copying or adapting it over rewriting it only to make the code
+   different.
+2. Adjust language, runtime, domain, transport, security, and UI boundaries only
+   where Jet Black requires it.
+3. Record the source project, exact revision, and relevant files for substantial
+   adaptations.
+4. Preserve or translate useful behavioral tests and failure cases.
+5. Keep Jet Black's accepted ADRs authoritative when a reference makes a
+   different product or trust decision.
 
-1. Record the behavior as an implementation-neutral requirement without retaining Plane source excerpts.
-2. Have the implementer work from that requirement and Jet Black's own contracts and conventions.
-3. Use independently authored names, structure, control flow, tests, and documentation.
-4. Record any permitted third-party adaptation separately, including the exact source revision, files, license, notices, and reviewer decision.
-5. Stop and request review when provenance or license compatibility is uncertain.
-
-This rule does not select a license for Jet Black and does not declare the project ready for distribution.
+This register is for traceability. It does not require independent or
+clean-room reimplementation.

@@ -36,9 +36,10 @@ Health endpoints, Postgres backup objectives, metrics/alerts, high availability,
 
 ### Licensing and references
 
-- The cloned projects are architectural references, not blanket sources for copied code.
-- Record provenance and license review for adapted implementations.
-- Prefer clean-room implementation when license compatibility is unclear, especially for AGPL reference code.
+- The cloned projects may be inspected, copied, and adapted when they already
+  implement behavior Jet Black needs.
+- Record the project, revision, and relevant files for substantial adaptations.
+- Prefer proven reference code over unnecessary independent reinvention.
 - Add dependency license and vulnerability checks before distribution.
 - Licensing enforcement, billing, and commercial entitlements are not prototype features.
 

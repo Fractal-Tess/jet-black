@@ -1,13 +1,16 @@
 # jet-black
 
-A full-stack Svelte workspace with SvelteKit, a shared shadcn-svelte-ready UI package, Convex, and Bun.
+An agile agentic development platform with a Rust control plane, SQLite, local
+or remote execution workers, and a shared Svelte web/desktop interface.
 
 ## Stack
 
-- `apps/web`: SvelteKit app with Better Auth and Convex data.
-- `convex`: standalone workspace for Convex schema, functions, auth, and the production migrator.
-- `packages/shared`: shared TypeScript helpers.
+- `apps/standalone`: the current Rust composition root and local web host.
+- `apps/web`: the shared Svelte interface, transitioning to a static Rust-served client.
+- `crates/*`: domain, protocol, persistence, Git, execution, providers, review, policy, and HTTP services.
+- `packages/shared`: TypeScript contracts generated from the Rust protocol.
 - `packages/ui`: shared Svelte 5 components and Tailwind theme.
+- `convex`: transitional backend retained only until Rust product-domain parity and cutover.
 
 ## Quickstart
 
@@ -16,6 +19,10 @@ bun install
 direnv allow
 bun run dev
 ```
+
+The current web development command still uses the transitional Convex
+backend. See [ADR-007](docs/adr/007-rust-control-plane.md) for the accepted
+replacement architecture.
 
 ## UI package
 

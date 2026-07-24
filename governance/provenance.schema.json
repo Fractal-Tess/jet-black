@@ -24,8 +24,6 @@
           "name",
           "repository",
           "revision",
-          "license",
-          "licenseEvidence",
           "use",
           "implementation_rule"
         ],
@@ -33,8 +31,6 @@
           "name": { "type": "string", "minLength": 1 },
           "repository": { "type": "string", "format": "uri" },
           "revision": { "type": "string", "pattern": "^[0-9a-f]{40}$" },
-          "license": { "type": "string", "minLength": 1 },
-          "licenseEvidence": { "type": "string", "minLength": 1 },
           "use": { "type": "string", "minLength": 1 },
           "implementation_rule": { "type": "string", "minLength": 1 }
         }

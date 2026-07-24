@@ -1,5 +1,11 @@
 # Jet Black Plane-style Product TODO
 
+> Superseded for backend and delivery architecture by
+> [ADR-007](docs/adr/007-rust-control-plane.md) and
+> [the Rust control-plane migration plan](.omo/plans/rust-platform-rewrite.md).
+> This file remains a record of implemented product behavior and pending UI
+> parity. Its Convex-only constraints are no longer authoritative.
+
 Goal: build a lean Plane-style project tracker with realtime Convex data, keeping the product surface familiar while avoiding Plane's heavier backend, workers, API service, caches, and sync layers.
 
 Stack note: the app is SvelteKit + Convex. The earlier Next.js mention was a misstatement; continue implementing in SvelteKit.
