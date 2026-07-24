@@ -60,7 +60,7 @@ export class JetBlackClientError extends Error {
 export class JetBlackClient {
   readonly baseUrl: string;
   #csrfToken: string | null = null;
-  #sessionToken: string | null = null;
+  readonly #sessionToken: string | null = null;
 
   constructor(
     baseUrl = configuredInstance(),
@@ -403,7 +403,7 @@ export class JetBlackClient {
     const response = await fetch(`${this.baseUrl}${path}`, {
       ...init,
       headers,
-      credentials: "include",
+      credentials: this.#sessionToken ? "omit" : "include",
     });
     if (!response.ok) {
       const error = (await response.json().catch(() => null)) as {

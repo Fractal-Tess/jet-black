@@ -21,9 +21,9 @@ import {
   ChevronDown,
   CircleDot,
   Cloud,
-  GitBranch,
   FileText,
   Gauge,
+  GitBranch,
   Inbox,
   Kanban,
   Layers3,
@@ -47,8 +47,8 @@ import {
   JetBlackClientError,
   type ManagedUser,
   type RemoteConnection,
-  savedConnections,
   saveConnections,
+  savedConnections,
 } from "./jet-black-client";
 
 type View =
@@ -390,91 +390,12 @@ async function submitModal(event: SubmitEvent): Promise<void> {
   submitting = true;
   errorMessage = "";
   try {
-    let command: ProductCommand;
-    if (modal === "workspace") {
-      command = {
-        type: "create_workspace",
-        data: { name: workspaceName, slug: workspaceSlug },
-      };
-    } else if (modal === "project" && activeWorkspace) {
-      command = {
-        type: "create_project",
-        data: {
-          description: "",
-          identifier: projectIdentifier,
-          name: projectName,
-          repository_identity: repositoryIdentity || null,
-          repository_kind: repositoryKind === "none" ? null : repositoryKind,
-          repository_location: repositoryLocation || null,
-          workspace_id: activeWorkspace.id,
-        },
-      };
-    } else if (modal === "connection") {
-      const connection = await JetBlackClient.connectRemote({
-        baseUrl: connectionUrl,
-        deviceName: navigator.userAgent.includes("Tauri")
-          ? "Jet Black desktop"
-          : "Jet Black web client",
-        name: connectionName,
-        token: connectionToken,
-      });
-      remoteConnections = [...remoteConnections, connection];
-      saveConnections(remoteConnections);
-      resetModal();
-      await switchConnection(connection.id);
+    if (modal === "connection") {
+      await connectRemoteWorkspace();
       return;
-    } else if (modal === "ticket" && activeProject) {
-      command = {
-        type: "create_ticket",
-        data: {
-          description: ticketDescription,
-          idempotency_key: crypto.randomUUID(),
-          priority: ticketPriority,
-          project_id: activeProject.id,
-          title: ticketTitle,
-        },
-      };
-    } else if (modal === "sprint" && activeProject) {
-      command = {
-        type: "create_sprint",
-        data: {
-          description: recordDescription,
-          ends_at_ms: dateToTimestamp(recordEndDate),
-          name: recordName,
-          project_id: activeProject.id,
-          starts_at_ms: dateToTimestamp(recordStartDate),
-        },
-      };
-    } else if (modal === "module" && activeProject) {
-      command = {
-        type: "create_module",
-        data: {
-          description: recordDescription,
-          name: recordName,
-          project_id: activeProject.id,
-          target_at_ms: dateToTimestamp(recordTargetDate),
-        },
-      };
-    } else if (modal === "page" && activeProject) {
-      command = {
-        type: "create_page",
-        data: {
-          content: recordContent,
-          project_id: activeProject.id,
-          title: recordName,
-        },
-      };
-    } else if (modal === "intake" && activeProject) {
-      command = {
-        type: "create_intake_item",
-        data: {
-          description: recordDescription,
-          project_id: activeProject.id,
-          submitter_email: recordEmail || null,
-          title: recordName,
-        },
-      };
-    } else {
+    }
+    const command = buildModalCommand();
+    if (!command) {
       return;
     }
     const response = await client.command(command);
@@ -490,6 +411,110 @@ async function submitModal(event: SubmitEvent): Promise<void> {
     errorMessage = readableError(error);
   } finally {
     submitting = false;
+  }
+}
+
+async function connectRemoteWorkspace(): Promise<void> {
+  const connection = await JetBlackClient.connectRemote({
+    baseUrl: connectionUrl,
+    deviceName: navigator.userAgent.includes("Tauri")
+      ? "Jet Black desktop"
+      : "Jet Black web client",
+    name: connectionName,
+    token: connectionToken,
+  });
+  remoteConnections = [...remoteConnections, connection];
+  saveConnections(remoteConnections);
+  resetModal();
+  await switchConnection(connection.id);
+}
+
+function buildModalCommand(): ProductCommand | null {
+  switch (modal) {
+    case "workspace":
+      return {
+        type: "create_workspace",
+        data: { name: workspaceName, slug: workspaceSlug },
+      };
+    case "project":
+      return activeWorkspace
+        ? {
+            type: "create_project",
+            data: {
+              description: "",
+              identifier: projectIdentifier,
+              name: projectName,
+              repository_identity: repositoryIdentity || null,
+              repository_kind:
+                repositoryKind === "none" ? null : repositoryKind,
+              repository_location: repositoryLocation || null,
+              workspace_id: activeWorkspace.id,
+            },
+          }
+        : null;
+    case "ticket":
+      return activeProject
+        ? {
+            type: "create_ticket",
+            data: {
+              description: ticketDescription,
+              idempotency_key: crypto.randomUUID(),
+              priority: ticketPriority,
+              project_id: activeProject.id,
+              title: ticketTitle,
+            },
+          }
+        : null;
+    case "sprint":
+      return activeProject
+        ? {
+            type: "create_sprint",
+            data: {
+              description: recordDescription,
+              ends_at_ms: dateToTimestamp(recordEndDate),
+              name: recordName,
+              project_id: activeProject.id,
+              starts_at_ms: dateToTimestamp(recordStartDate),
+            },
+          }
+        : null;
+    case "module":
+      return activeProject
+        ? {
+            type: "create_module",
+            data: {
+              description: recordDescription,
+              name: recordName,
+              project_id: activeProject.id,
+              target_at_ms: dateToTimestamp(recordTargetDate),
+            },
+          }
+        : null;
+    case "page":
+      return activeProject
+        ? {
+            type: "create_page",
+            data: {
+              content: recordContent,
+              project_id: activeProject.id,
+              title: recordName,
+            },
+          }
+        : null;
+    case "intake":
+      return activeProject
+        ? {
+            type: "create_intake_item",
+            data: {
+              description: recordDescription,
+              project_id: activeProject.id,
+              submitter_email: recordEmail || null,
+              title: recordName,
+            },
+          }
+        : null;
+    default:
+      return null;
   }
 }
 

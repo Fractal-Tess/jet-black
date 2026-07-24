@@ -64,18 +64,19 @@ test("supports the mobile navigation and list view", async ({ page }) => {
   await expect(page.getByText("Ticket", { exact: true })).toBeVisible();
 });
 
-test("can point the static client at another instance", async ({ page }) => {
+test("offers workspace-level remote connection onboarding", async ({
+  page,
+}) => {
   await signIn(page);
   await page.getByRole("button", { name: "Settings" }).click();
-  const instanceOrigin = new URL(page.url()).origin;
-  await page.getByLabel("Instance URL").fill(instanceOrigin);
-  await page.getByRole("button", { name: "Save and reconnect" }).click();
   await expect(page).toHaveURL(SETTINGS_PATH);
   await expect(page.getByRole("heading", { name: "Settings" })).toBeVisible();
-  await page.getByLabel("Instance URL").fill("");
-  await page.getByRole("button", { name: "Save and reconnect" }).click();
-  await expect(page).toHaveURL(SETTINGS_PATH);
-  await expect(page.getByLabel("Instance URL")).toHaveValue("");
+  await page.getByRole("button", { name: "Connect control plane" }).click();
+  await expect(
+    page.getByRole("heading", { name: "New connection" })
+  ).toBeVisible();
+  await expect(page.getByLabel("Control plane URL")).toBeVisible();
+  await expect(page.getByLabel("One-time access token")).toBeVisible();
 });
 
 test("creates durable intake, sprint, module, and page records", async ({

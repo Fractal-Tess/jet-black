@@ -3,18 +3,25 @@ use domain::ProviderKind;
 use execution::{ProcessResult, ProcessSpec};
 use protocol::SemanticEventKind;
 use serde::Deserialize;
-use std::{path::Path, sync::Arc, time::Duration};
+use std::{
+    fs,
+    path::{Path, PathBuf},
+    sync::Arc,
+    time::Duration,
+};
 
 const TARGET_PATH: &str = "jet-black-codex-approved.txt";
 
 pub struct CodexProvider {
     discovery: Arc<common::ProviderDiscovery>,
+    output_schema_path: Arc<PathBuf>,
     model: Option<String>,
     timeout: Duration,
 }
 
 pub struct CodexProviderFactory {
     discovery: Arc<common::ProviderDiscovery>,
+    output_schema_path: Arc<PathBuf>,
     timeout: Duration,
 }
 
@@ -28,19 +35,24 @@ impl CodexProviderFactory {
         if timeout.is_zero() {
             return Err(ProviderError::InvalidConfiguration);
         }
-        let api_key = api_key
-            .filter(|value| !value.is_empty())
-            .ok_or(ProviderError::MissingCredential)?;
         let mut discovery = common::discover_provider(search_path, "codex", state_dir)?;
-        discovery
-            .environment
-            .insert("OPENAI_API_KEY".to_owned(), api_key);
+        if let Some(api_key) = api_key.filter(|value| !value.is_empty()) {
+            discovery
+                .environment
+                .insert("OPENAI_API_KEY".to_owned(), api_key);
+        } else {
+            install_codex_auth(&discovery.environment, state_dir)?;
+        }
         discovery.environment.insert(
             "CODEX_HOME".to_owned(),
             state_dir.to_string_lossy().into_owned(),
         );
+        let output_schema_path = state_dir.join("output-schema.json");
+        fs::write(&output_schema_path, common::CONTENT_SCHEMA)
+            .map_err(ProviderError::DiscoveryIo)?;
         Ok(Self {
             discovery: Arc::new(discovery),
+            output_schema_path: Arc::new(output_schema_path),
             timeout,
         })
     }
@@ -48,10 +60,44 @@ impl CodexProviderFactory {
     pub(crate) fn resolve(&self, model: Option<&str>) -> CodexProvider {
         CodexProvider {
             discovery: Arc::clone(&self.discovery),
+            output_schema_path: Arc::clone(&self.output_schema_path),
             model: model.map(str::to_owned),
             timeout: self.timeout,
         }
     }
+}
+
+fn install_codex_auth(
+    environment: &std::collections::HashMap<String, String>,
+    state_dir: &Path,
+) -> Result<(), ProviderError> {
+    let source_home = std::env::var_os("CODEX_HOME")
+        .map(PathBuf::from)
+        .or_else(|| std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".codex")))
+        .ok_or(ProviderError::MissingCredential)?;
+    let source = source_home.join("auth.json");
+    if !source.is_file() {
+        return Err(ProviderError::MissingCredential);
+    }
+    let target_home = environment
+        .get("CODEX_HOME")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| state_dir.to_path_buf());
+    let target = target_home.join("auth.json");
+    fs::copy(source, &target).map_err(ProviderError::DiscoveryIo)?;
+    secure_auth_file(&target)?;
+    Ok(())
+}
+
+#[cfg(unix)]
+fn secure_auth_file(path: &Path) -> Result<(), ProviderError> {
+    use std::os::unix::fs::PermissionsExt;
+    fs::set_permissions(path, fs::Permissions::from_mode(0o600)).map_err(ProviderError::DiscoveryIo)
+}
+
+#[cfg(not(unix))]
+fn secure_auth_file(_path: &Path) -> Result<(), ProviderError> {
+    Ok(())
 }
 
 impl CodexProvider {
@@ -95,6 +141,8 @@ impl AgentProvider for CodexProvider {
             "--ephemeral".to_owned(),
             "--ignore-user-config".to_owned(),
             "--ignore-rules".to_owned(),
+            "--output-schema".to_owned(),
+            self.output_schema_path.to_string_lossy().into_owned(),
             "--color".to_owned(),
             "never".to_owned(),
             "--json".to_owned(),
@@ -222,6 +270,7 @@ mod tests {
         let directory = tempdir().unwrap();
         let provider = provider_fixture(directory.path(), Some("gpt-5.3-codex".to_owned()));
         let spec = provider.process_spec(directory.path()).unwrap();
+        let output_schema_path = directory.path().join("state/output-schema.json");
         assert_eq!(
             spec.arguments,
             vec![
@@ -236,6 +285,8 @@ mod tests {
                 "--ephemeral",
                 "--ignore-user-config",
                 "--ignore-rules",
+                "--output-schema",
+                output_schema_path.to_str().unwrap(),
                 "--color",
                 "never",
                 "--json",

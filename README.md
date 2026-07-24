@@ -45,6 +45,14 @@ JET_BLACK_REPOSITORY_ROOTS=/absolute/repository bun run dev
 Multiple roots use the platform path separator (`:` on Linux/macOS). Provider
 selection uses `JET_BLACK_PROVIDER=mock|claude_code|codex|open_code`.
 
+The Tauri desktop needs no account for local use. It creates a local owner and
+guides the user through creating a workspace, then projects can link to a local
+Git path (with `origin` inferred automatically) or a remote repository URL.
+Shared instances support signup with administrator approval and workspace role
+assignment. Generate a single-use desktop token from Settings to attach those
+remote workspaces to a desktop client. See
+[ADR-008](docs/adr/008-local-onboarding-and-workspace-connections.md).
+
 Remote worker enrollment is intentionally separate from user login. An
 administrator creates a device credential through the control-plane API, then
 starts `jet-black-worker` with its control-plane origin, token, advertised

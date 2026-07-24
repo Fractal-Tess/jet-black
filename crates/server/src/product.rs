@@ -52,6 +52,7 @@ const SNAPSHOT_LIMIT: usize = 1_000;
 const EVENT_PAGE_SIZE: usize = 100;
 const EVENT_BROADCAST_CAPACITY: usize = 256;
 const WORKER_LEASE_DURATION: Duration = Duration::from_secs(30);
+const PRODUCT_CONTENT_SECURITY_POLICY: &str = "default-src 'self'; base-uri 'none'; object-src 'none'; frame-ancestors 'none'; form-action 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self'; connect-src 'self' http: https: ws: wss:; worker-src 'self'";
 
 #[derive(Debug, Clone)]
 pub struct ProductServerConfig {
@@ -181,7 +182,7 @@ impl ProductServer {
                 self.state.clone(),
                 require_product_host,
             ))
-            .layer(middleware::from_fn(apply_security_headers))
+            .layer(middleware::from_fn(apply_product_security_headers))
             .layer(
                 CorsLayer::new()
                     .allow_origin(Any)
@@ -203,6 +204,15 @@ impl ProductServer {
         }
         axum::serve(listener, self.router()).await
     }
+}
+
+async fn apply_product_security_headers(request: Request, next: Next) -> Response {
+    let mut response = apply_security_headers(request, next).await;
+    response.headers_mut().insert(
+        header::CONTENT_SECURITY_POLICY,
+        HeaderValue::from_static(PRODUCT_CONTENT_SECURITY_POLICY),
+    );
+    response
 }
 
 async fn api_not_found() -> StatusCode {
@@ -285,7 +295,9 @@ async fn signup(
         )
             .into_response());
     }
-    let issued = state.store.authenticate_password(&request.email, &request.password)?;
+    let issued = state
+        .store
+        .authenticate_password(&request.email, &request.password)?;
     session_response(&state, issued)
 }
 
@@ -297,9 +309,11 @@ async fn local_login(
     let user_id = state.local_user_id.ok_or_else(|| {
         ProductApiError::forbidden("local_login_disabled", "Local login is not enabled")
     })?;
-    let issued = state
-        .store
-        .issue_user_session(user_id, "launch_token", Duration::from_secs(60 * 60 * 24 * 365))?;
+    let issued = state.store.issue_user_session(
+        user_id,
+        "launch_token",
+        Duration::from_secs(60 * 60 * 24 * 365),
+    )?;
     session_response(&state, issued)
 }
 
@@ -1070,20 +1084,23 @@ async fn dispatch_product_command(
                 repository_kind.as_deref(),
                 repository_location.as_deref(),
             );
-            repository.and_then(|(inferred_identity, origin)| {
-                state.store.create_project_with_repository(
-                actor_id,
-                workspace_id,
-                &identifier,
-                &name,
-                &description,
-                    repository_identity.as_deref().or(inferred_identity.as_deref()),
-                repository_kind.as_deref(),
-                repository_location.as_deref(),
-                    origin.as_deref(),
-                )
-            })
-            .map(|project| ProductCommandResponse::ProjectCreated(product_project(project)))
+            repository
+                .and_then(|(inferred_identity, origin)| {
+                    state.store.create_project_with_repository(
+                        actor_id,
+                        workspace_id,
+                        &identifier,
+                        &name,
+                        &description,
+                        repository_identity
+                            .as_deref()
+                            .or(inferred_identity.as_deref()),
+                        repository_kind.as_deref(),
+                        repository_location.as_deref(),
+                        origin.as_deref(),
+                    )
+                })
+                .map(|project| ProductCommandResponse::ProjectCreated(product_project(project)))
         }
         ProductCommand::CreateTicket {
             project_id,
@@ -1365,9 +1382,7 @@ fn prepare_repository(
     match kind {
         "local" if state.local_user_id.is_some() => {
             let path = std::fs::canonicalize(location).map_err(|_| {
-                ControlPlaneError::InvalidInput(
-                    "local repository path does not exist".to_owned(),
-                )
+                ControlPlaneError::InvalidInput("local repository path does not exist".to_owned())
             })?;
             let output = Command::new("git")
                 .args([
@@ -1387,11 +1402,10 @@ fn prepare_repository(
                         "Git is required to inspect a local repository".to_owned(),
                     )
                 })?;
-            let origin = output.status.success().then(|| {
-                String::from_utf8_lossy(&output.stdout)
-                    .trim()
-                    .to_owned()
-            });
+            let origin = output
+                .status
+                .success()
+                .then(|| String::from_utf8_lossy(&output.stdout).trim().to_owned());
             let location = path.to_string_lossy().into_owned();
             Ok((Some(origin.clone().unwrap_or(location)), origin))
         }

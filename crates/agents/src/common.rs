@@ -234,8 +234,10 @@ fn secure_directory(_: &Path) -> Result<(), ProviderError> {
 }
 
 fn normalize_search_path(search_path: &str) -> Result<String, ProviderError> {
-    let directories = std::env::split_paths(search_path).collect::<Vec<_>>();
-    if directories.is_empty() || directories.iter().any(|directory| !directory.is_absolute()) {
+    let directories = std::env::split_paths(search_path)
+        .filter(|directory| directory.is_absolute())
+        .collect::<Vec<_>>();
+    if directories.is_empty() {
         return Err(ProviderError::UnsafeSearchPath);
     }
     std::env::join_paths(directories)
@@ -271,4 +273,25 @@ fn is_executable(metadata: &fs::Metadata) -> bool {
 #[cfg(not(unix))]
 fn is_executable(_: &fs::Metadata) -> bool {
     true
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn mixed_search_paths_keep_only_absolute_directories() {
+        let directory = tempfile::tempdir().expect("temporary directory");
+        let mixed = std::env::join_paths([directory.path(), Path::new("node_modules/.bin")])
+            .expect("mixed search path");
+        let normalized = normalize_search_path(&mixed.to_string_lossy()).expect("safe search path");
+        assert_eq!(
+            std::env::split_paths(&normalized).collect::<Vec<_>>(),
+            vec![directory.path()]
+        );
+        assert!(matches!(
+            normalize_search_path("node_modules/.bin"),
+            Err(ProviderError::UnsafeSearchPath)
+        ));
+    }
 }

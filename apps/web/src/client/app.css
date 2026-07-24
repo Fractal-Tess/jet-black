@@ -289,15 +289,23 @@ button:disabled {
 }
 .onboarding-screen {
   display: grid;
+  place-items: center;
   min-height: 100vh;
   padding: 2rem;
-  place-items: center;
   background:
-    radial-gradient(circle at 50% 30%, rgba(92, 225, 230, 0.1), transparent 28rem),
+    radial-gradient(
+      circle at 50% 30%,
+      rgba(92, 225, 230, 0.1),
+      transparent 28rem
+    ),
     linear-gradient(rgba(255, 255, 255, 0.018) 1px, transparent 1px),
     linear-gradient(90deg, rgba(255, 255, 255, 0.018) 1px, transparent 1px),
     var(--bg);
-  background-size: auto, 36px 36px, 36px 36px, auto;
+  background-size:
+    auto,
+    36px 36px,
+    36px 36px,
+    auto;
 }
 .onboarding-card {
   display: grid;

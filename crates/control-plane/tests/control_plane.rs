@@ -199,7 +199,10 @@ fn projects_preserve_local_and_remote_repository_metadata() {
         )
         .expect("project");
     assert_eq!(project.repository_kind.as_deref(), Some("local"));
-    assert_eq!(project.repository_location.as_deref(), Some("/work/project"));
+    assert_eq!(
+        project.repository_location.as_deref(),
+        Some("/work/project")
+    );
     assert_eq!(
         store
             .projects_for_user(owner.id, Some(workspace.id), 10)

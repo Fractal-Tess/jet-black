@@ -40,8 +40,38 @@ adapter, Convex, or a second authentication authority.
   cookies; they heartbeat, claim explicit fenced assignments, and replay
   ordered outbox events.
 
-Repository paths remain worker-local. Product records contain stable repository
-identities, never another device's filesystem path.
+The desktop profile creates a passwordless local owner and the frontend creates
+its session automatically. A fresh desktop asks only for the first workspace.
+The server and standalone profiles keep password signup/sign-in; accounts after
+the first administrator require approval.
+
+A project may link to a local or remote Git repository. Local repository paths
+are accepted only by the desktop instance that owns the filesystem. Jet Black
+canonicalizes the path and reads `git remote get-url origin` without a shell.
+The inferred origin becomes the stable repository identity, with the canonical
+path used only as a local fallback. Paths are never sent to another control
+plane or worker.
+
+Users create single-use desktop connection tokens in Settings. The desktop
+exchanges one for a revocable bearer session and then loads only the workspaces
+assigned to that user. User connection credentials and worker execution
+credentials are deliberately separate.
+
+For a disposable local-first integration run:
+
+```bash
+JET_BLACK_PROFILE=desktop \
+JET_BLACK_DATA_DIR=/tmp/jet-black-desktop-test \
+JET_BLACK_REPOSITORY_ROOTS=/absolute/test-repository \
+JET_BLACK_PROVIDER=codex \
+cargo run -p jet-black
+```
+
+The Codex adapter accepts `OPENAI_API_KEY` or reuses the existing Codex CLI
+login from `${CODEX_HOME:-~/.codex}/auth.json`. It copies only the authentication
+file into the app-owned provider directory with owner-only permissions, ignores
+user configuration and rules, runs read-only, and supplies an explicit JSON
+output schema for the bounded proposal contract.
 
 On Linux the desktop sets `GDK_BACKEND=x11` before GTK starts. This avoids
 WebKitGTK fractional-scaling failures that can render the client at a fraction

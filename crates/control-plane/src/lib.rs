@@ -513,12 +513,7 @@ impl ControlPlaneStore {
                 "INSERT INTO users (
                     id, email, display_name, created_at_ms, updated_at_ms
                  ) VALUES (?1, ?2, ?3, ?4, ?4)",
-                params![
-                    user.id.to_string(),
-                    &user.email,
-                    &user.display_name,
-                    now
-                ],
+                params![user.id.to_string(), &user.email, &user.display_name, now],
             )?;
             transaction.execute(
                 "INSERT INTO instance_admins (user_id, created_at_ms)

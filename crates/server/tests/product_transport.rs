@@ -906,9 +906,7 @@ async fn shared_signup_approval_and_desktop_bearer_exchange_are_enforced() {
         .expect("exchange response");
     assert_eq!(exchange.status(), StatusCode::OK);
     let exchanged = response_json(exchange).await;
-    let bearer = exchanged["session_token"]
-        .as_str()
-        .expect("session token");
+    let bearer = exchanged["session_token"].as_str().expect("session token");
     let snapshot = server
         .router
         .oneshot(

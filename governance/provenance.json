@@ -124,6 +124,34 @@
         }
       ],
       "summary": "Adapted the Tauri 2 application shell and in-process backend startup pattern to host the shared static Svelte client and Rust platform in desktop profile."
+    },
+    {
+      "target": "desktop pairing and remote workspace connections",
+      "sources": [
+        {
+          "reference": "T3 Code@32c6012dabdbd0eb178b25ea4225d889ec8f6475",
+          "files": [
+            "packages/contracts/src/auth.ts",
+            "packages/client-runtime/src/connection/onboarding.ts",
+            "packages/client-runtime/src/connection/onboarding.test.ts"
+          ]
+        }
+      ],
+      "summary": "Adapted the short-lived pairing credential to long-lived client-session exchange and explicit connection onboarding flow to Jet Black SQLite sessions and workspace authorization."
+    },
+    {
+      "target": "Codex provider authentication and structured proposal execution",
+      "sources": [
+        {
+          "reference": "T3 Code@32c6012dabdbd0eb178b25ea4225d889ec8f6475",
+          "files": [
+            "apps/server/src/provider/Drivers/CodexHomeLayout.ts",
+            "apps/server/src/provider/Drivers/CodexHomeLayout.test.ts",
+            "packages/effect-codex-app-server/src/client.ts"
+          ]
+        }
+      ],
+      "summary": "Adapted the shared Codex authentication home plus isolated runtime state pattern and explicit structured-output contract to Jet Black's supervised read-only CLI provider."
     }
   ]
 }
