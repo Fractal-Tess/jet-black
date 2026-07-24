@@ -15,11 +15,12 @@ use std::{
 use thiserror::Error;
 use uuid::Uuid;
 
-const CURRENT_SCHEMA_VERSION: u32 = 1;
+const CURRENT_SCHEMA_VERSION: u32 = 2;
 const SESSION_BYTES: usize = 32;
 const CSRF_BYTES: usize = 24;
 const DEFAULT_SESSION_LIFETIME: Duration = Duration::from_secs(60 * 60 * 24 * 30);
 const DEFAULT_LAUNCH_TOKEN_LIFETIME: Duration = Duration::from_secs(60);
+const WORKER_TOKEN_BYTES: usize = 32;
 
 #[derive(Debug)]
 struct StoreInner {
@@ -160,6 +161,51 @@ pub struct Attachment {
     pub media_type: String,
     pub byte_length: u64,
     pub storage_path: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WorkerDevice {
+    pub id: Uuid,
+    pub workspace_id: Uuid,
+    pub name: String,
+    pub protocol_version: String,
+    pub capabilities: Vec<String>,
+    pub repository_identities: Vec<String>,
+    pub status: String,
+    pub last_seen_at_ms: Option<i64>,
+    pub revoked_at_ms: Option<i64>,
+    pub version: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct IssuedWorkerCredential {
+    pub worker: WorkerDevice,
+    pub token: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WorkerAssignment {
+    pub id: Uuid,
+    pub workspace_id: Uuid,
+    pub worker_id: Uuid,
+    pub ticket_id: Uuid,
+    pub repository_identity: String,
+    pub provider: String,
+    pub command_json: String,
+    pub status: String,
+    pub fencing_epoch: u64,
+    pub lease_expires_at_ms: Option<i64>,
+    pub next_event_sequence: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WorkerOutboxEvent {
+    pub assignment_id: Uuid,
+    pub sequence: u64,
+    pub fencing_epoch: u64,
+    pub event_kind: String,
+    pub body: String,
+    pub created_at_ms: i64,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1302,6 +1348,323 @@ impl ControlPlaneStore {
         })
     }
 
+    pub fn enroll_worker(
+        &self,
+        actor_id: Uuid,
+        workspace_id: Uuid,
+        name: &str,
+        protocol_version: &str,
+        capabilities: &[String],
+        repository_identities: &[String],
+    ) -> Result<IssuedWorkerCredential, ControlPlaneError> {
+        self.require_permission(actor_id, workspace_id, Permission::ManageMembers)?;
+        validate_non_empty("worker name", name)?;
+        validate_non_empty("worker protocol version", protocol_version)?;
+        let token = random_token(WORKER_TOKEN_BYTES)?;
+        let now = now_ms()?;
+        let worker = WorkerDevice {
+            id: Uuid::new_v4(),
+            workspace_id,
+            name: name.trim().to_owned(),
+            protocol_version: protocol_version.to_owned(),
+            capabilities: normalize_worker_values(capabilities)?,
+            repository_identities: normalize_worker_values(repository_identities)?,
+            status: "offline".to_owned(),
+            last_seen_at_ms: None,
+            revoked_at_ms: None,
+            version: 1,
+        };
+        self.with_connection(|connection| {
+            connection.execute(
+                "INSERT INTO worker_devices (
+                    id, workspace_id, name, token_hash, protocol_version,
+                    capabilities_json, repositories_json, status, created_by_id,
+                    created_at_ms, updated_at_ms
+                 ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, 'offline', ?8, ?9, ?9)",
+                params![
+                    worker.id.to_string(),
+                    workspace_id.to_string(),
+                    worker.name,
+                    token_hash(&token).as_slice(),
+                    worker.protocol_version,
+                    serde_json::to_string(&worker.capabilities)?,
+                    serde_json::to_string(&worker.repository_identities)?,
+                    actor_id.to_string(),
+                    now
+                ],
+            )?;
+            Ok(())
+        })?;
+        Ok(IssuedWorkerCredential { worker, token })
+    }
+
+    pub fn workers(
+        &self,
+        actor_id: Uuid,
+        workspace_id: Uuid,
+    ) -> Result<Vec<WorkerDevice>, ControlPlaneError> {
+        self.require_permission(actor_id, workspace_id, Permission::Read)?;
+        self.with_connection(|connection| {
+            let mut statement = connection.prepare(
+                "SELECT id, workspace_id, name, protocol_version, capabilities_json,
+                        repositories_json, status, last_seen_at_ms, revoked_at_ms, version
+                 FROM worker_devices WHERE workspace_id = ?1 ORDER BY name, id",
+            )?;
+            statement
+                .query_map([workspace_id.to_string()], decode_worker)?
+                .map(|row| {
+                    row.map_err(ControlPlaneError::from)
+                        .and_then(worker_from_row)
+                })
+                .collect()
+        })
+    }
+
+    pub fn revoke_worker(
+        &self,
+        actor_id: Uuid,
+        workspace_id: Uuid,
+        worker_id: Uuid,
+    ) -> Result<(), ControlPlaneError> {
+        self.require_permission(actor_id, workspace_id, Permission::ManageMembers)?;
+        let now = now_ms()?;
+        self.with_connection(|connection| {
+            let changed = connection.execute(
+                "UPDATE worker_devices SET status = 'revoked', revoked_at_ms = ?1,
+                    updated_at_ms = ?1, version = version + 1
+                 WHERE id = ?2 AND workspace_id = ?3 AND revoked_at_ms IS NULL",
+                params![now, worker_id.to_string(), workspace_id.to_string()],
+            )?;
+            if changed == 0 {
+                return Err(ControlPlaneError::NotFound("worker"));
+            }
+            Ok(())
+        })
+    }
+
+    pub fn worker_heartbeat(
+        &self,
+        token: &str,
+        protocol_version: &str,
+        capabilities: &[String],
+        repository_identities: &[String],
+        draining: bool,
+    ) -> Result<WorkerDevice, ControlPlaneError> {
+        let now = now_ms()?;
+        let capabilities = normalize_worker_values(capabilities)?;
+        let repositories = normalize_worker_values(repository_identities)?;
+        self.with_connection(|connection| {
+            let worker_id = authenticated_worker_id(connection, token)?;
+            let changed = connection.execute(
+                "UPDATE worker_devices SET protocol_version = ?1, capabilities_json = ?2,
+                    repositories_json = ?3, status = ?4, last_seen_at_ms = ?5,
+                    updated_at_ms = ?5, version = version + 1
+                 WHERE id = ?6 AND revoked_at_ms IS NULL",
+                params![
+                    protocol_version,
+                    serde_json::to_string(&capabilities)?,
+                    serde_json::to_string(&repositories)?,
+                    if draining { "draining" } else { "online" },
+                    now,
+                    worker_id.to_string()
+                ],
+            )?;
+            if changed == 0 {
+                return Err(ControlPlaneError::InvalidWorkerCredential);
+            }
+            worker_by_id(connection, worker_id)
+        })
+    }
+
+    pub fn create_worker_assignment(
+        &self,
+        actor_id: Uuid,
+        ticket_id: Uuid,
+        worker_id: Uuid,
+        repository_identity: &str,
+        provider: &str,
+        command_json: &str,
+    ) -> Result<WorkerAssignment, ControlPlaneError> {
+        validate_non_empty("repository identity", repository_identity)?;
+        validate_non_empty("provider", provider)?;
+        serde_json::from_str::<serde_json::Value>(command_json)?;
+        let now = now_ms()?;
+        self.with_connection(|connection| {
+            let transaction =
+                connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+            let workspace_id = workspace_for_ticket(&transaction, ticket_id)?;
+            require_permission_in_transaction(
+                &transaction,
+                actor_id,
+                workspace_id,
+                Permission::ManageTickets,
+            )?;
+            let worker = worker_by_id(&transaction, worker_id)?;
+            if worker.workspace_id != workspace_id || worker.revoked_at_ms.is_some() {
+                return Err(ControlPlaneError::Forbidden);
+            }
+            if !worker
+                .repository_identities
+                .iter()
+                .any(|identity| identity == repository_identity)
+            {
+                return Err(ControlPlaneError::InvalidInput(
+                    "worker did not advertise the requested repository".to_owned(),
+                ));
+            }
+            let fencing_epoch: u64 = transaction.query_row(
+                "UPDATE worker_devices SET fencing_epoch = fencing_epoch + 1,
+                    updated_at_ms = ?1, version = version + 1
+                 WHERE id = ?2 RETURNING fencing_epoch",
+                params![now, worker_id.to_string()],
+                |row| row.get(0),
+            )?;
+            let assignment = WorkerAssignment {
+                id: Uuid::new_v4(),
+                workspace_id,
+                worker_id,
+                ticket_id,
+                repository_identity: repository_identity.to_owned(),
+                provider: provider.to_owned(),
+                command_json: command_json.to_owned(),
+                status: "pending".to_owned(),
+                fencing_epoch,
+                lease_expires_at_ms: None,
+                next_event_sequence: 1,
+            };
+            transaction.execute(
+                "INSERT INTO worker_assignments (
+                    id, workspace_id, worker_id, ticket_id, repository_identity,
+                    provider, command_json, status, fencing_epoch, created_by_id,
+                    created_at_ms, updated_at_ms
+                 ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, 'pending', ?8, ?9, ?10, ?10)",
+                params![
+                    assignment.id.to_string(),
+                    workspace_id.to_string(),
+                    worker_id.to_string(),
+                    ticket_id.to_string(),
+                    repository_identity,
+                    provider,
+                    command_json,
+                    fencing_epoch,
+                    actor_id.to_string(),
+                    now
+                ],
+            )?;
+            transaction.commit()?;
+            Ok(assignment)
+        })
+    }
+
+    pub fn claim_worker_assignment(
+        &self,
+        token: &str,
+        lease_duration: Duration,
+    ) -> Result<Option<WorkerAssignment>, ControlPlaneError> {
+        let now = now_ms()?;
+        let expires_at = add_duration(now, lease_duration)?;
+        self.with_connection(|connection| {
+            let transaction =
+                connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+            let worker_id = authenticated_worker_id(&transaction, token)?;
+            let assignment_id = transaction
+                .query_row(
+                    "SELECT id FROM worker_assignments
+                     WHERE worker_id = ?1 AND (
+                        status = 'pending' OR
+                        (status = 'leased' AND lease_expires_at_ms <= ?2)
+                     )
+                     ORDER BY created_at_ms LIMIT 1",
+                    params![worker_id.to_string(), now],
+                    |row| row.get::<_, String>(0),
+                )
+                .optional()?;
+            let Some(assignment_id) = assignment_id else {
+                transaction.commit()?;
+                return Ok(None);
+            };
+            transaction.execute(
+                "UPDATE worker_assignments SET status = 'leased',
+                    lease_expires_at_ms = ?1, updated_at_ms = ?2
+                 WHERE id = ?3",
+                params![expires_at, now, assignment_id],
+            )?;
+            let assignment = assignment_by_id(&transaction, parse_uuid(&assignment_id)?)?;
+            transaction.commit()?;
+            Ok(Some(assignment))
+        })
+    }
+
+    pub fn append_worker_event(
+        &self,
+        token: &str,
+        assignment_id: Uuid,
+        fencing_epoch: u64,
+        sequence: u64,
+        event_kind: &str,
+        body: &str,
+        terminal_status: Option<&str>,
+    ) -> Result<WorkerOutboxEvent, ControlPlaneError> {
+        validate_non_empty("worker event kind", event_kind)?;
+        let now = now_ms()?;
+        self.with_connection(|connection| {
+            let transaction =
+                connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+            let worker_id = authenticated_worker_id(&transaction, token)?;
+            let assignment = assignment_by_id(&transaction, assignment_id)?;
+            if assignment.worker_id != worker_id || assignment.fencing_epoch != fencing_epoch {
+                return Err(ControlPlaneError::StaleWorkerFence);
+            }
+            if sequence > assignment.next_event_sequence {
+                return Err(ControlPlaneError::WorkerEventSequence {
+                    expected: assignment.next_event_sequence,
+                    received: sequence,
+                });
+            }
+            if sequence < assignment.next_event_sequence {
+                return worker_event_by_sequence(&transaction, assignment_id, sequence);
+            }
+            let status = terminal_status.unwrap_or("running");
+            if !matches!(
+                status,
+                "running" | "awaiting_approval" | "completed" | "failed" | "cancelled"
+            ) {
+                return Err(ControlPlaneError::InvalidInput(
+                    "invalid worker assignment status".to_owned(),
+                ));
+            }
+            transaction.execute(
+                "INSERT INTO worker_outbox (
+                    assignment_id, sequence, fencing_epoch, event_kind, body, created_at_ms
+                 ) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                params![
+                    assignment_id.to_string(),
+                    sequence,
+                    fencing_epoch,
+                    event_kind,
+                    body,
+                    now
+                ],
+            )?;
+            transaction.execute(
+                "UPDATE worker_assignments SET status = ?1,
+                    next_event_sequence = next_event_sequence + 1, updated_at_ms = ?2
+                 WHERE id = ?3",
+                params![status, now, assignment_id.to_string()],
+            )?;
+            let event = WorkerOutboxEvent {
+                assignment_id,
+                sequence,
+                fencing_epoch,
+                event_kind: event_kind.to_owned(),
+                body: body.to_owned(),
+                created_at_ms: now,
+            };
+            transaction.commit()?;
+            Ok(event)
+        })
+    }
+
     pub fn backup_to(&self, destination: impl AsRef<Path>) -> Result<(), ControlPlaneError> {
         let source = Connection::open(&self.inner.path)?;
         configure_connection(&source)?;
@@ -1398,6 +1761,16 @@ fn run_migrations(connection: &mut Connection) -> Result<(), ControlPlaneError> 
         transaction.execute(
             "INSERT INTO product_schema_migrations (version, applied_at_ms)
              VALUES (1, ?1)",
+            [now_ms()?],
+        )?;
+        transaction.commit()?;
+    }
+    if version < 2 {
+        let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        transaction.execute_batch(include_str!("../migrations/002_workers.sql"))?;
+        transaction.execute(
+            "INSERT INTO product_schema_migrations (version, applied_at_ms)
+             VALUES (2, ?1)",
             [now_ms()?],
         )?;
         transaction.commit()?;
@@ -1504,6 +1877,33 @@ type TicketRow = (
 
 type UserRow = (String, String, String, Option<i64>, u64);
 
+type WorkerRow = (
+    String,
+    String,
+    String,
+    String,
+    String,
+    String,
+    String,
+    Option<i64>,
+    Option<i64>,
+    u64,
+);
+
+type AssignmentRow = (
+    String,
+    String,
+    String,
+    String,
+    String,
+    String,
+    String,
+    String,
+    u64,
+    Option<i64>,
+    u64,
+);
+
 fn decode_user(row: &rusqlite::Row<'_>) -> rusqlite::Result<UserRow> {
     Ok((
         row.get(0)?,
@@ -1522,6 +1922,208 @@ fn user_from_row(row: UserRow) -> Result<User, ControlPlaneError> {
         disabled_at_ms: row.3,
         version: row.4,
     })
+}
+
+fn decode_worker(row: &rusqlite::Row<'_>) -> rusqlite::Result<WorkerRow> {
+    Ok((
+        row.get(0)?,
+        row.get(1)?,
+        row.get(2)?,
+        row.get(3)?,
+        row.get(4)?,
+        row.get(5)?,
+        row.get(6)?,
+        row.get(7)?,
+        row.get(8)?,
+        row.get(9)?,
+    ))
+}
+
+fn worker_from_row(row: WorkerRow) -> Result<WorkerDevice, ControlPlaneError> {
+    Ok(WorkerDevice {
+        id: parse_uuid(&row.0)?,
+        workspace_id: parse_uuid(&row.1)?,
+        name: row.2,
+        protocol_version: row.3,
+        capabilities: serde_json::from_str(&row.4)?,
+        repository_identities: serde_json::from_str(&row.5)?,
+        status: row.6,
+        last_seen_at_ms: row.7,
+        revoked_at_ms: row.8,
+        version: row.9,
+    })
+}
+
+fn worker_by_id(
+    connection: &Connection,
+    worker_id: Uuid,
+) -> Result<WorkerDevice, ControlPlaneError> {
+    connection
+        .query_row(
+            "SELECT id, workspace_id, name, protocol_version, capabilities_json,
+                    repositories_json, status, last_seen_at_ms, revoked_at_ms, version
+             FROM worker_devices WHERE id = ?1",
+            [worker_id.to_string()],
+            decode_worker,
+        )
+        .optional()?
+        .ok_or(ControlPlaneError::NotFound("worker"))
+        .and_then(worker_from_row)
+}
+
+fn authenticated_worker_id(
+    connection: &Connection,
+    token: &str,
+) -> Result<Uuid, ControlPlaneError> {
+    let id = connection
+        .query_row(
+            "SELECT id FROM worker_devices
+             WHERE token_hash = ?1 AND revoked_at_ms IS NULL",
+            [token_hash(token).as_slice()],
+            |row| row.get::<_, String>(0),
+        )
+        .optional()?
+        .ok_or(ControlPlaneError::InvalidWorkerCredential)?;
+    parse_uuid(&id)
+}
+
+fn decode_assignment(row: &rusqlite::Row<'_>) -> rusqlite::Result<AssignmentRow> {
+    Ok((
+        row.get(0)?,
+        row.get(1)?,
+        row.get(2)?,
+        row.get(3)?,
+        row.get(4)?,
+        row.get(5)?,
+        row.get(6)?,
+        row.get(7)?,
+        row.get(8)?,
+        row.get(9)?,
+        row.get(10)?,
+    ))
+}
+
+fn assignment_from_row(row: AssignmentRow) -> Result<WorkerAssignment, ControlPlaneError> {
+    Ok(WorkerAssignment {
+        id: parse_uuid(&row.0)?,
+        workspace_id: parse_uuid(&row.1)?,
+        worker_id: parse_uuid(&row.2)?,
+        ticket_id: parse_uuid(&row.3)?,
+        repository_identity: row.4,
+        provider: row.5,
+        command_json: row.6,
+        status: row.7,
+        fencing_epoch: row.8,
+        lease_expires_at_ms: row.9,
+        next_event_sequence: row.10,
+    })
+}
+
+fn assignment_by_id(
+    connection: &Connection,
+    assignment_id: Uuid,
+) -> Result<WorkerAssignment, ControlPlaneError> {
+    connection
+        .query_row(
+            "SELECT id, workspace_id, worker_id, ticket_id, repository_identity,
+                    provider, command_json, status, fencing_epoch, lease_expires_at_ms,
+                    next_event_sequence
+             FROM worker_assignments WHERE id = ?1",
+            [assignment_id.to_string()],
+            decode_assignment,
+        )
+        .optional()?
+        .ok_or(ControlPlaneError::NotFound("worker assignment"))
+        .and_then(assignment_from_row)
+}
+
+fn worker_event_by_sequence(
+    connection: &Connection,
+    assignment_id: Uuid,
+    sequence: u64,
+) -> Result<WorkerOutboxEvent, ControlPlaneError> {
+    connection
+        .query_row(
+            "SELECT fencing_epoch, event_kind, body, created_at_ms
+             FROM worker_outbox WHERE assignment_id = ?1 AND sequence = ?2",
+            params![assignment_id.to_string(), sequence],
+            |row| {
+                Ok((
+                    row.get::<_, u64>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                    row.get::<_, i64>(3)?,
+                ))
+            },
+        )
+        .optional()?
+        .map(|row| WorkerOutboxEvent {
+            assignment_id,
+            sequence,
+            fencing_epoch: row.0,
+            event_kind: row.1,
+            body: row.2,
+            created_at_ms: row.3,
+        })
+        .ok_or(ControlPlaneError::WorkerEventSequence {
+            expected: sequence,
+            received: sequence,
+        })
+}
+
+fn workspace_for_ticket(
+    connection: &Connection,
+    ticket_id: Uuid,
+) -> Result<Uuid, ControlPlaneError> {
+    let workspace_id = connection
+        .query_row(
+            "SELECT projects.workspace_id FROM tickets
+             JOIN projects ON projects.id = tickets.project_id
+             WHERE tickets.id = ?1",
+            [ticket_id.to_string()],
+            |row| row.get::<_, String>(0),
+        )
+        .optional()?
+        .ok_or(ControlPlaneError::NotFound("ticket"))?;
+    parse_uuid(&workspace_id)
+}
+
+fn require_permission_in_transaction(
+    connection: &Connection,
+    user_id: Uuid,
+    workspace_id: Uuid,
+    permission: Permission,
+) -> Result<(), ControlPlaneError> {
+    let role = connection
+        .query_row(
+            "SELECT role FROM workspace_members WHERE workspace_id = ?1 AND user_id = ?2",
+            params![workspace_id.to_string(), user_id.to_string()],
+            |row| row.get::<_, String>(0),
+        )
+        .optional()?
+        .map(|value| WorkspaceRole::parse(&value))
+        .transpose()?
+        .ok_or(ControlPlaneError::Forbidden)?;
+    if !role.permits(permission) {
+        return Err(ControlPlaneError::Forbidden);
+    }
+    Ok(())
+}
+
+fn normalize_worker_values(values: &[String]) -> Result<Vec<String>, ControlPlaneError> {
+    let mut normalized = values
+        .iter()
+        .map(|value| value.trim().to_owned())
+        .filter(|value| !value.is_empty())
+        .collect::<Vec<_>>();
+    normalized.sort();
+    normalized.dedup();
+    if normalized.len() > 128 || normalized.iter().any(|value| value.len() > 512) {
+        return Err(ControlPlaneError::InvalidInput(
+            "worker capabilities or repositories exceed limits".to_owned(),
+        ));
+    }
+    Ok(normalized)
 }
 
 fn decode_ticket(row: &rusqlite::Row<'_>) -> rusqlite::Result<TicketRow> {
@@ -1698,6 +2300,8 @@ fn bounded_limit(limit: usize) -> usize {
 pub enum ControlPlaneError {
     #[error("database error: {0}")]
     Database(#[from] rusqlite::Error),
+    #[error("serialization error: {0}")]
+    Serialization(#[from] serde_json::Error),
     #[error("filesystem error: {0}")]
     Io(#[from] std::io::Error),
     #[error("secure random generation failed: {0}")]
@@ -1714,6 +2318,12 @@ pub enum ControlPlaneError {
     InvalidCsrfToken,
     #[error("invalid or expired launch token")]
     InvalidLaunchToken,
+    #[error("invalid or revoked worker credential")]
+    InvalidWorkerCredential,
+    #[error("stale worker fencing epoch")]
+    StaleWorkerFence,
+    #[error("worker event sequence mismatch: expected {expected}, received {received}")]
+    WorkerEventSequence { expected: u64, received: u64 },
     #[error("forbidden")]
     Forbidden,
     #[error("{0} not found")]

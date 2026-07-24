@@ -2,6 +2,7 @@ use control_plane::{
     ControlPlaneError, ControlPlaneStore, Permission, QuotaLimits, RegisterAttachment,
     TicketPriority, WorkspaceRole,
 };
+use std::time::Duration;
 use tempfile::TempDir;
 
 fn store() -> (TempDir, ControlPlaneStore) {
@@ -14,7 +15,7 @@ fn store() -> (TempDir, ControlPlaneStore) {
 #[test]
 fn migrates_reopens_and_prevents_multiple_owners() {
     let (directory, store) = store();
-    assert_eq!(store.schema_version().expect("schema version"), 1);
+    assert_eq!(store.schema_version().expect("schema version"), 2);
     let clone = store.clone();
     drop(store);
     assert!(matches!(
@@ -40,7 +41,7 @@ fn product_and_execution_migrations_share_one_database() {
             "correct horse battery",
         )
         .expect("product record");
-    assert_eq!(product.schema_version().expect("product schema"), 1);
+    assert_eq!(product.schema_version().expect("product schema"), 2);
     assert_eq!(product.user(user.id).expect("user lookup"), Some(user));
     assert_eq!(
         execution
@@ -346,5 +347,104 @@ fn attachment_quotas_and_development_seed_are_deterministic() {
             limits,
         ),
         Err(ControlPlaneError::QuotaExceeded("attachment bytes"))
+    ));
+}
+
+#[test]
+fn worker_credentials_leases_outbox_and_fencing_are_enforced() {
+    let (_directory, store) = store();
+    let seed = store
+        .seed_development("development password")
+        .expect("development seed");
+    let ticket = store
+        .create_ticket(
+            seed.user.id,
+            seed.project.id,
+            "Run remotely",
+            "",
+            TicketPriority::High,
+            Some("remote-ticket"),
+            QuotaLimits::default(),
+        )
+        .expect("ticket");
+    let credential = store
+        .enroll_worker(
+            seed.user.id,
+            seed.workspace.id,
+            "Developer laptop",
+            "1.0",
+            &["mock".to_owned(), "review".to_owned()],
+            &["github:example/jet-black".to_owned()],
+        )
+        .expect("worker enrollment");
+    let heartbeat = store
+        .worker_heartbeat(
+            &credential.token,
+            "1.0",
+            &["review".to_owned(), "mock".to_owned()],
+            &["github:example/jet-black".to_owned()],
+            false,
+        )
+        .expect("heartbeat");
+    assert_eq!(heartbeat.status, "online");
+    let assignment = store
+        .create_worker_assignment(
+            seed.user.id,
+            ticket.id,
+            credential.worker.id,
+            "github:example/jet-black",
+            "mock",
+            r#"{"title":"Run remotely"}"#,
+        )
+        .expect("assignment");
+    let claimed = store
+        .claim_worker_assignment(&credential.token, Duration::from_secs(30))
+        .expect("claim")
+        .expect("pending assignment");
+    assert_eq!(claimed.id, assignment.id);
+    let accepted = store
+        .append_worker_event(
+            &credential.token,
+            assignment.id,
+            assignment.fencing_epoch,
+            1,
+            "run.accepted",
+            r#"{"ok":true}"#,
+            None,
+        )
+        .expect("append event");
+    assert_eq!(accepted.sequence, 1);
+    assert_eq!(
+        store
+            .append_worker_event(
+                &credential.token,
+                assignment.id,
+                assignment.fencing_epoch,
+                1,
+                "run.accepted",
+                r#"{"ok":true}"#,
+                None,
+            )
+            .expect("idempotent replay"),
+        accepted
+    );
+    assert!(matches!(
+        store.append_worker_event(
+            &credential.token,
+            assignment.id,
+            assignment.fencing_epoch + 1,
+            2,
+            "run.completed",
+            "{}",
+            Some("completed"),
+        ),
+        Err(ControlPlaneError::StaleWorkerFence)
+    ));
+    store
+        .revoke_worker(seed.user.id, seed.workspace.id, credential.worker.id)
+        .expect("revoke");
+    assert!(matches!(
+        store.worker_heartbeat(&credential.token, "1.0", &[], &[], false),
+        Err(ControlPlaneError::InvalidWorkerCredential)
     ));
 }

@@ -77,6 +77,24 @@ export type ProductClientMessage = { "type": "subscribe", "data": { workspace_id
 
 export type ProductServerMessage = { "type": "ready", "data": { session_id: Id, } } | { "type": "command_result", "data": ResponseEnvelope<ProductCommandResponse> } | { "type": "events", "data": ProductEventPage } | { "type": "subscribed", "data": { workspace_id: Id, cursor: number, } } | { "type": "error", "data": StructuredError } | { "type": "pong" };
 
+export type ProductWorker = { id: Id, workspace_id: Id, name: string, protocol_version: string, capabilities: Array<string>, repository_identities: Array<string>, status: string, last_seen_at_ms: number | null, version: number, };
+
+export type EnrollWorkerRequest = { workspace_id: Id, name: string, protocol_version: string, capabilities: Array<string>, repository_identities: Array<string>, };
+
+export type EnrolledWorker = { worker: ProductWorker, token: string, };
+
+export type WorkerHeartbeatRequest = { protocol_version: string, capabilities: Array<string>, repository_identities: Array<string>, draining: boolean, };
+
+export type CreateRemoteAssignmentRequest = { ticket_id: Id, worker_id: Id, repository_identity: string, provider: string, command_json: string, };
+
+export type RemoteAssignment = { id: Id, workspace_id: Id, worker_id: Id, ticket_id: Id, repository_identity: string, provider: string, command_json: string, status: string, fencing_epoch: number, lease_expires_at_ms: number | null, next_event_sequence: number, };
+
+export type WorkerClaimResponse = { assignment: RemoteAssignment | null, };
+
+export type WorkerEventRequest = { assignment_id: Id, fencing_epoch: number, sequence: number, event_kind: string, body: string, terminal_status: string | null, };
+
+export type WorkerEventAck = { assignment_id: Id, sequence: number, fencing_epoch: number, };
+
 export type ReviewCheckKind = "format" | "typecheck" | "test" | "secret_scan" | "dependency_audit";
 
 export type ReviewCheckStatus = "passed" | "failed" | "unavailable" | "timed_out" | "mutated";

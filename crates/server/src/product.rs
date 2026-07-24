@@ -16,16 +16,19 @@ use axum::{
 use config::PublicBootstrap;
 use control_plane::{
     AuthenticatedSession, ControlPlaneError, ControlPlaneStore, EventRecordsPage, Project,
-    QuotaLimits, Ticket, TicketPriority, User, WorkspaceAccess, WorkspaceRole,
+    QuotaLimits, Ticket, TicketPriority, User, WorkerAssignment, WorkerDevice, WorkspaceAccess,
+    WorkspaceRole,
 };
 use protocol::{
-    Envelope, LocalCommand, LocalCommandResponse, PROTOCOL_VERSION, ProductClientMessage,
-    ProductCommand, ProductCommandResponse, ProductEvent, ProductEventPage, ProductProject,
-    ProductServerMessage, ProductSnapshot, ProductTicket, ProductTicketPriority, ProductUser,
-    ProductWorkspace, ProductWorkspaceRole, ResponseEnvelope, StructuredError,
+    CreateRemoteAssignmentRequest, EnrollWorkerRequest, EnrolledWorker, Envelope, LocalCommand,
+    LocalCommandResponse, PROTOCOL_VERSION, ProductClientMessage, ProductCommand,
+    ProductCommandResponse, ProductEvent, ProductEventPage, ProductProject, ProductServerMessage,
+    ProductSnapshot, ProductTicket, ProductTicketPriority, ProductUser, ProductWorker,
+    ProductWorkspace, ProductWorkspaceRole, RemoteAssignment, ResponseEnvelope, StructuredError,
+    WorkerClaimResponse, WorkerEventAck, WorkerEventRequest, WorkerHeartbeatRequest,
 };
 use serde::{Deserialize, Serialize};
-use std::{net::SocketAddr, path::PathBuf, sync::Arc};
+use std::{net::SocketAddr, path::PathBuf, sync::Arc, time::Duration};
 use thiserror::Error;
 use tokio::{
     net::TcpListener,
@@ -44,6 +47,7 @@ const MAX_PRODUCT_BODY_BYTES: usize = 64 * 1024;
 const SNAPSHOT_LIMIT: usize = 1_000;
 const EVENT_PAGE_SIZE: usize = 100;
 const EVENT_BROADCAST_CAPACITY: usize = 256;
+const WORKER_LEASE_DURATION: Duration = Duration::from_secs(30);
 
 #[derive(Debug, Clone)]
 pub struct ProductServerConfig {
@@ -135,6 +139,12 @@ impl ProductServer {
             .route("/api/product/events", get(product_events))
             .route("/api/execution/bootstrap", get(execution_bootstrap))
             .route("/api/execution/commands", post(execution_command))
+            .route("/api/workers", get(list_workers))
+            .route("/api/workers/enroll", post(enroll_worker))
+            .route("/api/workers/assignments", post(create_worker_assignment))
+            .route("/api/worker/heartbeat", post(worker_heartbeat))
+            .route("/api/worker/claim", post(worker_claim))
+            .route("/api/worker/events", post(worker_event))
             .route("/api/ws", get(websocket_upgrade))
             .route("/api", any(api_not_found))
             .route("/api/{*path}", any(api_not_found))
@@ -478,6 +488,112 @@ async fn execution_command(
     Ok(Json(match result {
         Ok(response) => ResponseEnvelope::success(request_id, response),
         Err(error) => ResponseEnvelope::error(request_id, error),
+    }))
+}
+
+async fn list_workers(
+    State(state): State<ProductState>,
+    Query(query): Query<EventsQuery>,
+    headers: HeaderMap,
+) -> Result<Json<Vec<ProductWorker>>, ProductApiError> {
+    let session = authenticate(&state, &headers, false)?;
+    Ok(Json(
+        state
+            .store
+            .workers(session.user.id, query.workspace_id)?
+            .into_iter()
+            .map(product_worker)
+            .collect(),
+    ))
+}
+
+async fn enroll_worker(
+    State(state): State<ProductState>,
+    headers: HeaderMap,
+    Json(request): Json<EnrollWorkerRequest>,
+) -> Result<Json<EnrolledWorker>, ProductApiError> {
+    validate_origin(&state, &headers)?;
+    let session = authenticate(&state, &headers, true)?;
+    let issued = state.store.enroll_worker(
+        session.user.id,
+        request.workspace_id,
+        &request.name,
+        &request.protocol_version,
+        &request.capabilities,
+        &request.repository_identities,
+    )?;
+    Ok(Json(EnrolledWorker {
+        worker: product_worker(issued.worker),
+        token: issued.token,
+    }))
+}
+
+async fn create_worker_assignment(
+    State(state): State<ProductState>,
+    headers: HeaderMap,
+    Json(request): Json<CreateRemoteAssignmentRequest>,
+) -> Result<Json<RemoteAssignment>, ProductApiError> {
+    validate_origin(&state, &headers)?;
+    let session = authenticate(&state, &headers, true)?;
+    Ok(Json(remote_assignment(
+        state.store.create_worker_assignment(
+            session.user.id,
+            request.ticket_id,
+            request.worker_id,
+            &request.repository_identity,
+            &request.provider,
+            &request.command_json,
+        )?,
+    )))
+}
+
+async fn worker_heartbeat(
+    State(state): State<ProductState>,
+    headers: HeaderMap,
+    Json(request): Json<WorkerHeartbeatRequest>,
+) -> Result<Json<ProductWorker>, ProductApiError> {
+    let token = worker_bearer_token(&headers)?;
+    Ok(Json(product_worker(state.store.worker_heartbeat(
+        token,
+        &request.protocol_version,
+        &request.capabilities,
+        &request.repository_identities,
+        request.draining,
+    )?)))
+}
+
+async fn worker_claim(
+    State(state): State<ProductState>,
+    headers: HeaderMap,
+) -> Result<Json<WorkerClaimResponse>, ProductApiError> {
+    let token = worker_bearer_token(&headers)?;
+    Ok(Json(WorkerClaimResponse {
+        assignment: state
+            .store
+            .claim_worker_assignment(token, WORKER_LEASE_DURATION)?
+            .map(remote_assignment),
+    }))
+}
+
+async fn worker_event(
+    State(state): State<ProductState>,
+    headers: HeaderMap,
+    Json(request): Json<WorkerEventRequest>,
+) -> Result<Json<WorkerEventAck>, ProductApiError> {
+    let token = worker_bearer_token(&headers)?;
+    let event = state.store.append_worker_event(
+        token,
+        request.assignment_id,
+        request.fencing_epoch,
+        request.sequence,
+        &request.event_kind,
+        &request.body,
+        request.terminal_status.as_deref(),
+    )?;
+    Ok(Json(WorkerEventAck {
+        assignment_id: event.assignment_id,
+        sequence: event.sequence,
+        fencing_epoch: event.fencing_epoch,
     }))
 }
 
@@ -830,6 +946,20 @@ fn cookie_value<'a>(headers: &'a HeaderMap, name: &str) -> Option<&'a str> {
         .find_map(|cookie| cookie.strip_prefix(&format!("{name}=")))
 }
 
+fn worker_bearer_token(headers: &HeaderMap) -> Result<&str, ProductApiError> {
+    headers
+        .get(header::AUTHORIZATION)
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| value.strip_prefix("Bearer "))
+        .filter(|token| !token.is_empty())
+        .ok_or_else(|| {
+            ProductApiError::unauthorized(
+                "missing_worker_credential",
+                "Worker bearer credential is required",
+            )
+        })
+}
+
 fn product_user(user: User) -> ProductUser {
     ProductUser {
         id: user.id,
@@ -872,6 +1002,36 @@ fn product_ticket(ticket: Ticket) -> ProductTicket {
         priority: product_ticket_priority(ticket.priority),
         created_by_id: ticket.created_by_id,
         version: ticket.version,
+    }
+}
+
+fn product_worker(worker: WorkerDevice) -> ProductWorker {
+    ProductWorker {
+        id: worker.id,
+        workspace_id: worker.workspace_id,
+        name: worker.name,
+        protocol_version: worker.protocol_version,
+        capabilities: worker.capabilities,
+        repository_identities: worker.repository_identities,
+        status: worker.status,
+        last_seen_at_ms: worker.last_seen_at_ms,
+        version: worker.version,
+    }
+}
+
+fn remote_assignment(assignment: WorkerAssignment) -> RemoteAssignment {
+    RemoteAssignment {
+        id: assignment.id,
+        workspace_id: assignment.workspace_id,
+        worker_id: assignment.worker_id,
+        ticket_id: assignment.ticket_id,
+        repository_identity: assignment.repository_identity,
+        provider: assignment.provider,
+        command_json: assignment.command_json,
+        status: assignment.status,
+        fencing_epoch: assignment.fencing_epoch,
+        lease_expires_at_ms: assignment.lease_expires_at_ms,
+        next_event_sequence: assignment.next_event_sequence,
     }
 }
 
@@ -960,6 +1120,21 @@ fn structured_control_plane_error(error: &ControlPlaneError) -> StructuredError 
             "Launch token is invalid or expired",
             false,
         ),
+        ControlPlaneError::InvalidWorkerCredential => (
+            "invalid_worker_credential",
+            "Worker credential is invalid or revoked",
+            false,
+        ),
+        ControlPlaneError::StaleWorkerFence => (
+            "stale_worker_fence",
+            "Worker assignment fencing epoch is stale",
+            false,
+        ),
+        ControlPlaneError::WorkerEventSequence { .. } => (
+            "worker_event_sequence",
+            "Worker event sequence is invalid",
+            false,
+        ),
         ControlPlaneError::Forbidden => ("forbidden", "Action is forbidden", false),
         ControlPlaneError::NotFound(_) => ("not_found", "Requested resource was not found", false),
         ControlPlaneError::QuotaExceeded(_) => {
@@ -1023,10 +1198,14 @@ impl From<ControlPlaneError> for ProductApiError {
             ControlPlaneError::InvalidCredentials
             | ControlPlaneError::InvalidSession
             | ControlPlaneError::InvalidCsrfToken
-            | ControlPlaneError::InvalidLaunchToken => StatusCode::UNAUTHORIZED,
+            | ControlPlaneError::InvalidLaunchToken
+            | ControlPlaneError::InvalidWorkerCredential => StatusCode::UNAUTHORIZED,
             ControlPlaneError::Forbidden => StatusCode::FORBIDDEN,
             ControlPlaneError::NotFound(_) => StatusCode::NOT_FOUND,
             ControlPlaneError::InvalidInput(_) => StatusCode::BAD_REQUEST,
+            ControlPlaneError::StaleWorkerFence | ControlPlaneError::WorkerEventSequence { .. } => {
+                StatusCode::CONFLICT
+            }
             ControlPlaneError::QuotaExceeded(_) => StatusCode::PAYLOAD_TOO_LARGE,
             _ => StatusCode::INTERNAL_SERVER_ERROR,
         };

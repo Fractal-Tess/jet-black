@@ -4,7 +4,7 @@ use axum::{
     http::{Request, StatusCode, header},
 };
 use config::PublicBootstrap;
-use control_plane::ControlPlaneStore;
+use control_plane::{ControlPlaneStore, QuotaLimits, TicketPriority};
 use domain::{ProviderSelection, RunState};
 use futures_util::{SinkExt, StreamExt};
 use protocol::{
@@ -629,4 +629,148 @@ async fn product_session_authorizes_the_composed_execution_runtime() {
         CommandResult::Ok(LocalCommandResponse::Recovery(RecoveryResponse { actions }))
             if actions.is_empty()
     ));
+}
+
+#[tokio::test]
+async fn remote_worker_enrollment_claim_and_outbox_use_separate_device_auth() {
+    let server = test_server();
+    let seed = server
+        .store
+        .seed_development("development password")
+        .expect("development seed");
+    let ticket = server
+        .store
+        .create_ticket(
+            seed.user.id,
+            seed.project.id,
+            "Remote execution",
+            "",
+            TicketPriority::High,
+            Some("remote-transport"),
+            QuotaLimits::default(),
+        )
+        .expect("ticket");
+    let (cookie, csrf) = login(&server.router).await;
+    let enroll = server
+        .router
+        .clone()
+        .oneshot(
+            Request::post("/api/workers/enroll")
+                .header(header::HOST, ADDRESS)
+                .header(header::ORIGIN, ORIGIN)
+                .header(header::COOKIE, &cookie)
+                .header("x-csrf-token", &csrf)
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(
+                    serde_json::json!({
+                        "workspace_id": seed.workspace.id,
+                        "name": "Remote laptop",
+                        "protocol_version": protocol::PROTOCOL_VERSION,
+                        "capabilities": ["mock", "review"],
+                        "repository_identities": ["github:example/jet-black"]
+                    })
+                    .to_string(),
+                ))
+                .expect("enroll request"),
+        )
+        .await
+        .expect("enroll response");
+    assert_eq!(enroll.status(), StatusCode::OK);
+    let enrolled = response_json(enroll).await;
+    let token = enrolled["token"].as_str().expect("worker token");
+    let worker_id = enrolled["worker"]["id"]
+        .as_str()
+        .expect("worker id")
+        .to_owned();
+
+    let heartbeat = server
+        .router
+        .clone()
+        .oneshot(
+            Request::post("/api/worker/heartbeat")
+                .header(header::HOST, ADDRESS)
+                .header(header::AUTHORIZATION, format!("Bearer {token}"))
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(
+                    serde_json::json!({
+                        "protocol_version": protocol::PROTOCOL_VERSION,
+                        "capabilities": ["mock", "review"],
+                        "repository_identities": ["github:example/jet-black"],
+                        "draining": false
+                    })
+                    .to_string(),
+                ))
+                .expect("heartbeat request"),
+        )
+        .await
+        .expect("heartbeat response");
+    assert_eq!(heartbeat.status(), StatusCode::OK);
+
+    let assignment = server
+        .router
+        .clone()
+        .oneshot(
+            Request::post("/api/workers/assignments")
+                .header(header::HOST, ADDRESS)
+                .header(header::ORIGIN, ORIGIN)
+                .header(header::COOKIE, &cookie)
+                .header("x-csrf-token", &csrf)
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(
+                    serde_json::json!({
+                        "ticket_id": ticket.id,
+                        "worker_id": worker_id,
+                        "repository_identity": "github:example/jet-black",
+                        "provider": "mock",
+                        "command_json": "{\"title\":\"Remote execution\"}"
+                    })
+                    .to_string(),
+                ))
+                .expect("assignment request"),
+        )
+        .await
+        .expect("assignment response");
+    assert_eq!(assignment.status(), StatusCode::OK);
+    let assigned = response_json(assignment).await;
+
+    let claim = server
+        .router
+        .clone()
+        .oneshot(
+            Request::post("/api/worker/claim")
+                .header(header::HOST, ADDRESS)
+                .header(header::AUTHORIZATION, format!("Bearer {token}"))
+                .body(Body::empty())
+                .expect("claim request"),
+        )
+        .await
+        .expect("claim response");
+    assert_eq!(claim.status(), StatusCode::OK);
+    let claimed = response_json(claim).await;
+    assert_eq!(claimed["assignment"]["id"], assigned["id"]);
+
+    let event = server
+        .router
+        .oneshot(
+            Request::post("/api/worker/events")
+                .header(header::HOST, ADDRESS)
+                .header(header::AUTHORIZATION, format!("Bearer {token}"))
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(
+                    serde_json::json!({
+                        "assignment_id": assigned["id"],
+                        "fencing_epoch": assigned["fencing_epoch"],
+                        "sequence": 1,
+                        "event_kind": "run.accepted",
+                        "body": "{\"ok\":true}",
+                        "terminal_status": null
+                    })
+                    .to_string(),
+                ))
+                .expect("event request"),
+        )
+        .await
+        .expect("event response");
+    assert_eq!(event.status(), StatusCode::OK);
+    assert_eq!(response_json(event).await["sequence"], 1);
 }

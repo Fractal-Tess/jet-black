@@ -83,6 +83,26 @@
         }
       ],
       "summary": "Adapted authenticated WebSocket upgrade, bounded message handling, subscriptions, and replay patterns for the Rust product transport."
+    },
+    {
+      "target": "crates/control-plane worker registry and transport",
+      "sources": [
+        {
+          "reference": "Vibe Kanban@4deb7eca8f381f7cbc1f9d15515a9ab8f8009053",
+          "files": [
+            "crates/server/src/middleware/signed_ws.rs",
+            "crates/server/src/routes/workspaces/streams.rs"
+          ]
+        },
+        {
+          "reference": "T3 Code@32c6012dabdbd0eb178b25ea4225d889ec8f6475",
+          "files": [
+            "apps/server/src/persistence/AuthSessions.ts",
+            "apps/server/src/ws.ts"
+          ]
+        }
+      ],
+      "summary": "Adapted separate device credentials, authenticated outbound worker communication, leases, ordered outbox acknowledgements, revocation, and fencing into the Rust control plane."
     }
   ]
 }

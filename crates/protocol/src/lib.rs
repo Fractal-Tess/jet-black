@@ -4,6 +4,7 @@ mod errors;
 mod events;
 mod product;
 mod typescript;
+mod worker;
 
 pub use commands::{
     ApprovalRequest, ApprovalResponse, ApprovedRepositoriesResponse, ApprovedRepositorySummary,
@@ -23,3 +24,8 @@ pub use product::{
     ProductUser, ProductWorkspace, ProductWorkspaceRole,
 };
 pub use typescript::declarations as typescript_declarations;
+pub use worker::{
+    CreateRemoteAssignmentRequest, EnrollWorkerRequest, EnrolledWorker, ProductWorker,
+    RemoteAssignment, WorkerClaimResponse, WorkerEventAck, WorkerEventRequest,
+    WorkerHeartbeatRequest,
+};
