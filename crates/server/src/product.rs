@@ -8,7 +8,7 @@ use axum::{
         DefaultBodyLimit, Query, Request, State, WebSocketUpgrade,
         ws::{Message, WebSocket},
     },
-    http::{HeaderMap, HeaderValue, StatusCode, header},
+    http::{HeaderMap, HeaderName, HeaderValue, Method, StatusCode, header},
     middleware::{self, Next},
     response::{IntoResponse, Response},
     routing::{any, get, post},
@@ -29,7 +29,7 @@ use protocol::{
     WorkerClaimResponse, WorkerEventAck, WorkerEventRequest, WorkerHeartbeatRequest,
 };
 use serde::{Deserialize, Serialize};
-use std::{net::SocketAddr, path::PathBuf, sync::Arc, time::Duration};
+use std::{net::SocketAddr, path::PathBuf, process::Command, sync::Arc, time::Duration};
 use thiserror::Error;
 use tokio::{
     net::TcpListener,
@@ -39,7 +39,10 @@ use tokio::{
         broadcast::{self, Receiver, Sender},
     },
 };
-use tower_http::services::{ServeDir, ServeFile};
+use tower_http::{
+    cors::{Any, CorsLayer},
+    services::{ServeDir, ServeFile},
+};
 use uuid::Uuid;
 
 const SESSION_COOKIE: &str = "jet_black_session";
@@ -55,6 +58,7 @@ pub struct ProductServerConfig {
     pub address: SocketAddr,
     pub public_origin: String,
     pub profile: String,
+    pub local_user_id: Option<Uuid>,
 }
 
 #[derive(Clone)]
@@ -63,6 +67,7 @@ struct ProductState {
     authority: Arc<str>,
     origin: Arc<str>,
     profile: Arc<str>,
+    local_user_id: Option<Uuid>,
     store: ControlPlaneStore,
     event_sender: Sender<EventSignal>,
     execution_bootstrap: Option<Arc<PublicBootstrap>>,
@@ -102,6 +107,7 @@ impl ProductServer {
                 authority: origin_authority.to_owned().into(),
                 origin: origin.into(),
                 profile: config.profile.into(),
+                local_user_id: config.local_user_id,
                 store,
                 event_sender,
                 execution_bootstrap: None,
@@ -131,10 +137,20 @@ impl ProductServer {
             .route("/api/health", get(health))
             .route("/api/bootstrap", get(bootstrap))
             .route("/api/auth/password", post(password_login))
+            .route("/api/auth/signup", post(signup))
+            .route("/api/auth/local", post(local_login))
             .route("/api/auth/launch", post(launch_login))
             .route("/api/auth/session", get(current_session))
             .route("/api/auth/rotate", post(rotate_session))
             .route("/api/auth/logout", post(logout))
+            .route("/api/desktop/pair", post(issue_desktop_pairing))
+            .route("/api/desktop/exchange", post(exchange_desktop_pairing))
+            .route("/api/admin/users", get(admin_users))
+            .route("/api/admin/users/{user_id}/approve", post(approve_user))
+            .route(
+                "/api/admin/workspaces/{workspace_id}/members",
+                post(assign_workspace_member),
+            )
             .route("/api/product/snapshot", get(snapshot))
             .route("/api/product/commands", post(product_command))
             .route("/api/product/events", get(product_events))
@@ -166,6 +182,16 @@ impl ProductServer {
                 require_product_host,
             ))
             .layer(middleware::from_fn(apply_security_headers))
+            .layer(
+                CorsLayer::new()
+                    .allow_origin(Any)
+                    .allow_methods([Method::GET, Method::POST, Method::OPTIONS])
+                    .allow_headers([
+                        header::AUTHORIZATION,
+                        header::CONTENT_TYPE,
+                        HeaderName::from_static(CSRF_HEADER),
+                    ]),
+            )
     }
 
     pub async fn serve(self, listener: TcpListener) -> Result<(), std::io::Error> {
@@ -211,7 +237,11 @@ async fn bootstrap(State(state): State<ProductState>) -> Json<ProductBootstrap> 
     Json(ProductBootstrap {
         protocol_version: PROTOCOL_VERSION,
         profile: state.profile.to_string(),
-        authentication: "required",
+        authentication: if state.local_user_id.is_some() {
+            "local_onboarding"
+        } else {
+            "required"
+        },
         websocket_path: "/api/ws",
     })
 }
@@ -220,6 +250,57 @@ async fn bootstrap(State(state): State<ProductState>) -> Json<ProductBootstrap> 
 struct PasswordLoginRequest {
     email: String,
     password: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct SignupRequest {
+    email: String,
+    display_name: String,
+    password: String,
+}
+
+#[derive(Debug, Serialize)]
+struct SignupResponse {
+    status: &'static str,
+    user: ProductUser,
+}
+
+async fn signup(
+    State(state): State<ProductState>,
+    headers: HeaderMap,
+    Json(request): Json<SignupRequest>,
+) -> Result<Response, ProductApiError> {
+    validate_origin(&state, &headers)?;
+    let account =
+        state
+            .store
+            .register_user(&request.email, &request.display_name, &request.password)?;
+    if account.pending {
+        return Ok((
+            StatusCode::ACCEPTED,
+            Json(SignupResponse {
+                status: "pending_approval",
+                user: product_user(account.user),
+            }),
+        )
+            .into_response());
+    }
+    let issued = state.store.authenticate_password(&request.email, &request.password)?;
+    session_response(&state, issued)
+}
+
+async fn local_login(
+    State(state): State<ProductState>,
+    headers: HeaderMap,
+) -> Result<Response, ProductApiError> {
+    validate_origin(&state, &headers)?;
+    let user_id = state.local_user_id.ok_or_else(|| {
+        ProductApiError::forbidden("local_login_disabled", "Local login is not enabled")
+    })?;
+    let issued = state
+        .store
+        .issue_user_session(user_id, "launch_token", Duration::from_secs(60 * 60 * 24 * 365))?;
+    session_response(&state, issued)
 }
 
 async fn password_login(
@@ -277,6 +358,131 @@ struct SessionResponse {
     csrf_token: String,
     expires_at_ms: i64,
     user: ProductUser,
+}
+
+#[derive(Debug, Deserialize)]
+struct PairingRequest {
+    device_name: String,
+}
+
+#[derive(Debug, Serialize)]
+struct PairingResponse {
+    token: String,
+    expires_at_ms: i64,
+}
+
+async fn issue_desktop_pairing(
+    State(state): State<ProductState>,
+    headers: HeaderMap,
+    Json(request): Json<PairingRequest>,
+) -> Result<Json<PairingResponse>, ProductApiError> {
+    validate_origin(&state, &headers)?;
+    let session = authenticate(&state, &headers, true)?;
+    let issued = state
+        .store
+        .issue_desktop_pairing_token(session.user.id, &request.device_name)?;
+    Ok(Json(PairingResponse {
+        token: issued.token,
+        expires_at_ms: issued.expires_at_ms,
+    }))
+}
+
+#[derive(Debug, Deserialize)]
+struct PairingExchangeRequest {
+    token: String,
+}
+
+#[derive(Debug, Serialize)]
+struct PairingExchangeResponse {
+    session_token: String,
+    csrf_token: String,
+    expires_at_ms: i64,
+    user: ProductUser,
+}
+
+async fn exchange_desktop_pairing(
+    State(state): State<ProductState>,
+    Json(request): Json<PairingExchangeRequest>,
+) -> Result<Json<PairingExchangeResponse>, ProductApiError> {
+    let (issued, _) = state.store.exchange_desktop_pairing_token(&request.token)?;
+    let authenticated = state
+        .store
+        .validate_session(&issued.token, Some(&issued.csrf_token))?;
+    Ok(Json(PairingExchangeResponse {
+        session_token: issued.token,
+        csrf_token: issued.csrf_token,
+        expires_at_ms: issued.expires_at_ms,
+        user: product_user(authenticated.user),
+    }))
+}
+
+#[derive(Debug, Serialize)]
+struct ManagedUserResponse {
+    user: ProductUser,
+    pending: bool,
+    instance_admin: bool,
+}
+
+async fn admin_users(
+    State(state): State<ProductState>,
+    headers: HeaderMap,
+) -> Result<Json<Vec<ManagedUserResponse>>, ProductApiError> {
+    let session = authenticate(&state, &headers, false)?;
+    Ok(Json(
+        state
+            .store
+            .managed_users(session.user.id)?
+            .into_iter()
+            .map(|managed| ManagedUserResponse {
+                user: product_user(managed.user),
+                pending: managed.pending,
+                instance_admin: managed.instance_admin,
+            })
+            .collect(),
+    ))
+}
+
+async fn approve_user(
+    State(state): State<ProductState>,
+    axum::extract::Path(user_id): axum::extract::Path<Uuid>,
+    headers: HeaderMap,
+) -> Result<StatusCode, ProductApiError> {
+    validate_origin(&state, &headers)?;
+    let session = authenticate(&state, &headers, true)?;
+    state.store.approve_user(session.user.id, user_id)?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+#[derive(Debug, Deserialize)]
+struct AssignMemberRequest {
+    user_id: Uuid,
+    role: String,
+}
+
+async fn assign_workspace_member(
+    State(state): State<ProductState>,
+    axum::extract::Path(workspace_id): axum::extract::Path<Uuid>,
+    headers: HeaderMap,
+    Json(request): Json<AssignMemberRequest>,
+) -> Result<StatusCode, ProductApiError> {
+    validate_origin(&state, &headers)?;
+    let session = authenticate(&state, &headers, true)?;
+    let role = match request.role.as_str() {
+        "admin" => WorkspaceRole::Admin,
+        "member" => WorkspaceRole::Member,
+        "guest" => WorkspaceRole::Guest,
+        _ => {
+            return Err(ProductApiError::new(
+                StatusCode::BAD_REQUEST,
+                "invalid_role",
+                "Role must be admin, member, or guest",
+            ));
+        }
+    };
+    state
+        .store
+        .add_workspace_member(session.user.id, workspace_id, request.user_id, role)?;
+    Ok(StatusCode::NO_CONTENT)
 }
 
 async fn current_session(
@@ -856,17 +1062,29 @@ async fn dispatch_product_command(
             name,
             description,
             repository_identity,
-        } => state
-            .store
-            .create_project(
+            repository_kind,
+            repository_location,
+        } => {
+            let repository = prepare_repository(
+                state,
+                repository_kind.as_deref(),
+                repository_location.as_deref(),
+            );
+            repository.and_then(|(inferred_identity, origin)| {
+                state.store.create_project_with_repository(
                 actor_id,
                 workspace_id,
                 &identifier,
                 &name,
                 &description,
-                repository_identity.as_deref(),
-            )
-            .map(|project| ProductCommandResponse::ProjectCreated(product_project(project))),
+                    repository_identity.as_deref().or(inferred_identity.as_deref()),
+                repository_kind.as_deref(),
+                repository_location.as_deref(),
+                    origin.as_deref(),
+                )
+            })
+            .map(|project| ProductCommandResponse::ProjectCreated(product_project(project)))
+        }
         ProductCommand::CreateTicket {
             project_id,
             title,
@@ -995,7 +1213,8 @@ fn authenticate(
     headers: &HeaderMap,
     require_csrf: bool,
 ) -> Result<AuthenticatedSession, ProductApiError> {
-    let token = cookie_value(headers, SESSION_COOKIE)
+    let token = bearer_token(headers)
+        .or_else(|| cookie_value(headers, SESSION_COOKIE))
         .ok_or_else(|| ProductApiError::unauthorized("missing_session", "Session is required"))?;
     let csrf = if require_csrf {
         Some(
@@ -1016,6 +1235,9 @@ fn authenticate(
 }
 
 fn validate_origin(state: &ProductState, headers: &HeaderMap) -> Result<(), ProductApiError> {
+    if bearer_token(headers).is_some() {
+        return Ok(());
+    }
     let origin = headers
         .get(header::ORIGIN)
         .and_then(|value| value.to_str().ok())
@@ -1027,6 +1249,14 @@ fn validate_origin(state: &ProductState, headers: &HeaderMap) -> Result<(), Prod
         ));
     }
     Ok(())
+}
+
+fn bearer_token(headers: &HeaderMap) -> Option<&str> {
+    headers
+        .get(header::AUTHORIZATION)?
+        .to_str()
+        .ok()?
+        .strip_prefix("Bearer ")
 }
 
 async fn require_product_host(
@@ -1111,7 +1341,77 @@ fn product_project(project: Project) -> ProductProject {
         name: project.name,
         description: project.description,
         repository_identity: project.repository_identity,
+        repository_kind: project.repository_kind,
+        repository_location: project.repository_location,
+        repository_origin: project.repository_origin,
         version: project.version,
+    }
+}
+
+fn prepare_repository(
+    state: &ProductState,
+    kind: Option<&str>,
+    location: Option<&str>,
+) -> Result<(Option<String>, Option<String>), ControlPlaneError> {
+    let Some(kind) = kind else {
+        return Ok((None, None));
+    };
+    let location = location
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| {
+            ControlPlaneError::InvalidInput("repository location is required".to_owned())
+        })?;
+    match kind {
+        "local" if state.local_user_id.is_some() => {
+            let path = std::fs::canonicalize(location).map_err(|_| {
+                ControlPlaneError::InvalidInput(
+                    "local repository path does not exist".to_owned(),
+                )
+            })?;
+            let output = Command::new("git")
+                .args([
+                    "-C",
+                    path.to_str().ok_or_else(|| {
+                        ControlPlaneError::InvalidInput(
+                            "local repository path must be valid UTF-8".to_owned(),
+                        )
+                    })?,
+                    "remote",
+                    "get-url",
+                    "origin",
+                ])
+                .output()
+                .map_err(|_| {
+                    ControlPlaneError::InvalidInput(
+                        "Git is required to inspect a local repository".to_owned(),
+                    )
+                })?;
+            let origin = output.status.success().then(|| {
+                String::from_utf8_lossy(&output.stdout)
+                    .trim()
+                    .to_owned()
+            });
+            let location = path.to_string_lossy().into_owned();
+            Ok((Some(origin.clone().unwrap_or(location)), origin))
+        }
+        "local" => Err(ControlPlaneError::InvalidInput(
+            "local repositories can only be linked by a desktop instance".to_owned(),
+        )),
+        "remote"
+            if location.starts_with("https://")
+                || location.starts_with("http://")
+                || location.starts_with("ssh://")
+                || location.starts_with("git@") =>
+        {
+            Ok((Some(location.to_owned()), Some(location.to_owned())))
+        }
+        "remote" => Err(ControlPlaneError::InvalidInput(
+            "remote repository must use HTTP, HTTPS, SSH, or Git syntax".to_owned(),
+        )),
+        _ => Err(ControlPlaneError::InvalidInput(
+            "repository kind must be local or remote".to_owned(),
+        )),
     }
 }
 

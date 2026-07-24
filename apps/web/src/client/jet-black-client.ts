@@ -14,11 +14,34 @@ import {
 
 const INSTANCE_STORAGE_KEY = "jet-black.instance";
 const CSRF_STORAGE_KEY = "jet-black.csrf";
+const CONNECTIONS_STORAGE_KEY = "jet-black.connections";
 const TRAILING_SLASHES = /\/+$/;
 
 type SessionResponse = {
   csrf_token: string;
   expires_at_ms: number;
+  user: ProductUser;
+};
+
+export type ManagedUser = {
+  instance_admin: boolean;
+  pending: boolean;
+  user: ProductUser;
+};
+
+export type RemoteConnection = {
+  baseUrl: string;
+  csrfToken: string;
+  expiresAtMs: number;
+  id: string;
+  name: string;
+  sessionToken: string;
+};
+
+type PairingExchangeResponse = {
+  csrf_token: string;
+  expires_at_ms: number;
+  session_token: string;
   user: ProductUser;
 };
 
@@ -37,12 +60,17 @@ export class JetBlackClientError extends Error {
 export class JetBlackClient {
   readonly baseUrl: string;
   #csrfToken: string | null = null;
+  #sessionToken: string | null = null;
 
-  constructor(baseUrl = configuredInstance()) {
+  constructor(
+    baseUrl = configuredInstance(),
+    credentials?: { csrfToken: string; sessionToken: string }
+  ) {
     this.baseUrl = normalizeBaseUrl(baseUrl);
-    this.#csrfToken = sessionStorage.getItem(
-      `${CSRF_STORAGE_KEY}:${this.baseUrl || "local"}`
-    );
+    this.#csrfToken =
+      credentials?.csrfToken ??
+      sessionStorage.getItem(`${CSRF_STORAGE_KEY}:${this.baseUrl || "local"}`);
+    this.#sessionToken = credentials?.sessionToken ?? null;
   }
 
   get csrfToken(): string | null {
@@ -60,6 +88,100 @@ export class JetBlackClient {
 
   async currentSession(): Promise<ProductUser> {
     return await this.#request("/api/auth/session");
+  }
+
+  async localLogin(): Promise<SessionResponse> {
+    const session = await this.#request<SessionResponse>("/api/auth/local", {
+      method: "POST",
+    });
+    this.#csrfToken = session.csrf_token;
+    this.#saveCsrf();
+    return session;
+  }
+
+  async signup(input: {
+    display_name: string;
+    email: string;
+    password: string;
+  }): Promise<{ status: string; user: ProductUser }> {
+    const response = await this.#request<{ status: string; user: ProductUser }>(
+      "/api/auth/signup",
+      {
+        body: JSON.stringify(input),
+        headers: { "content-type": "application/json" },
+        method: "POST",
+      }
+    );
+    return response;
+  }
+
+  async issueDesktopToken(
+    deviceName: string
+  ): Promise<{ expires_at_ms: number; token: string }> {
+    return await this.#request("/api/desktop/pair", {
+      body: JSON.stringify({ device_name: deviceName }),
+      headers: {
+        "content-type": "application/json",
+        ...this.#mutationHeaders(),
+      },
+      method: "POST",
+    });
+  }
+
+  async managedUsers(): Promise<ManagedUser[]> {
+    return await this.#request("/api/admin/users");
+  }
+
+  async approveUser(userId: string): Promise<void> {
+    await this.#request(`/api/admin/users/${userId}/approve`, {
+      headers: this.#mutationHeaders(),
+      method: "POST",
+    });
+  }
+
+  async assignWorkspaceMember(
+    workspaceId: string,
+    userId: string,
+    role: "admin" | "guest" | "member"
+  ): Promise<void> {
+    await this.#request(`/api/admin/workspaces/${workspaceId}/members`, {
+      body: JSON.stringify({ role, user_id: userId }),
+      headers: {
+        "content-type": "application/json",
+        ...this.#mutationHeaders(),
+      },
+      method: "POST",
+    });
+  }
+
+  static async connectRemote(input: {
+    baseUrl: string;
+    deviceName: string;
+    name: string;
+    token: string;
+  }): Promise<RemoteConnection> {
+    const baseUrl = normalizeBaseUrl(input.baseUrl);
+    const response = await fetch(`${baseUrl}/api/desktop/exchange`, {
+      body: JSON.stringify({ token: input.token }),
+      headers: { "content-type": "application/json" },
+      method: "POST",
+    });
+    if (!response.ok) {
+      throw new JetBlackClientError(
+        "pairing_failed",
+        "The connection token is invalid or expired.",
+        response.status
+      );
+    }
+    const exchange = (await response.json()) as PairingExchangeResponse;
+    return {
+      baseUrl,
+      csrfToken: exchange.csrf_token,
+      expiresAtMs: exchange.expires_at_ms,
+      id: crypto.randomUUID(),
+      name: input.name.trim() || new URL(baseUrl).host,
+      sessionToken: exchange.session_token,
+    };
   }
 
   async login(email: string, password: string): Promise<SessionResponse> {
@@ -180,6 +302,32 @@ export class JetBlackClient {
     onMessage: (message: ProductServerMessage) => void,
     onConnectionChange: (connected: boolean) => void
   ): () => void {
+    if (this.#sessionToken) {
+      let disposed = false;
+      let cursor = afterCursor;
+      const poll = async () => {
+        if (disposed) {
+          return;
+        }
+        try {
+          const page = await this.events(workspaceId, cursor);
+          cursor = page.next_cursor;
+          onConnectionChange(true);
+          if (page.events.length > 0) {
+            onMessage({ type: "events", data: page });
+          }
+        } catch {
+          onConnectionChange(false);
+        }
+        if (!disposed) {
+          window.setTimeout(poll, 2000);
+        }
+      };
+      poll();
+      return () => {
+        disposed = true;
+      };
+    }
     let disposed = false;
     let retryTimer: ReturnType<typeof setTimeout> | undefined;
     let socket: WebSocket | undefined;
@@ -248,8 +396,13 @@ export class JetBlackClient {
   }
 
   async #request<T>(path: string, init: RequestInit = {}): Promise<T> {
+    const headers = new Headers(init.headers);
+    if (this.#sessionToken) {
+      headers.set("authorization", `Bearer ${this.#sessionToken}`);
+    }
     const response = await fetch(`${this.baseUrl}${path}`, {
       ...init,
+      headers,
       credentials: "include",
     });
     if (!response.ok) {
@@ -274,13 +427,35 @@ export function configuredInstance(): string {
   if (typeof window === "undefined") {
     return "";
   }
-  return "";
+  return localStorage.getItem(INSTANCE_STORAGE_KEY) ?? "";
 }
 
 export function saveConfiguredInstance(value: string): string {
   const normalized = normalizeBaseUrl(value);
   localStorage.setItem(INSTANCE_STORAGE_KEY, normalized);
   return normalized;
+}
+
+export function savedConnections(): RemoteConnection[] {
+  if (typeof window === "undefined") {
+    return [];
+  }
+  try {
+    const value = JSON.parse(
+      localStorage.getItem(CONNECTIONS_STORAGE_KEY) ?? "[]"
+    ) as RemoteConnection[];
+    return value.filter(
+      (connection) =>
+        connection.expiresAtMs > Date.now() &&
+        Boolean(connection.baseUrl && connection.sessionToken)
+    );
+  } catch {
+    return [];
+  }
+}
+
+export function saveConnections(connections: RemoteConnection[]): void {
+  localStorage.setItem(CONNECTIONS_STORAGE_KEY, JSON.stringify(connections));
 }
 
 function normalizeBaseUrl(value: string): string {

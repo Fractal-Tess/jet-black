@@ -84,6 +84,7 @@ fn test_server() -> TestServer {
             address: ADDRESS.parse().expect("address"),
             public_origin: ORIGIN.to_owned(),
             profile: "server".to_owned(),
+            local_user_id: None,
         },
         store.clone(),
     )
@@ -285,6 +286,8 @@ async fn rejects_bad_versions_cross_workspace_access_and_oversized_bodies() {
         name: "Forbidden".to_owned(),
         description: String::new(),
         repository_identity: None,
+        repository_kind: None,
+        repository_location: None,
     });
     let response = server
         .router
@@ -382,6 +385,7 @@ async fn spawn_product_server(
             address,
             public_origin: format!("http://{address}"),
             profile: "server".to_owned(),
+            local_user_id: None,
         },
         store,
     )
@@ -473,6 +477,8 @@ async fn websocket_authenticates_replays_commands_and_reports_malformed_messages
                     name: "Realtime project".to_owned(),
                     description: String::new(),
                     repository_identity: None,
+                    repository_kind: None,
+                    repository_location: None,
                 },
             )))
             .expect("command JSON")
@@ -526,6 +532,7 @@ async fn static_assets_use_index_fallback_without_shadowing_api_routes() {
             address: ADDRESS.parse().expect("address"),
             public_origin: ORIGIN.to_owned(),
             profile: "server".to_owned(),
+            local_user_id: None,
         },
         store,
     )
@@ -574,6 +581,7 @@ async fn product_session_authorizes_the_composed_execution_runtime() {
             address: ADDRESS.parse().expect("address"),
             public_origin: ORIGIN.to_owned(),
             profile: "standalone".to_owned(),
+            local_user_id: None,
         },
         store,
     )
@@ -773,4 +781,144 @@ async fn remote_worker_enrollment_claim_and_outbox_use_separate_device_auth() {
         .expect("event response");
     assert_eq!(event.status(), StatusCode::OK);
     assert_eq!(response_json(event).await["sequence"], 1);
+}
+
+#[tokio::test]
+async fn desktop_local_login_creates_an_anonymous_session_without_credentials() {
+    let directory = tempfile::tempdir().expect("temporary directory");
+    let store =
+        ControlPlaneStore::open(directory.path().join("desktop.sqlite")).expect("control plane");
+    let local_user = store.ensure_local_user().expect("local user");
+    let router = ProductServer::new(
+        ProductServerConfig {
+            address: ADDRESS.parse().expect("address"),
+            public_origin: ORIGIN.to_owned(),
+            profile: "desktop".to_owned(),
+            local_user_id: Some(local_user.id),
+        },
+        store,
+    )
+    .expect("desktop server")
+    .router();
+
+    let bootstrap = router
+        .clone()
+        .oneshot(
+            Request::get("/api/bootstrap")
+                .header(header::HOST, ADDRESS)
+                .body(Body::empty())
+                .expect("bootstrap request"),
+        )
+        .await
+        .expect("bootstrap response");
+    assert_eq!(
+        response_json(bootstrap).await["authentication"],
+        "local_onboarding"
+    );
+    let response = router
+        .clone()
+        .oneshot(
+            Request::post("/api/auth/local")
+                .header(header::HOST, ADDRESS)
+                .header(header::ORIGIN, ORIGIN)
+                .body(Body::empty())
+                .expect("local login request"),
+        )
+        .await
+        .expect("local login response");
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(
+        response_json(response).await["user"]["id"],
+        local_user.id.to_string()
+    );
+}
+
+#[tokio::test]
+async fn shared_signup_approval_and_desktop_bearer_exchange_are_enforced() {
+    let server = test_server();
+    let signup = server
+        .router
+        .clone()
+        .oneshot(
+            Request::post("/api/auth/signup")
+                .header(header::HOST, ADDRESS)
+                .header(header::ORIGIN, ORIGIN)
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(
+                    r#"{"email":"new@example.com","display_name":"New user","password":"correct horse battery"}"#,
+                ))
+                .expect("signup request"),
+        )
+        .await
+        .expect("signup response");
+    assert_eq!(signup.status(), StatusCode::ACCEPTED);
+    let user_id = response_json(signup).await["user"]["id"]
+        .as_str()
+        .expect("user id")
+        .to_owned();
+    let (cookie, csrf) = login(&server.router).await;
+    let approve = server
+        .router
+        .clone()
+        .oneshot(
+            Request::post(format!("/api/admin/users/{user_id}/approve"))
+                .header(header::HOST, ADDRESS)
+                .header(header::ORIGIN, ORIGIN)
+                .header(header::COOKIE, &cookie)
+                .header("x-csrf-token", &csrf)
+                .body(Body::empty())
+                .expect("approval request"),
+        )
+        .await
+        .expect("approval response");
+    assert_eq!(approve.status(), StatusCode::NO_CONTENT);
+    let pair = server
+        .router
+        .clone()
+        .oneshot(
+            Request::post("/api/desktop/pair")
+                .header(header::HOST, ADDRESS)
+                .header(header::ORIGIN, ORIGIN)
+                .header(header::COOKIE, &cookie)
+                .header("x-csrf-token", &csrf)
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(r#"{"device_name":"Test desktop"}"#))
+                .expect("pair request"),
+        )
+        .await
+        .expect("pair response");
+    assert_eq!(pair.status(), StatusCode::OK);
+    let token = response_json(pair).await["token"]
+        .as_str()
+        .expect("pair token")
+        .to_owned();
+    let exchange = server
+        .router
+        .clone()
+        .oneshot(
+            Request::post("/api/desktop/exchange")
+                .header(header::HOST, ADDRESS)
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(format!(r#"{{"token":"{token}"}}"#)))
+                .expect("exchange request"),
+        )
+        .await
+        .expect("exchange response");
+    assert_eq!(exchange.status(), StatusCode::OK);
+    let exchanged = response_json(exchange).await;
+    let bearer = exchanged["session_token"]
+        .as_str()
+        .expect("session token");
+    let snapshot = server
+        .router
+        .oneshot(
+            Request::get("/api/product/snapshot")
+                .header(header::HOST, ADDRESS)
+                .header(header::AUTHORIZATION, format!("Bearer {bearer}"))
+                .body(Body::empty())
+                .expect("bearer snapshot request"),
+        )
+        .await
+        .expect("bearer snapshot response");
+    assert_eq!(snapshot.status(), StatusCode::OK);
 }

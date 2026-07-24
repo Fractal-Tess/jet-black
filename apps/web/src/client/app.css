@@ -272,6 +272,67 @@ button:disabled {
   line-height: 1.55;
   color: var(--muted);
 }
+.auth-switch {
+  padding: 0.25rem;
+  font-size: 0.68rem;
+  color: var(--muted);
+  background: transparent;
+  border: 0;
+}
+.auth-switch:hover {
+  color: var(--cyan);
+}
+.alert.success {
+  color: var(--green);
+  background: rgba(124, 227, 139, 0.08);
+  border-color: rgba(124, 227, 139, 0.35);
+}
+.onboarding-screen {
+  display: grid;
+  min-height: 100vh;
+  padding: 2rem;
+  place-items: center;
+  background:
+    radial-gradient(circle at 50% 30%, rgba(92, 225, 230, 0.1), transparent 28rem),
+    linear-gradient(rgba(255, 255, 255, 0.018) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(255, 255, 255, 0.018) 1px, transparent 1px),
+    var(--bg);
+  background-size: auto, 36px 36px, 36px 36px, auto;
+}
+.onboarding-card {
+  display: grid;
+  gap: 1.15rem;
+  width: min(100%, 560px);
+  padding: clamp(1.5rem, 5vw, 3rem);
+  background: rgba(14, 16, 21, 0.95);
+  border: 1px solid var(--line-bright);
+  box-shadow: 0 32px 90px rgba(0, 0, 0, 0.5);
+}
+.onboarding-card h1 {
+  margin: 0;
+  font-family: Inter, sans-serif;
+  font-size: clamp(2rem, 5vw, 3.5rem);
+  letter-spacing: -0.05em;
+}
+.onboarding-card > p,
+.onboarding-card > small {
+  margin: 0;
+  font-family: Inter, sans-serif;
+  line-height: 1.65;
+  color: var(--muted);
+}
+.onboarding-card form {
+  display: grid;
+  gap: 1rem;
+}
+.onboarding-card label {
+  display: grid;
+  gap: 0.5rem;
+  font-size: 0.68rem;
+  color: #b8bec8;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+}
 .mobile-brand {
   display: none;
 }
@@ -431,6 +492,13 @@ textarea {
   gap: 0.45rem;
   justify-content: flex-start;
   color: var(--cyan);
+}
+.workspace-menu .menu-divider {
+  padding: 0.55rem 0.7rem 0.35rem;
+  font-size: 0.52rem;
+  color: var(--faint);
+  letter-spacing: 0.16em;
+  border-bottom: 1px solid var(--line);
 }
 .sidebar nav {
   padding: 0.1rem 0.65rem;
@@ -1129,6 +1197,46 @@ textarea {
 .settings-card .secondary-button {
   grid-column: 2;
   justify-self: start;
+}
+.connection-row,
+.user-access-row {
+  display: flex;
+  grid-column: 2 / -1;
+  gap: 0.75rem;
+  align-items: center;
+  justify-content: space-between;
+  padding-top: 0.8rem;
+  border-top: 1px solid var(--line);
+}
+.connection-row span,
+.user-access-row > span {
+  display: grid;
+  gap: 0.25rem;
+}
+.connection-row small,
+.user-access-row small {
+  font-size: 0.65rem;
+  color: var(--muted);
+}
+.user-access-row select {
+  width: auto;
+  min-width: 8rem;
+}
+.pairing-token {
+  grid-column: 2 / -1;
+  padding: 0.8rem;
+  color: var(--cyan);
+  overflow-wrap: anywhere;
+  background: #080a0d;
+  border: 1px solid var(--line);
+}
+.field-hint {
+  display: flex;
+  gap: 0.45rem;
+  align-items: center;
+  margin: -0.25rem 0 0;
+  font-size: 0.68rem;
+  color: var(--muted);
 }
 .settings-icon {
   display: grid;

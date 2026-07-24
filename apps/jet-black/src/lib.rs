@@ -113,6 +113,11 @@ async fn run_with_profile(
     let database_path = data_dir.join("jet-black.sqlite3");
     let execution_store = SqliteStore::open(&database_path)?;
     let store = ControlPlaneStore::open(&database_path)?;
+    let local_user_id = if config.profile == "desktop" {
+        Some(store.ensure_local_user()?.id)
+    } else {
+        None
+    };
     if config.development_seed {
         store.seed_development(&config.development_password)?;
     }
@@ -187,6 +192,7 @@ async fn run_with_profile(
             address,
             public_origin: public_origin.clone(),
             profile: config.profile.clone(),
+            local_user_id,
         },
         store,
     )?

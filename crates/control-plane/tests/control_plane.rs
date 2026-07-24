@@ -15,7 +15,7 @@ fn store() -> (TempDir, ControlPlaneStore) {
 #[test]
 fn migrates_reopens_and_prevents_multiple_owners() {
     let (directory, store) = store();
-    assert_eq!(store.schema_version().expect("schema version"), 2);
+    assert_eq!(store.schema_version().expect("schema version"), 3);
     let clone = store.clone();
     drop(store);
     assert!(matches!(
@@ -41,7 +41,7 @@ fn product_and_execution_migrations_share_one_database() {
             "correct horse battery",
         )
         .expect("product record");
-    assert_eq!(product.schema_version().expect("product schema"), 2);
+    assert_eq!(product.schema_version().expect("product schema"), 3);
     assert_eq!(product.user(user.id).expect("user lookup"), Some(user));
     assert_eq!(
         execution
@@ -112,6 +112,100 @@ fn launch_tokens_are_one_time_and_expiring_session_credentials() {
         store.exchange_launch_token(&launch.token),
         Err(ControlPlaneError::InvalidLaunchToken)
     ));
+}
+
+#[test]
+fn local_identity_is_anonymous_idempotent_and_can_own_workspaces() {
+    let (_directory, store) = store();
+    let first = store.ensure_local_user().expect("local identity");
+    let second = store.ensure_local_user().expect("same local identity");
+    assert_eq!(first, second);
+    assert_eq!(first.email, "local@jet-black.invalid");
+    assert!(store.is_instance_admin(first.id).expect("admin lookup"));
+    let workspace = store
+        .create_workspace(first.id, "my-workspace", "My workspace")
+        .expect("local workspace");
+    assert_eq!(
+        store
+            .workspaces_for_user(first.id, 10)
+            .expect("local workspaces")[0]
+            .workspace,
+        workspace
+    );
+}
+
+#[test]
+fn shared_accounts_require_approval_and_desktop_tokens_are_single_use() {
+    let (_directory, store) = store();
+    let admin = store
+        .register_user("admin@example.com", "Admin", "correct horse battery")
+        .expect("first account");
+    assert!(admin.instance_admin);
+    assert!(!admin.pending);
+    let member = store
+        .register_user("member@example.com", "Member", "correct horse battery")
+        .expect("pending account");
+    assert!(member.pending);
+    assert!(matches!(
+        store.authenticate_password("member@example.com", "correct horse battery"),
+        Err(ControlPlaneError::InvalidCredentials)
+    ));
+    store
+        .approve_user(admin.user.id, member.user.id)
+        .expect("approve account");
+    store
+        .authenticate_password("member@example.com", "correct horse battery")
+        .expect("approved login");
+
+    let pairing = store
+        .issue_desktop_pairing_token(member.user.id, "Member laptop")
+        .expect("pairing token");
+    let (session, device) = store
+        .exchange_desktop_pairing_token(&pairing.token)
+        .expect("exchange pairing token");
+    assert_eq!(device.user_id, member.user.id);
+    assert_eq!(
+        store
+            .validate_session(&session.token, Some(&session.csrf_token))
+            .expect("desktop session")
+            .user
+            .id,
+        member.user.id
+    );
+    assert!(matches!(
+        store.exchange_desktop_pairing_token(&pairing.token),
+        Err(ControlPlaneError::InvalidLaunchToken)
+    ));
+}
+
+#[test]
+fn projects_preserve_local_and_remote_repository_metadata() {
+    let (_directory, store) = store();
+    let owner = store.ensure_local_user().expect("local owner");
+    let workspace = store
+        .create_workspace(owner.id, "repositories", "Repositories")
+        .expect("workspace");
+    let project = store
+        .create_project_with_repository(
+            owner.id,
+            workspace.id,
+            "LOCAL",
+            "Local project",
+            "",
+            Some("https://github.com/example/project.git"),
+            Some("local"),
+            Some("/work/project"),
+            Some("https://github.com/example/project.git"),
+        )
+        .expect("project");
+    assert_eq!(project.repository_kind.as_deref(), Some("local"));
+    assert_eq!(project.repository_location.as_deref(), Some("/work/project"));
+    assert_eq!(
+        store
+            .projects_for_user(owner.id, Some(workspace.id), 10)
+            .expect("projects"),
+        vec![project]
+    );
 }
 
 #[test]

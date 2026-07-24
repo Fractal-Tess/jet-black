@@ -31,6 +31,9 @@ fn all_product_transport_shapes_round_trip() {
         name: "Jet Black".to_owned(),
         description: "Agentic delivery".to_owned(),
         repository_identity: Some("github:example/jet-black".to_owned()),
+        repository_kind: Some("remote".to_owned()),
+        repository_location: Some("https://github.com/example/jet-black".to_owned()),
+        repository_origin: Some("https://github.com/example/jet-black".to_owned()),
         version: 1,
     };
     let ticket = ProductTicket {
@@ -70,6 +73,8 @@ fn all_product_transport_shapes_round_trip() {
             name: project.name.clone(),
             description: project.description.clone(),
             repository_identity: project.repository_identity.clone(),
+            repository_kind: project.repository_kind.clone(),
+            repository_location: project.repository_location.clone(),
         })),
         ProductClientMessage::Command(Envelope::new(ProductCommand::CreateTicket {
             project_id,

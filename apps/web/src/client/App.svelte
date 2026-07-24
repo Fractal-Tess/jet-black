@@ -21,6 +21,7 @@ import {
   ChevronDown,
   CircleDot,
   Cloud,
+  GitBranch,
   FileText,
   Gauge,
   Inbox,
@@ -42,10 +43,12 @@ import {
 } from "lucide-svelte";
 import { onMount } from "svelte";
 import {
-  configuredInstance,
   JetBlackClient,
   JetBlackClientError,
-  saveConfiguredInstance,
+  type ManagedUser,
+  type RemoteConnection,
+  savedConnections,
+  saveConnections,
 } from "./jet-black-client";
 
 type View =
@@ -57,8 +60,12 @@ type View =
   | "sprints"
   | "tickets";
 
-let client = new JetBlackClient();
+let client = $state(new JetBlackClient());
+let bootstrapProfile = $state("");
 let snapshot = $state<ProductSnapshot | null>(null);
+let localSnapshot = $state<ProductSnapshot | null>(null);
+let remoteConnections = $state<RemoteConnection[]>(savedConnections());
+let activeConnectionId = $state("local");
 let activeWorkspaceId = $state<string | null>(null);
 let activeProjectId = $state<string | null>(null);
 let activeView = $state<View>("tickets");
@@ -75,19 +82,32 @@ let modal = $state<
   | "sprint"
   | "ticket"
   | "workspace"
+  | "connection"
   | null
 >(null);
 let errorMessage = $state("");
 let loginEmail = $state("dev@jet-black.local");
 let loginPassword = $state("");
+let authMode = $state<"login" | "signup">("login");
+let signupName = $state("");
+let pendingApproval = $state(false);
 let search = $state("");
 let ticketLayout = $state<"board" | "list">("board");
-let instanceDraft = $state(configuredInstance());
 let workspaceName = $state("");
 let workspaceSlug = $state("");
 let projectName = $state("");
 let projectIdentifier = $state("");
 let repositoryIdentity = $state("");
+let repositoryKind = $state<"local" | "none" | "remote">("none");
+let repositoryLocation = $state("");
+let connectionName = $state("");
+let connectionUrl = $state("");
+let connectionToken = $state("");
+let pairingToken = $state("");
+let pairingExpiresAt = $state(0);
+let managedUsers = $state<ManagedUser[]>([]);
+let membershipWorkspaceId = $state("");
+let membershipRole = $state<"admin" | "guest" | "member">("member");
 let ticketTitle = $state("");
 let ticketDescription = $state("");
 let ticketPriority = $state<ProductTicketPriority>("none");
@@ -187,12 +207,25 @@ async function initialize(): Promise<void> {
   errorMessage = "";
   try {
     const bootstrap = await client.bootstrap();
+    bootstrapProfile = bootstrap.profile;
     if (bootstrap.protocol_version !== "1.0") {
       throw new Error(
         `Instance protocol ${bootstrap.protocol_version} is not supported.`
       );
     }
-    await client.currentSession();
+    try {
+      await client.currentSession();
+    } catch (error) {
+      if (
+        error instanceof JetBlackClientError &&
+        error.status === 401 &&
+        bootstrap.authentication === "local_onboarding"
+      ) {
+        await client.localLogin();
+      } else {
+        throw error;
+      }
+    }
     await refreshSnapshot();
   } catch (error) {
     if (!(error instanceof JetBlackClientError && error.status === 401)) {
@@ -200,6 +233,28 @@ async function initialize(): Promise<void> {
     }
   } finally {
     loading = false;
+  }
+}
+
+async function signup(event: SubmitEvent): Promise<void> {
+  event.preventDefault();
+  submitting = true;
+  errorMessage = "";
+  try {
+    const result = await client.signup({
+      display_name: signupName,
+      email: loginEmail,
+      password: loginPassword,
+    });
+    if (result.status === "pending_approval") {
+      pendingApproval = true;
+      return;
+    }
+    await refreshSnapshot();
+  } catch (error) {
+    errorMessage = readableError(error);
+  } finally {
+    submitting = false;
   }
 }
 
@@ -234,6 +289,9 @@ async function logout(): Promise<void> {
 async function refreshSnapshot(workspaceId = activeWorkspaceId ?? undefined) {
   const next = await client.snapshot(workspaceId);
   snapshot = next;
+  if (activeConnectionId === "local") {
+    localSnapshot = next;
+  }
   activeWorkspaceId =
     next.workspaces.find((workspace) => workspace.id === activeWorkspaceId)
       ?.id ??
@@ -247,6 +305,29 @@ async function refreshSnapshot(workspaceId = activeWorkspaceId ?? undefined) {
     availableProjects[0]?.id ??
     null;
   connectRealtime(next);
+}
+
+async function switchConnection(connectionId: string): Promise<void> {
+  realtimeCleanup?.();
+  errorMessage = "";
+  activeConnectionId = connectionId;
+  activeWorkspaceId = null;
+  activeProjectId = null;
+  if (connectionId === "local") {
+    client = new JetBlackClient();
+    snapshot = localSnapshot;
+    await refreshSnapshot();
+    return;
+  }
+  const connection = remoteConnections.find((item) => item.id === connectionId);
+  if (!connection) {
+    return;
+  }
+  client = new JetBlackClient(connection.baseUrl, {
+    csrfToken: connection.csrfToken,
+    sessionToken: connection.sessionToken,
+  });
+  await refreshSnapshot();
 }
 
 function connectRealtime(next: ProductSnapshot): void {
@@ -287,6 +368,9 @@ function chooseProject(project: ProductProject): void {
 
 function navigate(view: View): void {
   activeView = view;
+  if (view === "settings") {
+    loadManagedUsers();
+  }
   sidebarOpen = false;
   updatePath(view);
 }
@@ -320,9 +404,25 @@ async function submitModal(event: SubmitEvent): Promise<void> {
           identifier: projectIdentifier,
           name: projectName,
           repository_identity: repositoryIdentity || null,
+          repository_kind: repositoryKind === "none" ? null : repositoryKind,
+          repository_location: repositoryLocation || null,
           workspace_id: activeWorkspace.id,
         },
       };
+    } else if (modal === "connection") {
+      const connection = await JetBlackClient.connectRemote({
+        baseUrl: connectionUrl,
+        deviceName: navigator.userAgent.includes("Tauri")
+          ? "Jet Black desktop"
+          : "Jet Black web client",
+        name: connectionName,
+        token: connectionToken,
+      });
+      remoteConnections = [...remoteConnections, connection];
+      saveConnections(remoteConnections);
+      resetModal();
+      await switchConnection(connection.id);
+      return;
     } else if (modal === "ticket" && activeProject) {
       command = {
         type: "create_ticket",
@@ -401,6 +501,11 @@ function resetModal(): void {
   projectName = "";
   projectIdentifier = "";
   repositoryIdentity = "";
+  repositoryKind = "none";
+  repositoryLocation = "";
+  connectionName = "";
+  connectionUrl = "";
+  connectionToken = "";
   ticketTitle = "";
   ticketDescription = "";
   ticketPriority = "none";
@@ -429,18 +534,72 @@ function openFeatureModal(): void {
   }
 }
 
-function saveInstance(event: SubmitEvent): void {
+async function createLocalWorkspace(event: SubmitEvent): Promise<void> {
   event.preventDefault();
+  submitting = true;
+  errorMessage = "";
   try {
-    const instance = saveConfiguredInstance(instanceDraft);
-    if (instance) {
-      const remoteUrl = new URL(window.location.pathname, instance);
-      window.location.assign(remoteUrl);
-      return;
-    }
-    window.location.reload();
+    await client.command({
+      type: "create_workspace",
+      data: { name: workspaceName, slug: workspaceSlug },
+    });
+    await refreshSnapshot();
   } catch (error) {
     errorMessage = readableError(error);
+  } finally {
+    submitting = false;
+  }
+}
+
+async function generatePairingToken(): Promise<void> {
+  submitting = true;
+  try {
+    const result = await client.issueDesktopToken("Jet Black desktop");
+    pairingToken = result.token;
+    pairingExpiresAt = result.expires_at_ms;
+  } catch (error) {
+    errorMessage = readableError(error);
+  } finally {
+    submitting = false;
+  }
+}
+
+async function loadManagedUsers(): Promise<void> {
+  try {
+    managedUsers = await client.managedUsers();
+  } catch (error) {
+    if (!(error instanceof JetBlackClientError && error.status === 403)) {
+      errorMessage = readableError(error);
+    }
+  }
+}
+
+async function approveManagedUser(userId: string): Promise<void> {
+  await client.approveUser(userId);
+  await loadManagedUsers();
+}
+
+async function assignManagedUser(userId: string): Promise<void> {
+  if (!membershipWorkspaceId) {
+    return;
+  }
+  await client.assignWorkspaceMember(
+    membershipWorkspaceId,
+    userId,
+    membershipRole
+  );
+  await refreshSnapshot();
+}
+
+function disconnectRemote(connectionId: string): void {
+  remoteConnections = remoteConnections.filter(
+    (connection) => connection.id !== connectionId
+  );
+  saveConnections(remoteConnections);
+  if (activeConnectionId === connectionId) {
+    switchConnection("local").catch((error) => {
+      errorMessage = readableError(error);
+    });
   }
 }
 
@@ -705,14 +864,23 @@ async function reviewChanges(): Promise<void> {
       </div>
     </section>
     <section class="auth-panel">
-      <form class="auth-card" onsubmit={login}>
+      <form class="auth-card" onsubmit={authMode === "login" ? login : signup}>
         <div class="mobile-brand"><span class="brand-mark">JB</span> JET BLACK</div>
         <div>
-          <p class="eyebrow">WELCOME BACK</p>
-          <h2>Sign in to your instance</h2>
-          <p>Use the account managed by this Jet Black control plane.</p>
+          <p class="eyebrow">{authMode === "login" ? "WELCOME BACK" : "REQUEST ACCESS"}</p>
+          <h2>{authMode === "login" ? "Sign in to your instance" : "Create your account"}</h2>
+          <p>{authMode === "login" ? "Use the account managed by this Jet Black control plane." : "An administrator will approve your account and assign workspaces."}</p>
         </div>
+        {#if pendingApproval}
+          <div class="alert success" role="status">Your account is waiting for administrator approval.</div>
+        {/if}
         {#if errorMessage}<div class="alert" role="alert">{errorMessage}</div>{/if}
+        {#if authMode === "signup"}
+          <label>
+            <span>Name</span>
+            <input autocomplete="name" bind:value={signupName} name="name" placeholder="Your name" required />
+          </label>
+        {/if}
         <label>
           <span>Email</span>
           <input
@@ -737,14 +905,34 @@ async function reviewChanges(): Promise<void> {
           />
         </label>
         <button class="primary-button" disabled={submitting} type="submit">
-          {submitting ? "Authenticating…" : "Enter workspace"}
+          {submitting ? "Working…" : authMode === "login" ? "Enter workspace" : "Request access"}
           <Zap size={16} />
+        </button>
+        <button class="auth-switch" onclick={() => (authMode = authMode === "login" ? "signup" : "login")} type="button">
+          {authMode === "login" ? "Need an account? Sign up" : "Already approved? Sign in"}
         </button>
         <p class="instance-caption">
           <Cloud size={13} />
           {client.baseUrl || "This device · local instance"}
         </p>
       </form>
+    </section>
+  </main>
+{:else if snapshot.workspaces.length === 0}
+  <main class="onboarding-screen">
+    <section class="onboarding-card">
+      <div class="brand-lockup"><span class="brand-mark">JB</span> JET BLACK</div>
+      <p class="eyebrow"><Sparkles size={14} /> LOCAL-FIRST SETUP</p>
+      <h1>Create your workspace</h1>
+      <p>A workspace is your collection of projects. Nothing to register, no account to configure—this one lives on your device.</p>
+      {#if errorMessage}<div class="alert" role="alert">{errorMessage}</div>{/if}
+      <form onsubmit={createLocalWorkspace}>
+        <label><span>Workspace name</span><input bind:value={workspaceName} oninput={() => (workspaceSlug = workspaceName.toLowerCase().trim().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, ""))} placeholder="My workspace" required /></label>
+        <label><span>Workspace slug</span><input bind:value={workspaceSlug} pattern="[a-z0-9-]+" placeholder="my-workspace" required /></label>
+        <button class="primary-button" disabled={submitting} type="submit">{submitting ? "Creating…" : "Create local workspace"} <Zap size={16} /></button>
+      </form>
+      <button class="secondary-button" onclick={() => (modal = "connection")} type="button"><Cloud size={15} /> Connect to a remote workspace</button>
+      <small>Local projects can point at repositories already on disk. Jet Black will read their Git origin automatically.</small>
     </section>
   </main>
 {:else}
@@ -785,8 +973,20 @@ async function reviewChanges(): Promise<void> {
                 <span>{workspace.name}</span><small>{workspace.role}</small>
               </button>
             {/each}
+            <div class="menu-divider">CONTROL PLANES</div>
+            {#if activeConnectionId !== "local"}
+              <button onclick={() => switchConnection("local")} type="button"><span>This device</span><small>local</small></button>
+            {/if}
+            {#each remoteConnections as connection (connection.id)}
+              <button onclick={() => switchConnection(connection.id)} type="button">
+                <span>{connection.name}</span><small>{new URL(connection.baseUrl).host}</small>
+              </button>
+            {/each}
             <button class="menu-create" onclick={() => (modal = "workspace")} type="button">
               <Plus size={14} /> New workspace
+            </button>
+            <button class="menu-create" onclick={() => (modal = "connection")} type="button">
+              <Cloud size={14} /> Connect remote
             </button>
           </div>
         {/if}
@@ -833,7 +1033,7 @@ async function reviewChanges(): Promise<void> {
         </button>
         <div class="account-row">
           <span>{snapshot.user.display_name.slice(0, 2).toUpperCase()}</span>
-          <div><strong>{snapshot.user.display_name}</strong><small>{snapshot.user.email}</small></div>
+          <div><strong>{snapshot.user.display_name}</strong><small>{snapshot.user.email.endsWith(".invalid") ? "This device" : snapshot.user.email}</small></div>
           <button aria-label="Sign out" disabled={submitting} onclick={logout} type="button"><LogOut size={15} /></button>
         </div>
       </div>
@@ -949,17 +1149,47 @@ async function reviewChanges(): Promise<void> {
       {:else if activeView === "settings"}
         <section class="content-view narrow">
           <div class="view-title"><div><p class="eyebrow">CONTROL PLANE</p><h1>Settings</h1><span>Manage this client and its connection.</span></div></div>
-          <form class="settings-card" onsubmit={saveInstance}>
+          <div class="settings-card">
             <div class="settings-icon"><Cloud size={20} /></div>
-            <div><h2>Connected instance</h2><p>Leave blank to use the instance serving this client, or point the web/desktop shell at another Jet Black server.</p></div>
-            <label><span>Instance URL</span><input bind:value={instanceDraft} placeholder="https://jet-black.example.com" type="url" /></label>
-            <button class="secondary-button" type="submit">Save and reconnect</button>
-          </form>
+            <div><h2>Workspace connections</h2><p>Keep local work here, and attach shared control planes with a one-time access token.</p></div>
+            <button class="secondary-button" onclick={() => (modal = "connection")} type="button"><Cloud size={14} /> Connect control plane</button>
+            {#each remoteConnections as connection (connection.id)}
+              <div class="connection-row"><span><strong>{connection.name}</strong><small>{connection.baseUrl}</small></span><button class="ghost-button" onclick={() => disconnectRemote(connection.id)} type="button">Disconnect</button></div>
+            {/each}
+          </div>
+          {#if bootstrapProfile !== "desktop"}
+            <div class="settings-card">
+              <div class="settings-icon"><Zap size={20} /></div>
+              <div><h2>Desktop access token</h2><p>Generate a single-use token, then paste it into Jet Black Desktop. It expires in ten minutes and cannot be reused.</p></div>
+              <button class="secondary-button" disabled={submitting} onclick={generatePairingToken} type="button">Generate token</button>
+              {#if pairingToken}<code class="pairing-token">{pairingToken}</code><small>Expires {new Date(pairingExpiresAt).toLocaleTimeString()}</small>{/if}
+            </div>
+          {/if}
           <div class="settings-card">
             <div class="settings-icon"><Users size={20} /></div>
             <div><h2>Workspace access</h2><p>You are an <strong>{activeWorkspace?.role}</strong> in {activeWorkspace?.name}. Team membership and invitations use control-plane roles.</p></div>
             <span class="role-chip">{activeWorkspace?.role}</span>
           </div>
+          {#if managedUsers.length > 0}
+            <div class="settings-card admin-card">
+              <div class="settings-icon"><Users size={20} /></div>
+              <div><h2>People and access</h2><p>Approve accounts, then assign access at the workspace level.</p></div>
+              {#each managedUsers as managed (managed.user.id)}
+                <div class="user-access-row">
+                  <span><strong>{managed.user.display_name}</strong><small>{managed.user.email}</small></span>
+                  {#if managed.pending}
+                    <button class="secondary-button" onclick={() => approveManagedUser(managed.user.id)} type="button">Approve</button>
+                  {:else if !managed.instance_admin}
+                    <select aria-label={`Workspace for ${managed.user.display_name}`} bind:value={membershipWorkspaceId}><option value="">Choose workspace</option>{#each snapshot.workspaces as workspace (workspace.id)}<option value={workspace.id}>{workspace.name}</option>{/each}</select>
+                    <select aria-label={`Role for ${managed.user.display_name}`} bind:value={membershipRole}><option value="member">Member</option><option value="admin">Admin</option><option value="guest">Guest</option></select>
+                    <button class="secondary-button" onclick={() => assignManagedUser(managed.user.id)} type="button">Assign</button>
+                  {:else}
+                    <span class="role-chip">instance admin</span>
+                  {/if}
+                </div>
+              {/each}
+            </div>
+          {/if}
         </section>
       {:else}
         <section class="content-view">
@@ -1070,7 +1300,17 @@ async function reviewChanges(): Promise<void> {
           <label><span>Identifier</span><input bind:value={projectIdentifier} maxlength="12" pattern="[A-Za-z0-9]+" placeholder="PLAT" required /></label>
           <label><span>Project name</span><input bind:value={projectName} placeholder="Platform" required /></label>
         </div>
-        <label><span>Repository identity <small>optional</small></span><input bind:value={repositoryIdentity} placeholder="github:org/repository" /></label>
+        <label><span>Repository</span><select bind:value={repositoryKind}><option value="none">No repository yet</option><option value="local">Local Git repository</option><option value="remote">Remote repository</option></select></label>
+        {#if repositoryKind === "local"}
+          <label><span>Path on this device</span><input bind:value={repositoryLocation} placeholder="/home/you/code/project" required /></label>
+          <p class="field-hint"><GitBranch size={13} /> The origin remote will be detected from Git.</p>
+        {:else if repositoryKind === "remote"}
+          <label><span>Repository URL</span><input bind:value={repositoryLocation} placeholder="https://github.com/org/repository.git" required type="url" /></label>
+        {/if}
+      {:else if modal === "connection"}
+        <label><span>Connection name</span><input bind:value={connectionName} placeholder="Company control plane" required /></label>
+        <label><span>Control plane URL</span><input bind:value={connectionUrl} placeholder="https://jet-black.example.com" required type="url" /></label>
+        <label><span>One-time access token</span><input autocomplete="off" bind:value={connectionToken} placeholder="Paste token from account settings" required /></label>
       {:else if modal === "ticket"}
         <label><span>Title</span><input bind:value={ticketTitle} placeholder="What needs to ship?" required /></label>
         <label><span>Description</span><textarea bind:value={ticketDescription} placeholder="Give the team and agents enough context to act."></textarea></label>

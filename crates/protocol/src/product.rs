@@ -43,6 +43,9 @@ pub struct ProductProject {
     pub name: String,
     pub description: String,
     pub repository_identity: Option<String>,
+    pub repository_kind: Option<String>,
+    pub repository_location: Option<String>,
+    pub repository_origin: Option<String>,
     #[ts(type = "number")]
     pub version: u64,
 }
@@ -182,6 +185,8 @@ pub enum ProductCommand {
         name: String,
         description: String,
         repository_identity: Option<String>,
+        repository_kind: Option<String>,
+        repository_location: Option<String>,
     },
     CreateTicket {
         #[ts(type = "Id")]

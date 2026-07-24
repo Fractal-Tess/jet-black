@@ -15,11 +15,13 @@ use std::{
 use thiserror::Error;
 use uuid::Uuid;
 
-const CURRENT_SCHEMA_VERSION: u32 = 2;
+const CURRENT_SCHEMA_VERSION: u32 = 3;
 const SESSION_BYTES: usize = 32;
 const CSRF_BYTES: usize = 24;
 const DEFAULT_SESSION_LIFETIME: Duration = Duration::from_secs(60 * 60 * 24 * 30);
 const DEFAULT_LAUNCH_TOKEN_LIFETIME: Duration = Duration::from_secs(60);
+const DEFAULT_PAIRING_TOKEN_LIFETIME: Duration = Duration::from_secs(10 * 60);
+const DEFAULT_DESKTOP_SESSION_LIFETIME: Duration = Duration::from_secs(60 * 60 * 24 * 90);
 const WORKER_TOKEN_BYTES: usize = 32;
 
 #[derive(Debug)]
@@ -113,6 +115,9 @@ pub struct Project {
     pub name: String,
     pub description: String,
     pub repository_identity: Option<String>,
+    pub repository_kind: Option<String>,
+    pub repository_location: Option<String>,
+    pub repository_origin: Option<String>,
     pub version: u64,
 }
 
@@ -329,6 +334,29 @@ pub struct IssuedLaunchToken {
     pub expires_at_ms: i64,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct IssuedDesktopPairingToken {
+    pub token: String,
+    pub expires_at_ms: i64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DesktopDevice {
+    pub id: Uuid,
+    pub user_id: Uuid,
+    pub name: String,
+    pub created_at_ms: i64,
+    pub last_seen_at_ms: Option<i64>,
+    pub revoked_at_ms: Option<i64>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ManagedUser {
+    pub user: User,
+    pub pending: bool,
+    pub instance_admin: bool,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct QuotaLimits {
     pub tickets: u64,
@@ -421,6 +449,258 @@ impl ControlPlaneStore {
         })
     }
 
+    pub fn register_user(
+        &self,
+        email: &str,
+        display_name: &str,
+        password: &str,
+    ) -> Result<ManagedUser, ControlPlaneError> {
+        let user = self.create_user(email, display_name, password)?;
+        let (pending, instance_admin) = self.with_connection(|connection| {
+            let transaction =
+                connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+            let user_count: u64 =
+                transaction.query_row("SELECT COUNT(*) FROM users", [], |row| row.get(0))?;
+            if user_count == 1 {
+                transaction.execute(
+                    "INSERT INTO instance_admins (user_id, created_at_ms) VALUES (?1, ?2)",
+                    params![user.id.to_string(), now_ms()?],
+                )?;
+            } else {
+                transaction.execute(
+                    "INSERT INTO pending_accounts (user_id, requested_at_ms) VALUES (?1, ?2)",
+                    params![user.id.to_string(), now_ms()?],
+                )?;
+            }
+            transaction.commit()?;
+            Ok((user_count != 1, user_count == 1))
+        })?;
+        Ok(ManagedUser {
+            user,
+            pending,
+            instance_admin,
+        })
+    }
+
+    pub fn ensure_local_user(&self) -> Result<User, ControlPlaneError> {
+        const LOCAL_EMAIL: &str = "local@jet-black.invalid";
+        if let Some(user) = self.with_connection(|connection| {
+            connection
+                .query_row(
+                    "SELECT id, email, display_name, disabled_at_ms, version
+                     FROM users WHERE email = ?1",
+                    [LOCAL_EMAIL],
+                    decode_user,
+                )
+                .optional()?
+                .map(user_from_row)
+                .transpose()
+        })? {
+            return Ok(user);
+        }
+        let user = User {
+            id: Uuid::new_v4(),
+            email: LOCAL_EMAIL.to_owned(),
+            display_name: "Local owner".to_owned(),
+            disabled_at_ms: None,
+            version: 1,
+        };
+        self.with_connection(|connection| {
+            let transaction =
+                connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+            let now = now_ms()?;
+            transaction.execute(
+                "INSERT INTO users (
+                    id, email, display_name, created_at_ms, updated_at_ms
+                 ) VALUES (?1, ?2, ?3, ?4, ?4)",
+                params![
+                    user.id.to_string(),
+                    &user.email,
+                    &user.display_name,
+                    now
+                ],
+            )?;
+            transaction.execute(
+                "INSERT INTO instance_admins (user_id, created_at_ms)
+                 VALUES (?1, ?2)",
+                params![user.id.to_string(), now],
+            )?;
+            transaction.commit()?;
+            Ok(())
+        })?;
+        Ok(user)
+    }
+
+    pub fn issue_user_session(
+        &self,
+        user_id: Uuid,
+        method: &str,
+        lifetime: Duration,
+    ) -> Result<IssuedSession, ControlPlaneError> {
+        self.issue_session(user_id, method, lifetime)
+    }
+
+    pub fn is_instance_admin(&self, user_id: Uuid) -> Result<bool, ControlPlaneError> {
+        self.with_connection(|connection| {
+            connection
+                .query_row(
+                    "SELECT EXISTS(SELECT 1 FROM instance_admins WHERE user_id = ?1)",
+                    [user_id.to_string()],
+                    |row| row.get(0),
+                )
+                .map_err(Into::into)
+        })
+    }
+
+    pub fn managed_users(&self, actor_id: Uuid) -> Result<Vec<ManagedUser>, ControlPlaneError> {
+        if !self.is_instance_admin(actor_id)? {
+            return Err(ControlPlaneError::Forbidden);
+        }
+        self.with_connection(|connection| {
+            let mut statement = connection.prepare(
+                "SELECT users.id, users.email, users.display_name,
+                        users.disabled_at_ms, users.version,
+                        pending_accounts.user_id IS NOT NULL,
+                        instance_admins.user_id IS NOT NULL
+                 FROM users
+                 LEFT JOIN pending_accounts ON pending_accounts.user_id = users.id
+                 LEFT JOIN instance_admins ON instance_admins.user_id = users.id
+                 ORDER BY users.created_at_ms, users.id",
+            )?;
+            let rows = statement.query_map([], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                    row.get::<_, Option<i64>>(3)?,
+                    row.get::<_, u64>(4)?,
+                    row.get::<_, bool>(5)?,
+                    row.get::<_, bool>(6)?,
+                ))
+            })?;
+            rows.map(|row| {
+                let row = row?;
+                Ok(ManagedUser {
+                    user: User {
+                        id: parse_uuid(&row.0)?,
+                        email: row.1,
+                        display_name: row.2,
+                        disabled_at_ms: row.3,
+                        version: row.4,
+                    },
+                    pending: row.5,
+                    instance_admin: row.6,
+                })
+            })
+            .collect()
+        })
+    }
+
+    pub fn approve_user(&self, actor_id: Uuid, user_id: Uuid) -> Result<(), ControlPlaneError> {
+        if !self.is_instance_admin(actor_id)? {
+            return Err(ControlPlaneError::Forbidden);
+        }
+        self.with_connection(|connection| {
+            if connection.execute(
+                "DELETE FROM pending_accounts WHERE user_id = ?1",
+                [user_id.to_string()],
+            )? != 1
+            {
+                return Err(ControlPlaneError::NotFound("pending account"));
+            }
+            Ok(())
+        })
+    }
+
+    pub fn issue_desktop_pairing_token(
+        &self,
+        user_id: Uuid,
+        device_name: &str,
+    ) -> Result<IssuedDesktopPairingToken, ControlPlaneError> {
+        validate_non_empty("device name", device_name)?;
+        let token = random_token(SESSION_BYTES)?;
+        let now = now_ms()?;
+        let expires_at_ms = add_duration(now, DEFAULT_PAIRING_TOKEN_LIFETIME)?;
+        self.with_connection(|connection| {
+            connection.execute(
+                "INSERT INTO desktop_pairing_tokens (
+                    id, user_id, token_hash, device_name, expires_at_ms, created_at_ms
+                 ) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                params![
+                    Uuid::new_v4().to_string(),
+                    user_id.to_string(),
+                    token_hash(&token).as_slice(),
+                    device_name.trim(),
+                    expires_at_ms,
+                    now
+                ],
+            )?;
+            Ok(())
+        })?;
+        Ok(IssuedDesktopPairingToken {
+            token,
+            expires_at_ms,
+        })
+    }
+
+    pub fn exchange_desktop_pairing_token(
+        &self,
+        token: &str,
+    ) -> Result<(IssuedSession, DesktopDevice), ControlPlaneError> {
+        let now = now_ms()?;
+        let (user_id, device_name) = self.with_connection(|connection| {
+            let transaction =
+                connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+            let row = transaction
+                .query_row(
+                    "SELECT id, user_id, device_name FROM desktop_pairing_tokens
+                     WHERE token_hash = ?1 AND consumed_at_ms IS NULL AND expires_at_ms > ?2",
+                    params![token_hash(token).as_slice(), now],
+                    |row| {
+                        Ok((
+                            row.get::<_, String>(0)?,
+                            row.get::<_, String>(1)?,
+                            row.get::<_, String>(2)?,
+                        ))
+                    },
+                )
+                .optional()?
+                .ok_or(ControlPlaneError::InvalidLaunchToken)?;
+            transaction.execute(
+                "UPDATE desktop_pairing_tokens SET consumed_at_ms = ?1 WHERE id = ?2",
+                params![now, row.0],
+            )?;
+            transaction.commit()?;
+            Ok((parse_uuid(&row.1)?, row.2))
+        })?;
+        let issued =
+            self.issue_session(user_id, "launch_token", DEFAULT_DESKTOP_SESSION_LIFETIME)?;
+        let device = DesktopDevice {
+            id: Uuid::new_v4(),
+            user_id,
+            name: device_name,
+            created_at_ms: now,
+            last_seen_at_ms: None,
+            revoked_at_ms: None,
+        };
+        self.with_connection(|connection| {
+            connection.execute(
+                "INSERT INTO desktop_devices (
+                    id, user_id, session_id, name, created_at_ms
+                 ) VALUES (?1, ?2, ?3, ?4, ?5)",
+                params![
+                    device.id.to_string(),
+                    user_id.to_string(),
+                    issued.session_id.to_string(),
+                    &device.name,
+                    now
+                ],
+            )?;
+            Ok(())
+        })?;
+        Ok((issued, device))
+    }
+
     pub fn authenticate_password(
         &self,
         email: &str,
@@ -433,7 +713,11 @@ impl ControlPlaneStore {
                     "SELECT users.id, password_credentials.password_hash
                      FROM users
                      JOIN password_credentials ON password_credentials.user_id = users.id
-                     WHERE users.email = ?1 AND users.disabled_at_ms IS NULL",
+                     WHERE users.email = ?1 AND users.disabled_at_ms IS NULL
+                       AND NOT EXISTS (
+                           SELECT 1 FROM pending_accounts
+                           WHERE pending_accounts.user_id = users.id
+                       )",
                     [normalized_email],
                     |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
                 )
@@ -514,7 +798,11 @@ impl ControlPlaneStore {
                      WHERE sessions.token_hash = ?1
                        AND sessions.revoked_at_ms IS NULL
                        AND sessions.expires_at_ms > ?2
-                       AND users.disabled_at_ms IS NULL",
+                       AND users.disabled_at_ms IS NULL
+                       AND NOT EXISTS (
+                           SELECT 1 FROM pending_accounts
+                           WHERE pending_accounts.user_id = users.id
+                       )",
                     params![token_digest.as_slice(), now],
                     |row| {
                         Ok((
@@ -810,7 +1098,8 @@ impl ControlPlaneStore {
             let mut statement = connection.prepare(
                 "SELECT projects.id, projects.workspace_id, projects.identifier,
                         projects.name, projects.description, projects.repository_identity,
-                        projects.version
+                        projects.repository_kind, projects.repository_location,
+                        projects.repository_origin, projects.version
                  FROM projects
                  JOIN workspace_members
                    ON workspace_members.workspace_id = projects.workspace_id
@@ -833,7 +1122,10 @@ impl ControlPlaneStore {
                         row.get::<_, String>(3)?,
                         row.get::<_, String>(4)?,
                         row.get::<_, Option<String>>(5)?,
-                        row.get::<_, u64>(6)?,
+                        row.get::<_, Option<String>>(6)?,
+                        row.get::<_, Option<String>>(7)?,
+                        row.get::<_, Option<String>>(8)?,
+                        row.get::<_, u64>(9)?,
                     ))
                 },
             )?;
@@ -846,7 +1138,10 @@ impl ControlPlaneStore {
                     name: row.3,
                     description: row.4,
                     repository_identity: row.5,
-                    version: row.6,
+                    repository_kind: row.6,
+                    repository_location: row.7,
+                    repository_origin: row.8,
+                    version: row.9,
                 })
             })
             .collect()
@@ -1265,9 +1560,40 @@ impl ControlPlaneStore {
         description: &str,
         repository_identity: Option<&str>,
     ) -> Result<Project, ControlPlaneError> {
+        self.create_project_with_repository(
+            actor_id,
+            workspace_id,
+            identifier,
+            name,
+            description,
+            repository_identity,
+            None,
+            None,
+            None,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn create_project_with_repository(
+        &self,
+        actor_id: Uuid,
+        workspace_id: Uuid,
+        identifier: &str,
+        name: &str,
+        description: &str,
+        repository_identity: Option<&str>,
+        repository_kind: Option<&str>,
+        repository_location: Option<&str>,
+        repository_origin: Option<&str>,
+    ) -> Result<Project, ControlPlaneError> {
         self.require_permission(actor_id, workspace_id, Permission::ManageProjects)?;
         validate_identifier(identifier)?;
         validate_non_empty("project name", name)?;
+        if !matches!(repository_kind, None | Some("local") | Some("remote")) {
+            return Err(ControlPlaneError::InvalidInput(
+                "repository kind must be local or remote".to_owned(),
+            ));
+        }
         let project = Project {
             id: Uuid::new_v4(),
             workspace_id,
@@ -1275,6 +1601,9 @@ impl ControlPlaneStore {
             name: name.trim().to_owned(),
             description: description.trim().to_owned(),
             repository_identity: repository_identity.map(str::to_owned),
+            repository_kind: repository_kind.map(str::to_owned),
+            repository_location: repository_location.map(str::to_owned),
+            repository_origin: repository_origin.map(str::to_owned),
             version: 1,
         };
         let now = now_ms()?;
@@ -1284,8 +1613,9 @@ impl ControlPlaneStore {
             transaction.execute(
                 "INSERT INTO projects (
                     id, workspace_id, identifier, name, description,
-                    repository_identity, created_by_id, created_at_ms, updated_at_ms
-                 ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?8)",
+                    repository_identity, repository_kind, repository_location,
+                    repository_origin, created_by_id, created_at_ms, updated_at_ms
+                 ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?11)",
                 params![
                     project.id.to_string(),
                     workspace_id.to_string(),
@@ -1293,6 +1623,9 @@ impl ControlPlaneStore {
                     project.name,
                     project.description,
                     project.repository_identity,
+                    project.repository_kind,
+                    project.repository_location,
+                    project.repository_origin,
                     actor_id.to_string(),
                     now
                 ],
@@ -1825,6 +2158,11 @@ impl ControlPlaneStore {
                 params![user_id.to_string(), password_hash, now],
             )?;
             transaction.execute(
+                "INSERT OR IGNORE INTO instance_admins (user_id, created_at_ms)
+                 VALUES (?1, ?2)",
+                params![user_id.to_string(), now],
+            )?;
+            transaction.execute(
                 "INSERT OR IGNORE INTO workspaces (
                     id, slug, name, created_by_id, created_at_ms, updated_at_ms
                  ) VALUES (?1, 'jet-black-dev', 'Jet Black Demo', ?2, ?3, ?3)",
@@ -1904,6 +2242,9 @@ impl ControlPlaneStore {
                 name: "Jet Black".to_owned(),
                 description: "Agentic delivery workspace".to_owned(),
                 repository_identity: None,
+                repository_kind: None,
+                repository_location: None,
+                repository_origin: None,
                 version: 1,
             },
         })
@@ -2435,6 +2776,16 @@ fn run_migrations(connection: &mut Connection) -> Result<(), ControlPlaneError> 
         transaction.execute(
             "INSERT INTO product_schema_migrations (version, applied_at_ms)
              VALUES (2, ?1)",
+            [now_ms()?],
+        )?;
+        transaction.commit()?;
+    }
+    if version < 3 {
+        let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        transaction.execute_batch(include_str!("../migrations/003_identity_connections.sql"))?;
+        transaction.execute(
+            "INSERT INTO product_schema_migrations (version, applied_at_ms)
+             VALUES (3, ?1)",
             [now_ms()?],
         )?;
         transaction.commit()?;
