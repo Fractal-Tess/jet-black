@@ -2,12 +2,16 @@ mod claude;
 mod codex;
 mod common;
 mod opencode;
+mod registry;
 
-pub use claude::ClaudeCodeProvider;
-pub use codex::CodexProvider;
-pub use opencode::OpenCodeProvider;
+pub use claude::{ClaudeCodeProvider, ClaudeCodeProviderFactory};
+pub use codex::{CodexProvider, CodexProviderFactory};
+pub use opencode::{OpenCodeProvider, OpenCodeProviderFactory};
+pub use registry::{
+    FixedProviderResolver, LocalProviderRegistry, ProviderResolver, ResolvedProvider,
+};
 
-use domain::{ActionKind, ActionProposal, ApprovalScope, Id, RelativePath};
+use domain::{ActionKind, ActionProposal, ApprovalScope, Id, ProviderKind, RelativePath};
 use execution::{ProcessResult, ProcessSpec};
 use protocol::SemanticEventKind;
 use std::path::Path;
@@ -38,7 +42,7 @@ impl ProposedFileChange {
     }
 }
 
-pub trait AgentProvider {
+pub trait AgentProvider: Send + Sync {
     fn name(&self) -> &'static str;
     fn requires_process_confinement(&self) -> bool;
     fn process_spec(&self, _worktree_path: &Path) -> Option<ProcessSpec> {
@@ -63,6 +67,8 @@ pub enum ProviderError {
     ExecutableNotFound,
     #[error("provider credential is unavailable")]
     MissingCredential,
+    #[error("provider is unavailable: {0:?}")]
+    ProviderUnavailable(ProviderKind),
     #[error("provider PATH must contain only absolute directories")]
     UnsafeSearchPath,
     #[error("provider executable discovery failed")]

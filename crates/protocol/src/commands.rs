@@ -1,7 +1,7 @@
 use crate::OrderedRunEvent;
 use domain::{
-    Approval, ApprovalScope, Changeset, ChangesetMutationKind, Checkpoint, Finding, Id, Repository,
-    Run, TicketRef, Worktree, WorktreeState,
+    Approval, ApprovalScope, Changeset, ChangesetMutationKind, Checkpoint, Finding, Id,
+    ProviderSelection, Repository, Run, TicketRef, Worktree, WorktreeState,
 };
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
@@ -21,6 +21,8 @@ pub enum LocalCommand {
     },
     StartRun {
         changeset_id: Id,
+        #[serde(default)]
+        provider_selection: Option<ProviderSelection>,
     },
     InterruptRun {
         run_id: Id,

@@ -1,22 +1,57 @@
 use crate::{AgentProvider, ProposedFileChange, ProviderError, common};
+use domain::ProviderKind;
 use execution::{ProcessResult, ProcessSpec};
 use protocol::SemanticEventKind;
 use serde::Deserialize;
-use std::{
-    collections::HashMap,
-    path::{Path, PathBuf},
-    time::Duration,
-};
+use std::{path::Path, sync::Arc, time::Duration};
 
-const PROVIDER_NAME: &str = "codex";
 const TARGET_PATH: &str = "jet-black-codex-approved.txt";
 
 pub struct CodexProvider {
-    executable: PathBuf,
-    environment: HashMap<String, String>,
-    confinement: common::ProviderConfinement,
+    discovery: Arc<common::ProviderDiscovery>,
     model: Option<String>,
     timeout: Duration,
+}
+
+pub struct CodexProviderFactory {
+    discovery: Arc<common::ProviderDiscovery>,
+    timeout: Duration,
+}
+
+impl CodexProviderFactory {
+    pub fn discover(
+        search_path: &str,
+        api_key: Option<String>,
+        state_dir: &Path,
+        timeout: Duration,
+    ) -> Result<Self, ProviderError> {
+        if timeout.is_zero() {
+            return Err(ProviderError::InvalidConfiguration);
+        }
+        let api_key = api_key
+            .filter(|value| !value.is_empty())
+            .ok_or(ProviderError::MissingCredential)?;
+        let mut discovery = common::discover_provider(search_path, "codex", state_dir)?;
+        discovery
+            .environment
+            .insert("OPENAI_API_KEY".to_owned(), api_key);
+        discovery.environment.insert(
+            "CODEX_HOME".to_owned(),
+            state_dir.to_string_lossy().into_owned(),
+        );
+        Ok(Self {
+            discovery: Arc::new(discovery),
+            timeout,
+        })
+    }
+
+    pub(crate) fn resolve(&self, model: Option<&str>) -> CodexProvider {
+        CodexProvider {
+            discovery: Arc::clone(&self.discovery),
+            model: model.map(str::to_owned),
+            timeout: self.timeout,
+        }
+    }
 }
 
 impl CodexProvider {
@@ -27,35 +62,17 @@ impl CodexProvider {
         model: Option<String>,
         timeout: Duration,
     ) -> Result<Self, ProviderError> {
-        if timeout.is_zero() {
-            return Err(ProviderError::InvalidConfiguration);
-        }
-        let api_key = api_key
-            .filter(|value| !value.is_empty())
-            .ok_or(ProviderError::MissingCredential)?;
-        let common::ProviderDiscovery {
-            executable,
-            mut environment,
-            confinement,
-        } = common::discover_provider(search_path, "codex", state_dir)?;
-        environment.insert("OPENAI_API_KEY".to_owned(), api_key);
-        environment.insert(
-            "CODEX_HOME".to_owned(),
-            state_dir.to_string_lossy().into_owned(),
-        );
-        Ok(Self {
-            executable,
-            environment,
-            confinement,
-            model: model.filter(|value| !value.is_empty()),
-            timeout,
-        })
+        let model = model.filter(|value| !value.is_empty());
+        Ok(
+            CodexProviderFactory::discover(search_path, api_key, state_dir, timeout)?
+                .resolve(model.as_deref()),
+        )
     }
 }
 
 impl AgentProvider for CodexProvider {
     fn name(&self) -> &'static str {
-        PROVIDER_NAME
+        ProviderKind::Codex.name()
     }
 
     fn requires_process_confinement(&self) -> bool {
@@ -86,14 +103,14 @@ impl AgentProvider for CodexProvider {
             common::PROMPT.to_owned(),
         ]);
         Some(ProcessSpec {
-            program: self.executable.to_string_lossy().into_owned(),
+            program: self.discovery.executable.to_string_lossy().into_owned(),
             arguments,
-            environment: self.environment.clone(),
+            environment: self.discovery.environment.clone(),
             sensitive_environment_keys: vec!["OPENAI_API_KEY".to_owned()],
             current_dir: Some(worktree_path.to_path_buf()),
             timeout: self.timeout,
             output_limit: common::PROVIDER_OUTPUT_LIMIT_BYTES,
-            confinement: self.confinement.for_worktree(worktree_path),
+            confinement: self.discovery.confinement.for_worktree(worktree_path),
         })
     }
 

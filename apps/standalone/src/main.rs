@@ -1,5 +1,9 @@
-use agents::{ClaudeCodeProvider, CodexProvider, LocalProvider, MockProvider, OpenCodeProvider};
+use agents::{
+    ClaudeCodeProviderFactory, CodexProviderFactory, LocalProviderRegistry, MockProvider,
+    OpenCodeProviderFactory, ProviderResolver,
+};
 use config::{CliOverrides, ProviderKind, StandaloneConfig};
+use domain::ProviderSelection;
 use git::GitService;
 use orchestration::{DEFAULT_APPROVAL_TTL, LocalOrchestrator};
 use persistence::{ArtifactPolicy, LocalArtifactStore, SqliteStore};
@@ -18,31 +22,36 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let search_path = environment.get("PATH").cloned().unwrap_or_default();
     let provider_state = config.data_dir.join("providers");
-    let provider = match config.provider {
-        ProviderKind::Mock => LocalProvider::Mock(MockProvider::deterministic()),
-        ProviderKind::ClaudeCode => LocalProvider::ClaudeCode(ClaudeCodeProvider::discover(
-            &search_path,
-            environment.get("ANTHROPIC_API_KEY").cloned(),
-            &provider_state.join(ProviderKind::ClaudeCode.name()),
-            config.provider_model.clone(),
-            config.run_timeout,
-        )?),
-        ProviderKind::Codex => LocalProvider::Codex(CodexProvider::discover(
-            &search_path,
-            environment.get("OPENAI_API_KEY").cloned(),
-            &provider_state.join(ProviderKind::Codex.name()),
-            config.provider_model.clone(),
-            config.run_timeout,
-        )?),
-        ProviderKind::OpenCode => LocalProvider::OpenCode(OpenCodeProvider::discover(
-            &search_path,
-            &environment,
-            &provider_state.join(ProviderKind::OpenCode.name()),
-            config.provider_model.clone(),
-            config.run_timeout,
-        )?),
-    };
-    let provider_availability = vec![config.provider];
+    let default_selection = ProviderSelection::new(config.provider, config.provider_model.clone())?;
+    let claude_code = ClaudeCodeProviderFactory::discover(
+        &search_path,
+        environment.get("ANTHROPIC_API_KEY").cloned(),
+        &provider_state.join(ProviderKind::ClaudeCode.name()),
+        config.run_timeout,
+    )
+    .ok();
+    let codex = CodexProviderFactory::discover(
+        &search_path,
+        environment.get("OPENAI_API_KEY").cloned(),
+        &provider_state.join(ProviderKind::Codex.name()),
+        config.run_timeout,
+    )
+    .ok();
+    let opencode = OpenCodeProviderFactory::discover(
+        &search_path,
+        &environment,
+        &provider_state.join(ProviderKind::OpenCode.name()),
+        config.run_timeout,
+    )
+    .ok();
+    let providers = LocalProviderRegistry::new(
+        default_selection,
+        Some(MockProvider::deterministic()),
+        claude_code,
+        codex,
+        opencode,
+    )?;
+    let provider_availability = providers.available_kinds();
 
     let store = SqliteStore::open(&config.sqlite_path)?;
     let git = GitService::new(
@@ -55,7 +64,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         ArtifactPolicy::default(),
     )?;
     let runtime = Arc::new(
-        LocalOrchestrator::new(store, git, provider, DEFAULT_APPROVAL_TTL)
+        LocalOrchestrator::new(store, git, providers, DEFAULT_APPROVAL_TTL)
             .with_approved_repositories(config.repository_roots.clone())?
             .with_artifact_store(artifact_store)
             .with_review_options(

@@ -269,6 +269,11 @@ impl StandaloneConfig {
             protocol_version: PROTOCOL_VERSION.to_owned(),
             enabled_features: vec!["local_execution".to_owned()],
             provider_availability,
+            default_provider: ProviderSelection::new(
+                self.provider,
+                self.provider_model.clone(),
+            )
+            .expect("validated standalone provider selection must remain valid"),
         }
     }
 }
@@ -414,6 +419,7 @@ pub struct PublicBootstrap {
     pub protocol_version: String,
     pub enabled_features: Vec<String>,
     pub provider_availability: Vec<ProviderKind>,
+    pub default_provider: ProviderSelection,
 }
 
 #[derive(Debug, Error)]

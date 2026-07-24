@@ -1,6 +1,6 @@
 mod auth;
 
-use agents::AgentProvider;
+use agents::ProviderResolver;
 use async_stream::stream;
 use auth::{AuthError, SessionManager, session_cookie};
 use axum::{
@@ -58,9 +58,9 @@ pub trait Runtime: Send + Sync + 'static {
     ) -> Result<EventPage, StructuredError>;
 }
 
-impl<P> Runtime for LocalOrchestrator<P>
+impl<R> Runtime for LocalOrchestrator<R>
 where
-    P: AgentProvider + Send + Sync + 'static,
+    R: ProviderResolver + 'static,
 {
     fn dispatch(&self, command: LocalCommand) -> Result<LocalCommandResponse, StructuredError> {
         self.handle(command)

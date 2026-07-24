@@ -1,8 +1,11 @@
-use agents::{AgentProvider, ClaudeCodeProvider, MockProvider, ProposedFileChange, ProviderError};
+use agents::{
+    AgentProvider, ClaudeCodeProvider, FixedProviderResolver, MockProvider, ProposedFileChange,
+    ProviderError, ProviderResolver, ResolvedProvider,
+};
 use base64::{Engine as _, engine::general_purpose::STANDARD};
 use domain::{
-    ApprovalScope, ChangesetMutationKind, ChangesetMutationScope, ChangesetState, RelativePath,
-    RunState, WorktreeState, limits,
+    ApprovalScope, ChangesetMutationKind, ChangesetMutationScope, ChangesetState, ProviderKind,
+    ProviderSelection, RelativePath, RunState, WorktreeState, limits,
 };
 use execution::{
     CancellationToken, LinuxFilesystemConfinement, ProcessConfinement, ProcessResult, ProcessSpec,
@@ -24,7 +27,7 @@ use std::{
     fs,
     path::{Path, PathBuf},
     process::Command,
-    sync::{Arc, Barrier},
+    sync::{Arc, Barrier, Mutex},
     thread,
     time::{Duration, Instant},
 };
@@ -67,13 +70,58 @@ fn fixture_repository_named(root: &Path, name: &str) -> std::path::PathBuf {
     repository
 }
 
-fn build_runtime(root: &Path) -> LocalOrchestrator<MockProvider> {
+fn fixed<P: AgentProvider + 'static>(provider: P) -> FixedProviderResolver<P> {
+    FixedProviderResolver::mock(provider)
+}
+
+struct RecordingResolver {
+    default_selection: ProviderSelection,
+    available_kinds: Vec<ProviderKind>,
+    resolutions: Arc<Mutex<Vec<ProviderSelection>>>,
+}
+
+impl RecordingResolver {
+    fn new(
+        default_kind: ProviderKind,
+        available_kinds: Vec<ProviderKind>,
+        resolutions: Arc<Mutex<Vec<ProviderSelection>>>,
+    ) -> Self {
+        Self {
+            default_selection: ProviderSelection::new(default_kind, None).unwrap(),
+            available_kinds,
+            resolutions,
+        }
+    }
+}
+
+impl ProviderResolver for RecordingResolver {
+    fn default_selection(&self) -> &ProviderSelection {
+        &self.default_selection
+    }
+
+    fn available_kinds(&self) -> Vec<ProviderKind> {
+        self.available_kinds.clone()
+    }
+
+    fn resolve(&self, selection: &ProviderSelection) -> Result<ResolvedProvider, ProviderError> {
+        if !self.available_kinds.contains(&selection.kind()) {
+            return Err(ProviderError::ProviderUnavailable(selection.kind()));
+        }
+        self.resolutions.lock().unwrap().push(selection.clone());
+        Ok(ResolvedProvider {
+            selection: selection.clone(),
+            provider: Arc::new(MockProvider::deterministic()),
+        })
+    }
+}
+
+fn build_runtime(root: &Path) -> LocalOrchestrator<FixedProviderResolver<MockProvider>> {
     let store = SqliteStore::open(root.join("state.sqlite3")).unwrap();
     let git = GitService::new(vec![root.to_path_buf()], root.join("worktrees")).unwrap();
     LocalOrchestrator::new(
         store,
         git,
-        MockProvider::deterministic(),
+        fixed(MockProvider::deterministic()),
         Duration::from_secs(60),
     )
 }
@@ -91,7 +139,7 @@ fn review_service_is_explicitly_composed_and_uses_persisted_aggregates() {
     let runtime = LocalOrchestrator::new(
         store,
         git,
-        MockProvider::deterministic(),
+        fixed(MockProvider::deterministic()),
         Duration::from_secs(60),
     )
     .with_review_options(ReviewOptions::default(), "")
@@ -601,7 +649,7 @@ fn begin_run_is_durable_without_invoking_the_provider() {
             directory.path().join("worktrees"),
         )
         .unwrap(),
-        NeverInvokedProvider,
+        fixed(NeverInvokedProvider),
         Duration::from_secs(60),
     );
     let repository = runtime.register_repository(&repository_path).unwrap();
@@ -644,6 +692,149 @@ fn begin_run_is_durable_without_invoking_the_provider() {
 }
 
 #[test]
+fn persisted_provider_selection_survives_a_default_change() {
+    let directory = tempdir().unwrap();
+    let repository_path = fixture_repository(directory.path());
+    let database_path = directory.path().join("state.sqlite3");
+    let worktree_root = directory.path().join("worktrees");
+    let resolutions = Arc::new(Mutex::new(Vec::new()));
+    let selected = ProviderSelection::new(ProviderKind::Codex, None).unwrap();
+    let runtime = LocalOrchestrator::new(
+        SqliteStore::open(&database_path).unwrap(),
+        GitService::new(vec![directory.path().to_path_buf()], worktree_root.clone()).unwrap(),
+        RecordingResolver::new(
+            ProviderKind::Mock,
+            vec![ProviderKind::Mock, ProviderKind::Codex],
+            Arc::clone(&resolutions),
+        ),
+        Duration::from_secs(60),
+    );
+    let repository = runtime.register_repository(&repository_path).unwrap();
+    let changeset = runtime
+        .create_changeset(repository.id, &repository.base_sha, None)
+        .unwrap();
+    let begun = runtime
+        .begin_run_with_selection(changeset.id, Some(&selected))
+        .unwrap();
+    assert_eq!(
+        runtime
+            .snapshot(begun.run_id)
+            .unwrap()
+            .run
+            .provider_selection(),
+        Some(&selected)
+    );
+    resolutions.lock().unwrap().clear();
+    drop(runtime);
+
+    let restarted = LocalOrchestrator::new(
+        SqliteStore::open(&database_path).unwrap(),
+        GitService::new(vec![directory.path().to_path_buf()], worktree_root).unwrap(),
+        RecordingResolver::new(
+            ProviderKind::Mock,
+            vec![ProviderKind::Mock, ProviderKind::Codex],
+            Arc::clone(&resolutions),
+        ),
+        Duration::from_secs(60),
+    );
+
+    restarted.drive_run_to_approval(begun.run_id).unwrap();
+
+    assert_eq!(resolutions.lock().unwrap().as_slice(), &[selected]);
+}
+
+#[test]
+fn unavailable_persisted_provider_never_falls_back_to_default() {
+    let directory = tempdir().unwrap();
+    let repository_path = fixture_repository(directory.path());
+    let database_path = directory.path().join("state.sqlite3");
+    let worktree_root = directory.path().join("worktrees");
+    let resolutions = Arc::new(Mutex::new(Vec::new()));
+    let selected = ProviderSelection::new(ProviderKind::Codex, None).unwrap();
+    let runtime = LocalOrchestrator::new(
+        SqliteStore::open(&database_path).unwrap(),
+        GitService::new(vec![directory.path().to_path_buf()], worktree_root.clone()).unwrap(),
+        RecordingResolver::new(
+            ProviderKind::Mock,
+            vec![ProviderKind::Mock, ProviderKind::Codex],
+            Arc::clone(&resolutions),
+        ),
+        Duration::from_secs(60),
+    );
+    let repository = runtime.register_repository(&repository_path).unwrap();
+    let changeset = runtime
+        .create_changeset(repository.id, &repository.base_sha, None)
+        .unwrap();
+    let begun = runtime
+        .begin_run_with_selection(changeset.id, Some(&selected))
+        .unwrap();
+    resolutions.lock().unwrap().clear();
+    drop(runtime);
+
+    let restarted = LocalOrchestrator::new(
+        SqliteStore::open(&database_path).unwrap(),
+        GitService::new(vec![directory.path().to_path_buf()], worktree_root).unwrap(),
+        RecordingResolver::new(
+            ProviderKind::Mock,
+            vec![ProviderKind::Mock],
+            Arc::clone(&resolutions),
+        ),
+        Duration::from_secs(60),
+    );
+
+    let error = restarted.drive_run_to_approval(begun.run_id).unwrap_err();
+
+    assert!(matches!(
+        error,
+        OrchestrationError::Provider(ProviderError::ProviderUnavailable(ProviderKind::Codex))
+    ));
+    assert!(resolutions.lock().unwrap().is_empty());
+}
+
+#[test]
+fn nonterminal_legacy_run_without_provider_selection_fails_closed() {
+    let directory = tempdir().unwrap();
+    let repository_path = fixture_repository(directory.path());
+    let database_path = directory.path().join("state.sqlite3");
+    let store = SqliteStore::open(&database_path).unwrap();
+    let runtime = LocalOrchestrator::new(
+        store.clone(),
+        GitService::new(
+            vec![directory.path().to_path_buf()],
+            directory.path().join("worktrees"),
+        )
+        .unwrap(),
+        fixed(MockProvider::deterministic()),
+        Duration::from_secs(60),
+    );
+    let repository = runtime.register_repository(&repository_path).unwrap();
+    let changeset = runtime
+        .create_changeset(repository.id, &repository.base_sha, None)
+        .unwrap();
+    let begun = runtime.begin_run(changeset.id).unwrap();
+    let run = store.run(begun.run_id).unwrap().unwrap();
+    let mut persisted = serde_json::to_value(run).unwrap();
+    persisted["provider_selection"] = serde_json::Value::Null;
+    rusqlite::Connection::open(&database_path)
+        .unwrap()
+        .execute(
+            "UPDATE runs SET body = ?1 WHERE id = ?2",
+            rusqlite::params![
+                serde_json::to_string(&persisted).unwrap(),
+                begun.run_id.to_string()
+            ],
+        )
+        .unwrap();
+
+    let error = runtime.drive_run_to_approval(begun.run_id).unwrap_err();
+
+    assert!(matches!(
+        error,
+        OrchestrationError::MissingRunProviderSelection
+    ));
+}
+
+#[test]
 fn queued_run_renews_its_mutation_lease_before_provider_drive() {
     let directory = tempdir().unwrap();
     let repository_path = fixture_repository(directory.path());
@@ -655,7 +846,7 @@ fn queued_run_renews_its_mutation_lease_before_provider_drive() {
             directory.path().join("worktrees"),
         )
         .unwrap(),
-        MockProvider::deterministic(),
+        fixed(MockProvider::deterministic()),
         Duration::from_secs(60),
         Duration::from_millis(5),
         ProcessSupervisor::new(),
@@ -731,7 +922,7 @@ fn concurrent_drive_attempts_do_not_compensate_the_winner() {
             directory.path().join("worktrees"),
         )
         .unwrap(),
-        MockProvider::deterministic(),
+        fixed(MockProvider::deterministic()),
         Duration::from_secs(60),
     ));
     let runtime_two = Arc::new(LocalOrchestrator::new(
@@ -741,7 +932,7 @@ fn concurrent_drive_attempts_do_not_compensate_the_winner() {
             directory.path().join("worktrees"),
         )
         .unwrap(),
-        MockProvider::deterministic(),
+        fixed(MockProvider::deterministic()),
         Duration::from_secs(60),
     ));
     let repository = runtime_one.register_repository(&repository_path).unwrap();
@@ -819,7 +1010,7 @@ fn interrupting_a_begun_run_prevents_provider_execution_and_cleans_the_worktree(
             directory.path().join("worktrees"),
         )
         .unwrap(),
-        NeverInvokedProvider,
+        fixed(NeverInvokedProvider),
         Duration::from_secs(60),
     );
     let repository = runtime.register_repository(&repository_path).unwrap();
@@ -860,7 +1051,7 @@ fn interrupted_pre_drive_cleanup_can_be_retried() {
             directory.path().join("worktrees"),
         )
         .unwrap(),
-        NeverInvokedProvider,
+        fixed(NeverInvokedProvider),
         Duration::from_secs(60),
     );
     let repository = runtime.register_repository(&repository_path).unwrap();
@@ -912,10 +1103,10 @@ fn interrupted_provider_completion_cannot_persist_a_proposal_or_approval() {
             directory.path().join("worktrees"),
         )
         .unwrap(),
-        BlockingProposalProvider {
+        fixed(BlockingProposalProvider {
             entered: Arc::clone(&entered),
             release: Arc::clone(&release),
-        },
+        }),
         Duration::from_secs(60),
     ));
     let repository = runtime.register_repository(&repository_path).unwrap();
@@ -969,10 +1160,10 @@ fn interruption_deletes_a_proposal_persisted_before_approval() {
             directory.path().join("worktrees"),
         )
         .unwrap(),
-        BlockingEventsProvider {
+        fixed(BlockingEventsProvider {
             entered: Arc::clone(&entered),
             release: Arc::clone(&release),
-        },
+        }),
         Duration::from_secs(60),
     ));
     let repository = runtime.register_repository(&repository_path).unwrap();
@@ -1144,6 +1335,7 @@ fn command_boundary_completes_and_recovers_a_digest_approved_run() {
     let begun = match runtime
         .handle(LocalCommand::StartRun {
             changeset_id: changeset.id,
+            provider_selection: None,
         })
         .unwrap()
     {
@@ -1639,7 +1831,7 @@ fn approval_resume_uses_the_persisted_provider_change() {
             directory.path().join("worktrees"),
         )
         .unwrap(),
-        NoProposalProvider,
+        fixed(NoProposalProvider),
         Duration::from_secs(60),
     );
     let completed = restarted
@@ -1661,7 +1853,7 @@ fn provider_contract_failure_recovers_changeset_and_cleans_worktree() {
             directory.path().join("worktrees"),
         )
         .unwrap(),
-        MissingProposalEventProvider,
+        fixed(MissingProposalEventProvider),
         Duration::from_secs(60),
     );
     let repository = runtime.register_repository(&repository_path).unwrap();
@@ -1711,7 +1903,7 @@ fn oversized_provider_change_is_rejected_and_compensated() {
             directory.path().join("worktrees"),
         )
         .unwrap(),
-        OversizedProposalProvider,
+        fixed(OversizedProposalProvider),
         Duration::from_secs(60),
     );
     let repository = runtime.register_repository(&repository_path).unwrap();
@@ -1773,7 +1965,7 @@ fn interrupt_terminates_supervised_process_tree_and_compensates_run() {
             directory.path().join("worktrees"),
         )
         .unwrap(),
-        LongRunningProcessProvider,
+        fixed(LongRunningProcessProvider),
         Duration::from_secs(60),
         Duration::from_secs(120),
         execution::ProcessSupervisor::new(),
@@ -1871,7 +2063,7 @@ fn successful_provider_process_holds_lease_for_exact_approval_then_releases_it()
             directory.path().join("worktrees"),
         )
         .unwrap(),
-        ShortProcessProvider,
+        fixed(ShortProcessProvider),
         Duration::from_secs(60),
         Duration::from_secs(120),
         execution::ProcessSupervisor::new(),
@@ -1966,7 +2158,7 @@ fn provider_artifacts_redact_credentials_and_supervision_identity() {
             directory.path().join("worktrees"),
         )
         .unwrap(),
-        SensitiveOutputProvider,
+        fixed(SensitiveOutputProvider),
         Duration::from_secs(60),
         Duration::from_secs(120),
         execution::ProcessSupervisor::new(),
@@ -2166,7 +2358,7 @@ fn provider_artifacts_survive_process_and_parser_failures() {
                 directory.path().join("worktrees"),
             )
             .unwrap(),
-            ArtifactFailureProvider { mode },
+            fixed(ArtifactFailureProvider { mode }),
             Duration::from_secs(60),
             Duration::from_secs(120),
             execution::ProcessSupervisor::new(),
@@ -2851,7 +3043,7 @@ fn required_provider_confinement_cannot_be_downgraded_or_rebound() {
                 directory.path().join("worktrees"),
             )
             .unwrap(),
-            provider,
+            fixed(provider),
             Duration::from_secs(60),
         );
         let repository = runtime.register_repository(&repository_path).unwrap();
@@ -2910,7 +3102,7 @@ printf '%s' '{"is_error":false,"structured_output":{"content":"generated read-on
             directory.path().join("worktrees"),
         )
         .unwrap(),
-        provider,
+        fixed(provider),
         Duration::from_secs(60),
     );
     let repository = runtime.register_repository(&repository_path).unwrap();

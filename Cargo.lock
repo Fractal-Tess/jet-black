@@ -643,6 +643,8 @@ dependencies = [
  "policy",
  "protocol",
  "review",
+ "rusqlite",
+ "serde_json",
  "tempfile",
  "thiserror",
  "uuid",
@@ -1009,6 +1011,7 @@ version = "0.1.0"
 dependencies = [
  "agents",
  "config",
+ "domain",
  "git",
  "orchestration",
  "persistence",

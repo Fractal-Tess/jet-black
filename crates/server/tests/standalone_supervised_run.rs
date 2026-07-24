@@ -1,6 +1,8 @@
 #![cfg(target_os = "linux")]
 
-use agents::{AgentProvider, MockProvider, ProposedFileChange, ProviderError};
+use agents::{
+    AgentProvider, FixedProviderResolver, MockProvider, ProposedFileChange, ProviderError,
+};
 use axum::{
     Router,
     body::{Body, to_bytes},
@@ -166,7 +168,10 @@ fn runtime_read_execute_paths() -> Vec<PathBuf> {
 fn compose_runtime(
     root: &Path,
     database_path: &Path,
-) -> (Arc<LocalOrchestrator<StandaloneGateProvider>>, SqliteStore) {
+) -> (
+    Arc<LocalOrchestrator<FixedProviderResolver<StandaloneGateProvider>>>,
+    SqliteStore,
+) {
     let state_directory = root.join("provider-state");
     fs::create_dir_all(&state_directory).unwrap();
     let store = SqliteStore::open(database_path).unwrap();
@@ -180,11 +185,11 @@ fn compose_runtime(
     let runtime = LocalOrchestrator::new(
         store.clone(),
         git,
-        StandaloneGateProvider {
+        FixedProviderResolver::mock(StandaloneGateProvider {
             state_directory,
             outside_read_path: root.join("outside-secret"),
             outside_write_path: root.join("outside-write"),
-        },
+        }),
         Duration::from_secs(60),
     )
     .with_approved_repositories([root.join("repository")])
@@ -204,6 +209,7 @@ fn test_server(runtime: Arc<dyn Runtime>) -> StandaloneServer {
             protocol_version: protocol::PROTOCOL_VERSION.to_owned(),
             enabled_features: vec!["local_execution".to_owned()],
             provider_availability: vec![ProviderKind::Mock],
+            default_provider: domain::ProviderSelection::new(ProviderKind::Mock, None).unwrap(),
         },
         runtime,
     )
@@ -409,6 +415,7 @@ async fn standalone_supervised_run_survives_restart_and_finalizes_exact_revision
         &csrf,
         LocalCommand::StartRun {
             changeset_id: changeset.id,
+            provider_selection: None,
         },
     )
     .await;

@@ -1,8 +1,9 @@
-use agents::AgentProvider;
+use agents::{AgentProvider, ProviderResolver};
 use base64::{Engine as _, engine::general_purpose::STANDARD};
 use domain::{
     Approval, ApprovalScope, Changeset, ChangesetMutationKind, ChangesetMutationScope,
-    ChangesetState, Checkpoint, Id, Repository, Run, RunState, TicketRef, Worktree, WorktreeState,
+    ChangesetState, Checkpoint, Id, ProviderSelection, Repository, Run, RunState, TicketRef,
+    Worktree, WorktreeState,
 };
 use execution::{
     CancellationToken, ProcessConfinement, ProcessResult, ProcessSpec, ProcessSupervisor,
@@ -44,10 +45,10 @@ struct ApprovedRepositoryEntry {
     identity: ApprovedRepositoryIdentity,
 }
 
-pub struct LocalOrchestrator<P> {
+pub struct LocalOrchestrator<R> {
     store: SqliteStore,
     git: GitService,
-    provider: P,
+    resolver: R,
     approved_repositories: Vec<ApprovedRepositoryEntry>,
     approval_ttl: Duration,
     supervisor: ProcessSupervisor,
@@ -57,12 +58,12 @@ pub struct LocalOrchestrator<P> {
     supervision_transition_gate: Mutex<()>,
 }
 
-impl<P: AgentProvider> LocalOrchestrator<P> {
-    pub fn new(store: SqliteStore, git: GitService, provider: P, approval_ttl: Duration) -> Self {
+impl<R: ProviderResolver> LocalOrchestrator<R> {
+    pub fn new(store: SqliteStore, git: GitService, resolver: R, approval_ttl: Duration) -> Self {
         Self::with_process_supervision(
             store,
             git,
-            provider,
+            resolver,
             approval_ttl,
             DEFAULT_MUTATION_LEASE_TTL,
             ProcessSupervisor::new(),
@@ -72,7 +73,7 @@ impl<P: AgentProvider> LocalOrchestrator<P> {
     pub fn with_process_supervision(
         store: SqliteStore,
         git: GitService,
-        provider: P,
+        resolver: R,
         approval_ttl: Duration,
         mutation_lease_ttl: Duration,
         supervisor: ProcessSupervisor,
@@ -80,7 +81,7 @@ impl<P: AgentProvider> LocalOrchestrator<P> {
         Self {
             store,
             git,
-            provider,
+            resolver,
             approved_repositories: Vec::new(),
             approval_ttl,
             supervisor,
@@ -204,9 +205,13 @@ impl<P: AgentProvider> LocalOrchestrator<P> {
                 &base_sha,
                 ticket,
             )?)),
-            LocalCommand::StartRun { changeset_id } => {
-                Ok(CommandOutcome::RunStarted(self.begin_run(changeset_id)?))
-            }
+            LocalCommand::StartRun {
+                changeset_id,
+                provider_selection,
+            } => Ok(CommandOutcome::RunStarted(self.begin_run_with_selection(
+                changeset_id,
+                provider_selection.as_ref(),
+            )?)),
             LocalCommand::InterruptRun { run_id } => {
                 Ok(CommandOutcome::RunInterrupted(self.interrupt_run(run_id)?))
             }
@@ -407,6 +412,16 @@ impl<P: AgentProvider> LocalOrchestrator<P> {
     }
 
     pub fn begin_run(&self, changeset_id: Id) -> Result<RunStarted, OrchestrationError> {
+        self.begin_run_with_selection(changeset_id, None)
+    }
+
+    pub fn begin_run_with_selection(
+        &self,
+        changeset_id: Id,
+        provider_selection: Option<&ProviderSelection>,
+    ) -> Result<RunStarted, OrchestrationError> {
+        let selection = provider_selection.unwrap_or_else(|| self.resolver.default_selection());
+        let selection = self.resolver.resolve(selection)?.selection;
         let mut changeset = self.changeset(changeset_id)?;
         let repository = self.repository(changeset.repository_id())?;
         let mut worktree = self.git.create_worktree(&repository, changeset.id)?;
@@ -415,7 +430,7 @@ impl<P: AgentProvider> LocalOrchestrator<P> {
             return Err(error.into());
         }
 
-        let mut run = Run::new(changeset.id);
+        let mut run = Run::new_with_provider(changeset.id, selection);
         run.start()?;
         if let Err(error) = self.store.save_run(&run) {
             self.cleanup_setup_worktree(&repository, &mut worktree)?;
@@ -464,6 +479,10 @@ impl<P: AgentProvider> LocalOrchestrator<P> {
         if run.state() != RunState::Starting {
             return Err(OrchestrationError::RunDriveUnavailable);
         }
+        let selection = run
+            .provider_selection()
+            .ok_or(OrchestrationError::MissingRunProviderSelection)?;
+        let resolved_provider = self.resolver.resolve(selection)?;
         let mut changeset = self.changeset(run.changeset_id())?;
         let repository = self.repository(changeset.repository_id())?;
         let mut worktree = self.worktree(changeset.id)?;
@@ -492,7 +511,13 @@ impl<P: AgentProvider> LocalOrchestrator<P> {
         }
         drop(drive_claim_guard);
 
-        match self.drive_claimed_run_to_approval(&repository, &changeset, &worktree, &mut run) {
+        match self.drive_claimed_run_to_approval(
+            resolved_provider.provider.as_ref(),
+            &repository,
+            &changeset,
+            &worktree,
+            &mut run,
+        ) {
             Ok(started) => Ok(started),
             Err(error) => {
                 let interrupted = matches!(
@@ -1449,17 +1474,19 @@ impl<P: AgentProvider> LocalOrchestrator<P> {
 
     fn drive_claimed_run_to_approval(
         &self,
+        provider: &dyn AgentProvider,
         repository: &Repository,
         changeset: &Changeset,
         worktree: &Worktree,
         run: &mut Run,
     ) -> Result<RunStarted, OrchestrationError> {
-        let process_result = self.execute_provider_process(run.id, repository, worktree)?;
+        let process_result =
+            self.execute_provider_process(provider, run.id, repository, worktree)?;
         if self.run(run.id)?.state() != RunState::Running {
             return Err(OrchestrationError::RunInterruptedDuringExecution);
         }
 
-        let proposed_change = self.provider.propose(process_result.as_ref())?;
+        let proposed_change = provider.propose(process_result.as_ref())?;
         if proposed_change.content.len() > domain::limits::MAX_APPROVED_FILE_BYTES {
             return Err(OrchestrationError::ResourceLimit("approved file content"));
         }
@@ -1489,10 +1516,7 @@ impl<P: AgentProvider> LocalOrchestrator<P> {
         let approval_digest = approval.digest().to_owned();
         let mut proposal_persisted = false;
 
-        for event in self
-            .provider
-            .normalized_events(&proposed_change, &approval_digest)
-        {
+        for event in provider.normalized_events(&proposed_change, &approval_digest) {
             match &event {
                 SemanticEventKind::ActionProposal { proposal, digest }
                     if proposal == &proposed_change.proposal && digest == &approval_digest =>
@@ -1534,6 +1558,7 @@ impl<P: AgentProvider> LocalOrchestrator<P> {
 
     fn execute_provider_process(
         &self,
+        provider: &dyn AgentProvider,
         run_id: Id,
         repository: &Repository,
         worktree: &Worktree,
@@ -1545,11 +1570,11 @@ impl<P: AgentProvider> LocalOrchestrator<P> {
         if self.run(run_id)?.state() != RunState::Running {
             return Err(OrchestrationError::RunInterruptedDuringExecution);
         }
-        let Some(mut spec) = self.provider.process_spec(&worktree.path) else {
+        let Some(mut spec) = provider.process_spec(&worktree.path) else {
             drop(preparation_guard);
             return Ok(None);
         };
-        self.bind_process_to_worktree(&mut spec, repository, worktree)?;
+        self.bind_process_to_worktree(provider, &mut spec, repository, worktree)?;
         let mut sensitive_values = spec
             .sensitive_environment_keys
             .iter()
@@ -1675,6 +1700,7 @@ impl<P: AgentProvider> LocalOrchestrator<P> {
 
     fn bind_process_to_worktree(
         &self,
+        provider: &dyn AgentProvider,
         spec: &mut ProcessSpec,
         repository: &Repository,
         worktree: &Worktree,
@@ -1687,7 +1713,7 @@ impl<P: AgentProvider> LocalOrchestrator<P> {
             None => spec.current_dir = Some(worktree.path.clone()),
         }
 
-        if !self.provider.requires_process_confinement() {
+        if !provider.requires_process_confinement() {
             return Ok(());
         }
         let ProcessConfinement::LinuxFilesystem(confinement) = &mut spec.confinement else {
@@ -2124,6 +2150,8 @@ pub enum OrchestrationError {
     ProviderProcessOutputTruncated,
     #[error("provider response was invalid: {0}")]
     Provider(#[from] agents::ProviderError),
+    #[error("nonterminal run has no persisted provider selection")]
+    MissingRunProviderSelection,
     #[error("provider process current directory does not match the registered worktree")]
     ProviderProcessOutsideWorktree,
     #[error("provider requires operating-system process confinement")]

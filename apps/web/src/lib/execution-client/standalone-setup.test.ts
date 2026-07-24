@@ -9,6 +9,7 @@ import {
 import { createHttpExecutionClient } from "./http";
 import {
   listApprovedRepositories,
+  loadStandaloneBootstrap,
   startStandaloneRun,
 } from "./standalone-setup";
 
@@ -22,6 +23,11 @@ const APPROVED_REPOSITORY = {
   id: "approved-repository-id",
   display_name: "Approved repository",
 };
+
+const PROVIDER_SELECTION = {
+  kind: "codex",
+  model: "gpt-5.3-codex",
+} as const;
 
 const responseData = (command: LocalCommand): unknown => {
   switch (command.type) {
@@ -91,7 +97,11 @@ describe("standalone run setup", () => {
       },
     });
 
-    const setup = await startStandaloneRun(client, APPROVED_REPOSITORY);
+    const setup = await startStandaloneRun(
+      client,
+      APPROVED_REPOSITORY,
+      PROVIDER_SELECTION
+    );
 
     expect(commands).toEqual([
       {
@@ -108,11 +118,32 @@ describe("standalone run setup", () => {
       },
       {
         type: "start_run",
-        data: { changeset_id: "changeset-id" },
+        data: {
+          changeset_id: "changeset-id",
+          provider_selection: PROVIDER_SELECTION,
+        },
       },
     ]);
     expect(setup.run.run_id).toBe("run-id");
     expect(setup.changeset.repository_id).toBe(setup.repository.id);
+  });
+
+  test("loads provider availability and the configured default", async () => {
+    const bootstrap = await loadStandaloneBootstrap(() =>
+      Promise.resolve(
+        Response.json({
+          profile: "standalone",
+          version: "test",
+          protocol_version: PROTOCOL_VERSION,
+          enabled_features: ["local_execution"],
+          provider_availability: ["mock", "codex"],
+          default_provider: PROVIDER_SELECTION,
+        })
+      )
+    );
+
+    expect(bootstrap.provider_availability).toEqual(["mock", "codex"]);
+    expect(bootstrap.default_provider).toEqual(PROVIDER_SELECTION);
   });
 
   test("loads approved repositories through the typed command", async () => {
@@ -147,10 +178,14 @@ describe("standalone run setup", () => {
     });
 
     try {
-      await startStandaloneRun(client, {
-        id: "   ",
-        display_name: "Invalid repository",
-      });
+      await startStandaloneRun(
+        client,
+        {
+          id: "   ",
+          display_name: "Invalid repository",
+        },
+        PROVIDER_SELECTION
+      );
       throw new Error("Expected an empty repository selection to be rejected.");
     } catch (error) {
       expect(error).toEqual(

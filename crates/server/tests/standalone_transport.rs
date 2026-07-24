@@ -502,7 +502,7 @@ impl Drop for DriveReleaseGuard {
 impl Runtime for SchedulingRuntime {
     fn dispatch(&self, command: LocalCommand) -> Result<LocalCommandResponse, StructuredError> {
         match command {
-            LocalCommand::StartRun { changeset_id } => {
+            LocalCommand::StartRun { changeset_id, .. } => {
                 let mut state = self.state.lock().unwrap();
                 state.start_dispatch_entered = true;
                 self.changed.notify_all();
@@ -584,6 +584,7 @@ fn test_server(runtime: Arc<dyn Runtime>) -> StandaloneServer {
             protocol_version: protocol::PROTOCOL_VERSION.to_owned(),
             enabled_features: vec!["local_execution".to_owned()],
             provider_availability: vec![ProviderKind::Mock],
+            default_provider: domain::ProviderSelection::new(ProviderKind::Mock, None).unwrap(),
         },
         runtime,
     )
@@ -693,6 +694,7 @@ async fn binds_an_ephemeral_loopback_listener_before_server_creation() {
             protocol_version: protocol::PROTOCOL_VERSION.to_owned(),
             enabled_features: vec!["local_execution".to_owned()],
             provider_availability: vec![ProviderKind::Mock],
+            default_provider: domain::ProviderSelection::new(ProviderKind::Mock, None).unwrap(),
         },
         Arc::new(FixtureRuntime::default()),
     );
@@ -818,7 +820,10 @@ async fn start_run_returns_before_the_provider_worker_finishes() {
             &router,
             &cookie,
             &csrf,
-            LocalCommand::StartRun { changeset_id },
+            LocalCommand::StartRun {
+                changeset_id,
+                provider_selection: None,
+            },
         ),
     )
     .await
@@ -861,6 +866,7 @@ async fn cancelled_start_request_still_schedules_the_durable_run() {
             &csrf,
             LocalCommand::StartRun {
                 changeset_id: Id::new_v4(),
+                provider_selection: None,
             },
         )
         .await
@@ -901,6 +907,7 @@ async fn provider_workers_are_bounded_without_blocking_interrupt_commands() {
                 &csrf,
                 LocalCommand::StartRun {
                     changeset_id: Id::new_v4(),
+                    provider_selection: None,
                 },
             ),
         )
@@ -927,6 +934,7 @@ async fn provider_workers_are_bounded_without_blocking_interrupt_commands() {
                 &csrf,
                 LocalCommand::StartRun {
                     changeset_id: Id::new_v4(),
+                    provider_selection: None,
                 },
             ),
         )

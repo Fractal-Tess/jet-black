@@ -1,5 +1,9 @@
 <script lang="ts">
-import type { ApprovedRepositorySummary } from "@workspace/shared/protocol";
+import type {
+  ApprovedRepositorySummary,
+  ProviderKind,
+  ProviderSelection,
+} from "@workspace/shared/protocol";
 import { Badge } from "@workspace/ui/components/badge";
 import { Button } from "@workspace/ui/components/button";
 import { Card } from "@workspace/ui/components/card";
@@ -9,6 +13,7 @@ import { createBrowserCommandSession } from "../lib/execution-client/browser-com
 import type { StandaloneRunSetup } from "../lib/execution-client/standalone-setup";
 import {
   listApprovedRepositories,
+  loadStandaloneBootstrap,
   startStandaloneRun,
 } from "../lib/execution-client/standalone-setup";
 import type { ExecutionClient } from "../lib/execution-client/types";
@@ -22,10 +27,20 @@ const connectionLabels: Record<ConnectionStatus, string> = {
   failed: "Connection failed",
 };
 
+const providerLabels: Record<ProviderKind, string> = {
+  mock: "Deterministic mock",
+  "claude-code": "Claude Code",
+  codex: "Codex",
+  opencode: "OpenCode",
+};
+
 let client = $state<ExecutionClient | null>(null);
 let connectionStatus = $state<ConnectionStatus>("connecting");
 let approvedRepositories = $state<ApprovedRepositorySummary[]>([]);
+let providerAvailability = $state<ProviderKind[]>([]);
 let selectedRepositoryId = $state("");
+let selectedProviderKind = $state<ProviderKind>("mock");
+let selectedProviderModel = $state("");
 let setup = $state<StandaloneRunSetup | null>(null);
 let setupAttempted = $state(false);
 let busy = $state(false);
@@ -36,9 +51,15 @@ const errorText = (error: unknown): string =>
 
 const connect = async (): Promise<void> => {
   try {
-    const connectedClient = await createBrowserCommandSession();
+    const [connectedClient, bootstrap] = await Promise.all([
+      createBrowserCommandSession(),
+      loadStandaloneBootstrap(),
+    ]);
     approvedRepositories = await listApprovedRepositories(connectedClient);
+    providerAvailability = bootstrap.provider_availability;
     selectedRepositoryId = approvedRepositories[0]?.id ?? "";
+    selectedProviderKind = bootstrap.default_provider.kind;
+    selectedProviderModel = bootstrap.default_provider.model ?? "";
     client = connectedClient;
     connectionStatus = "ready";
   } catch (error) {
@@ -61,11 +82,24 @@ const startRun = async (event: SubmitEvent): Promise<void> => {
     return;
   }
 
+  const providerSelection: ProviderSelection = {
+    kind: selectedProviderKind,
+    model:
+      selectedProviderKind === "mock" ||
+      selectedProviderModel.trim().length === 0
+        ? null
+        : selectedProviderModel.trim(),
+  };
+
   setupAttempted = true;
   busy = true;
   errorMessage = null;
   try {
-    setup = await startStandaloneRun(client, approvedRepository);
+    setup = await startStandaloneRun(
+      client,
+      approvedRepository,
+      providerSelection
+    );
   } catch (error) {
     errorMessage = errorText(error);
   } finally {
@@ -134,6 +168,35 @@ onMount(connect);
               {/if}
             </div>
 
+            <div class="space-y-2">
+              <Label for="execution-provider">Provider</Label>
+              <select
+                id="execution-provider"
+                name="executionProvider"
+                bind:value={selectedProviderKind}
+                class="flex h-9 w-full rounded-md border border-input bg-transparent px-3 py-1 text-sm shadow-xs outline-none transition-colors focus-visible:border-ring focus-visible:ring-[3px] focus-visible:ring-ring/50 disabled:cursor-not-allowed disabled:opacity-50"
+                disabled={connectionStatus !== "ready" || setupAttempted || providerAvailability.length === 0}
+              >
+                {#each providerAvailability as provider (provider)}
+                  <option value={provider}>{providerLabels[provider]}</option>
+                {/each}
+              </select>
+            </div>
+
+            {#if selectedProviderKind !== "mock"}
+              <div class="space-y-2">
+                <Label for="provider-model">Model</Label>
+                <input
+                  id="provider-model"
+                  name="providerModel"
+                  bind:value={selectedProviderModel}
+                  class="flex h-9 w-full rounded-md border border-input bg-transparent px-3 py-1 text-sm shadow-xs outline-none transition-colors placeholder:text-muted-foreground focus-visible:border-ring focus-visible:ring-[3px] focus-visible:ring-ring/50 disabled:cursor-not-allowed disabled:opacity-50"
+                  placeholder="Use provider default"
+                  disabled={connectionStatus !== "ready" || setupAttempted}
+                />
+              </div>
+            {/if}
+
             {#if errorMessage !== null}
               <div id="setup-error" class="space-y-1 text-sm" role="alert">
                 <p class="text-destructive">{errorMessage}</p>
@@ -147,13 +210,13 @@ onMount(connect);
 
             <Button
               type="submit"
-              disabled={connectionStatus !== "ready" || setupAttempted || selectedRepositoryId.length === 0}
+              disabled={connectionStatus !== "ready" || setupAttempted || selectedRepositoryId.length === 0 || providerAvailability.length === 0}
             >
               {busy ? "Starting run…" : setupAttempted ? "Setup stopped" : "Start local run"}
             </Button>
           </form>
         {:else}
-          <dl class="mt-8 grid gap-4 rounded-lg border border-border bg-muted/30 p-4 text-sm sm:grid-cols-3">
+          <dl class="mt-8 grid gap-4 rounded-lg border border-border bg-muted/30 p-4 text-sm sm:grid-cols-2 lg:grid-cols-4">
             <div>
               <dt class="text-muted-foreground">Repository</dt>
               <dd class="mt-1">{setup.approvedRepository.display_name}</dd>
@@ -161,6 +224,17 @@ onMount(connect);
             <div>
               <dt class="text-muted-foreground">Changeset</dt>
               <dd class="mt-1 break-all font-mono">{setup.changeset.id}</dd>
+            </div>
+            <div>
+              <dt class="text-muted-foreground">Provider</dt>
+              <dd class="mt-1">
+                {providerLabels[setup.providerSelection.kind]}
+                {#if setup.providerSelection.model !== null}
+                  <span class="block break-all font-mono text-xs text-muted-foreground">
+                    {setup.providerSelection.model}
+                  </span>
+                {/if}
+              </dd>
             </div>
             <div>
               <dt class="text-muted-foreground">Run</dt>

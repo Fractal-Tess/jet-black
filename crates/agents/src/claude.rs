@@ -1,22 +1,57 @@
 use crate::{AgentProvider, ProposedFileChange, ProviderError, common};
+use domain::ProviderKind;
 use execution::{ProcessResult, ProcessSpec};
 use protocol::SemanticEventKind;
 use serde::Deserialize;
-use std::{
-    collections::HashMap,
-    path::{Path, PathBuf},
-    time::Duration,
-};
+use std::{path::Path, sync::Arc, time::Duration};
 
-const PROVIDER_NAME: &str = "claude-code";
 const TARGET_PATH: &str = "jet-black-claude-approved.txt";
 
 pub struct ClaudeCodeProvider {
-    executable: PathBuf,
-    environment: HashMap<String, String>,
-    confinement: common::ProviderConfinement,
+    discovery: Arc<common::ProviderDiscovery>,
     model: Option<String>,
     timeout: Duration,
+}
+
+pub struct ClaudeCodeProviderFactory {
+    discovery: Arc<common::ProviderDiscovery>,
+    timeout: Duration,
+}
+
+impl ClaudeCodeProviderFactory {
+    pub fn discover(
+        search_path: &str,
+        api_key: Option<String>,
+        state_dir: &Path,
+        timeout: Duration,
+    ) -> Result<Self, ProviderError> {
+        if timeout.is_zero() {
+            return Err(ProviderError::InvalidConfiguration);
+        }
+        let api_key = api_key
+            .filter(|value| !value.is_empty())
+            .ok_or(ProviderError::MissingCredential)?;
+        let mut discovery = common::discover_provider(search_path, "claude", state_dir)?;
+        discovery
+            .environment
+            .insert("ANTHROPIC_API_KEY".to_owned(), api_key);
+        discovery.environment.insert(
+            "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC".to_owned(),
+            "1".to_owned(),
+        );
+        Ok(Self {
+            discovery: Arc::new(discovery),
+            timeout,
+        })
+    }
+
+    pub(crate) fn resolve(&self, model: Option<&str>) -> ClaudeCodeProvider {
+        ClaudeCodeProvider {
+            discovery: Arc::clone(&self.discovery),
+            model: model.map(str::to_owned),
+            timeout: self.timeout,
+        }
+    }
 }
 
 impl ClaudeCodeProvider {
@@ -27,35 +62,17 @@ impl ClaudeCodeProvider {
         model: Option<String>,
         timeout: Duration,
     ) -> Result<Self, ProviderError> {
-        if timeout.is_zero() {
-            return Err(ProviderError::InvalidConfiguration);
-        }
-        let api_key = api_key
-            .filter(|value| !value.is_empty())
-            .ok_or(ProviderError::MissingCredential)?;
-        let common::ProviderDiscovery {
-            executable,
-            mut environment,
-            confinement,
-        } = common::discover_provider(search_path, "claude", state_dir)?;
-        environment.insert("ANTHROPIC_API_KEY".to_owned(), api_key);
-        environment.insert(
-            "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC".to_owned(),
-            "1".to_owned(),
-        );
-        Ok(Self {
-            executable,
-            environment,
-            confinement,
-            model: model.filter(|value| !value.is_empty()),
-            timeout,
-        })
+        let model = model.filter(|value| !value.is_empty());
+        Ok(
+            ClaudeCodeProviderFactory::discover(search_path, api_key, state_dir, timeout)?
+                .resolve(model.as_deref()),
+        )
     }
 }
 
 impl AgentProvider for ClaudeCodeProvider {
     fn name(&self) -> &'static str {
-        PROVIDER_NAME
+        ProviderKind::ClaudeCode.name()
     }
 
     fn requires_process_confinement(&self) -> bool {
@@ -86,14 +103,14 @@ impl AgentProvider for ClaudeCodeProvider {
         }
         arguments.push(common::PROMPT.to_owned());
         Some(ProcessSpec {
-            program: self.executable.to_string_lossy().into_owned(),
+            program: self.discovery.executable.to_string_lossy().into_owned(),
             arguments,
-            environment: self.environment.clone(),
+            environment: self.discovery.environment.clone(),
             sensitive_environment_keys: vec!["ANTHROPIC_API_KEY".to_owned()],
             current_dir: Some(worktree_path.to_path_buf()),
             timeout: self.timeout,
             output_limit: common::PROVIDER_OUTPUT_LIMIT_BYTES,
-            confinement: self.confinement.for_worktree(worktree_path),
+            confinement: self.discovery.confinement.for_worktree(worktree_path),
         })
     }
 
@@ -141,7 +158,7 @@ struct ClaudeOutput {
 mod tests {
     use super::*;
     use execution::{CancellationToken, TerminalOutcome};
-    use std::{collections::HashSet, fs};
+    use std::{collections::HashSet, fs, path::PathBuf};
     use tempfile::tempdir;
 
     fn process_result(stdout: Vec<u8>) -> ProcessResult {

@@ -3,6 +3,7 @@ import type {
   Changeset,
   MutationPreview,
   MutationResult,
+  ProviderSelection,
   ReviewCheckKind,
   ReviewCheckStatus,
   ReviewReport,
@@ -111,6 +112,15 @@ let displayedChangeset = $derived(result?.changeset ?? changeset);
 
 const errorText = (error: unknown): string =>
   error instanceof Error ? error.message : "Changeset review failed.";
+
+const providerText = (selection: ProviderSelection | null): string => {
+  if (selection === null) {
+    return "legacy provider";
+  }
+  return selection.model === null
+    ? selection.kind
+    : `${selection.kind} · ${selection.model}`;
+};
 
 const loadReview = async (): Promise<void> => {
   try {
@@ -404,7 +414,7 @@ onMount(() => {
                   <Badge variant="outline">{run.state}</Badge>
                 </div>
                 <p class="mt-2 text-xs text-muted-foreground">
-                  {run.kind.replaceAll("_", " ")} · version {run.version}
+                  {run.kind.replaceAll("_", " ")} · {providerText(run.provider_selection)} · version {run.version}
                 </p>
               </li>
             {/each}

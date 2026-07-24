@@ -1,14 +1,10 @@
 use crate::{AgentProvider, ProposedFileChange, ProviderError, common};
+use domain::ProviderKind;
 use execution::{ProcessResult, ProcessSpec};
 use protocol::SemanticEventKind;
 use serde::Deserialize;
-use std::{
-    collections::HashMap,
-    path::{Path, PathBuf},
-    time::Duration,
-};
+use std::{collections::HashMap, path::Path, sync::Arc, time::Duration};
 
-const PROVIDER_NAME: &str = "opencode";
 const TARGET_PATH: &str = "jet-black-opencode-approved.txt";
 const CONFIG: &str = r#"{"$schema":"https://opencode.ai/config.json","autoupdate":false,"share":"disabled","permission":{"edit":"deny","bash":"deny","webfetch":"deny","external_directory":"deny","doom_loop":"deny"}}"#;
 const PROVIDER_CREDENTIALS: &[(&str, &[&str])] = &[
@@ -23,12 +19,63 @@ const PROVIDER_CREDENTIALS: &[(&str, &[&str])] = &[
 ];
 
 pub struct OpenCodeProvider {
-    executable: PathBuf,
-    environment: HashMap<String, String>,
-    confinement: common::ProviderConfinement,
+    discovery: Arc<common::ProviderDiscovery>,
     credential_name: String,
+    credential: String,
     model: Option<String>,
     timeout: Duration,
+}
+
+pub struct OpenCodeProviderFactory {
+    discovery: Arc<common::ProviderDiscovery>,
+    credentials: HashMap<&'static str, (String, String)>,
+    timeout: Duration,
+}
+
+impl OpenCodeProviderFactory {
+    pub fn discover(
+        search_path: &str,
+        credentials: &HashMap<String, String>,
+        state_dir: &Path,
+        timeout: Duration,
+    ) -> Result<Self, ProviderError> {
+        if timeout.is_zero() {
+            return Err(ProviderError::InvalidConfiguration);
+        }
+        let credentials = PROVIDER_CREDENTIALS
+            .iter()
+            .filter_map(|(provider, names)| {
+                credential_for_names(credentials, names).map(|credential| (*provider, credential))
+            })
+            .collect::<HashMap<_, _>>();
+        if credentials.is_empty() {
+            return Err(ProviderError::MissingCredential);
+        }
+        let mut discovery = common::discover_provider(search_path, "opencode", state_dir)?;
+        discovery
+            .environment
+            .insert("OPENCODE_CONFIG_CONTENT".to_owned(), CONFIG.to_owned());
+        Ok(Self {
+            discovery: Arc::new(discovery),
+            credentials,
+            timeout,
+        })
+    }
+
+    pub(crate) fn validate(&self, model: Option<&str>) -> Result<(), ProviderError> {
+        select_credential(&self.credentials, model).map(|_| ())
+    }
+
+    pub(crate) fn resolve(&self, model: Option<&str>) -> Result<OpenCodeProvider, ProviderError> {
+        let (credential_name, credential) = select_credential(&self.credentials, model)?.clone();
+        Ok(OpenCodeProvider {
+            discovery: Arc::clone(&self.discovery),
+            credential_name,
+            credential,
+            model: model.map(str::to_owned),
+            timeout: self.timeout,
+        })
+    }
 }
 
 impl OpenCodeProvider {
@@ -39,54 +86,32 @@ impl OpenCodeProvider {
         model: Option<String>,
         timeout: Duration,
     ) -> Result<Self, ProviderError> {
-        if timeout.is_zero() {
-            return Err(ProviderError::InvalidConfiguration);
-        }
         let model = model.filter(|value| !value.is_empty());
-        let (credential_name, credential) = select_credential(credentials, model.as_deref())?;
-        let common::ProviderDiscovery {
-            executable,
-            mut environment,
-            confinement,
-        } = common::discover_provider(search_path, "opencode", state_dir)?;
-        environment.insert(credential_name.clone(), credential);
-        environment.insert("OPENCODE_CONFIG_CONTENT".to_owned(), CONFIG.to_owned());
-        Ok(Self {
-            executable,
-            environment,
-            confinement,
-            credential_name,
-            model,
-            timeout,
-        })
+        OpenCodeProviderFactory::discover(search_path, credentials, state_dir, timeout)?
+            .resolve(model.as_deref())
     }
 }
 
-fn select_credential(
-    credentials: &HashMap<String, String>,
+fn select_credential<'a>(
+    credentials: &'a HashMap<&'static str, (String, String)>,
     model: Option<&str>,
-) -> Result<(String, String), ProviderError> {
+) -> Result<&'a (String, String), ProviderError> {
     if let Some(model) = model {
         let provider = model
             .split_once('/')
             .map(|(provider, _)| provider)
             .ok_or(ProviderError::InvalidConfiguration)?;
-        let (_, names) = PROVIDER_CREDENTIALS
-            .iter()
-            .find(|(candidate, _)| *candidate == provider)
-            .ok_or(ProviderError::InvalidConfiguration)?;
-        return credential_for_names(credentials, names).ok_or(ProviderError::MissingCredential);
+        return credentials
+            .get(provider)
+            .ok_or(ProviderError::MissingCredential);
     }
 
-    let available = PROVIDER_CREDENTIALS
-        .iter()
-        .filter_map(|(_, names)| credential_for_names(credentials, names))
-        .collect::<Vec<_>>();
-    match available.as_slice() {
-        [] => Err(ProviderError::MissingCredential),
-        [credential] => Ok(credential.clone()),
-        _ => Err(ProviderError::InvalidConfiguration),
+    let mut available = credentials.values();
+    let credential = available.next().ok_or(ProviderError::MissingCredential)?;
+    if available.next().is_some() {
+        return Err(ProviderError::InvalidConfiguration);
     }
+    Ok(credential)
 }
 
 fn credential_for_names(
@@ -103,7 +128,7 @@ fn credential_for_names(
 
 impl AgentProvider for OpenCodeProvider {
     fn name(&self) -> &'static str {
-        PROVIDER_NAME
+        ProviderKind::OpenCode.name()
     }
 
     fn requires_process_confinement(&self) -> bool {
@@ -123,15 +148,17 @@ impl AgentProvider for OpenCodeProvider {
             arguments.extend(["--model".to_owned(), model.clone()]);
         }
         arguments.push(common::PROMPT.to_owned());
+        let mut environment = self.discovery.environment.clone();
+        environment.insert(self.credential_name.clone(), self.credential.clone());
         Some(ProcessSpec {
-            program: self.executable.to_string_lossy().into_owned(),
+            program: self.discovery.executable.to_string_lossy().into_owned(),
             arguments,
-            environment: self.environment.clone(),
+            environment,
             sensitive_environment_keys: vec![self.credential_name.clone()],
             current_dir: Some(worktree_path.to_path_buf()),
             timeout: self.timeout,
             output_limit: common::PROVIDER_OUTPUT_LIMIT_BYTES,
-            confinement: self.confinement.for_worktree(worktree_path),
+            confinement: self.discovery.confinement.for_worktree(worktree_path),
         })
     }
 
@@ -278,23 +305,42 @@ mod tests {
             ("HOME".to_owned(), "/unsafe".to_owned()),
             ("OPENAI_API_KEY".to_owned(), "openai-key".to_owned()),
         ]);
-        let provider = OpenCodeProvider::discover(
+        let factory = OpenCodeProviderFactory::discover(
             &directory.path().to_string_lossy(),
             &credentials,
             &state_dir,
-            Some("openai/gpt-5.2-codex".to_owned()),
             Duration::from_secs(2),
         )
         .unwrap();
-        let spec = provider.process_spec(directory.path()).unwrap();
+        let openai_spec = factory
+            .resolve(Some("openai/gpt-5.2-codex"))
+            .unwrap()
+            .process_spec(directory.path())
+            .unwrap();
+        let anthropic_spec = factory
+            .resolve(Some("anthropic/claude-sonnet-4-6"))
+            .unwrap()
+            .process_spec(directory.path())
+            .unwrap();
 
         assert_eq!(
-            spec.environment.get("OPENAI_API_KEY").map(String::as_str),
+            openai_spec
+                .environment
+                .get("OPENAI_API_KEY")
+                .map(String::as_str),
             Some("openai-key")
         );
-        assert!(!spec.environment.contains_key("ANTHROPIC_API_KEY"));
+        assert!(!openai_spec.environment.contains_key("ANTHROPIC_API_KEY"));
         assert_eq!(
-            spec.environment.get("HOME"),
+            anthropic_spec
+                .environment
+                .get("ANTHROPIC_API_KEY")
+                .map(String::as_str),
+            Some("anthropic-key")
+        );
+        assert!(!anthropic_spec.environment.contains_key("OPENAI_API_KEY"));
+        assert_eq!(
+            openai_spec.environment.get("HOME"),
             Some(
                 &fs::canonicalize(state_dir)
                     .unwrap()

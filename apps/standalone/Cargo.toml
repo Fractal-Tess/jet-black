@@ -8,6 +8,7 @@ rust-version.workspace = true
 [dependencies]
 agents.workspace = true
 config.workspace = true
+domain.workspace = true
 git.workspace = true
 orchestration.workspace = true
 persistence.workspace = true

@@ -1,4 +1,5 @@
 <script lang="ts">
+import type { ProviderSelection } from "@workspace/shared/protocol";
 import { Badge } from "@workspace/ui/components/badge";
 import { Button } from "@workspace/ui/components/button";
 import { onMount } from "svelte";
@@ -34,6 +35,17 @@ const errorText = (error: unknown): string =>
 
 const formatTimestamp = (timestamp: number): string =>
   new Date(timestamp).toLocaleString();
+
+const providerText = (
+  selection: ProviderSelection | null | undefined
+): string => {
+  if (selection === null || selection === undefined) {
+    return "Legacy provider";
+  }
+  return selection.model === null
+    ? selection.kind
+    : `${selection.kind} · ${selection.model}`;
+};
 
 const eventText = (
   event: BrowserRunSessionState["events"]["events"][number]
@@ -129,6 +141,9 @@ onMount(() => {
       <h3 id="run-heading" class="mt-1 font-semibold">Execution timeline</h3>
     </div>
     <div class="flex items-center gap-2">
+      <Badge variant="outline">
+        {providerText(sessionState?.snapshot.run.provider_selection)}
+      </Badge>
       <Badge variant="outline">{sessionState?.events.runState ?? "connecting"}</Badge>
       <Badge variant="outline">{sessionState?.status ?? "connecting"}</Badge>
       {#if sessionState?.status === "connected" && !isTerminalRunState(sessionState.events.runState)}
