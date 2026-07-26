@@ -13,7 +13,7 @@
     "check:protocol": "bun run generate:protocol && git diff --exit-code -- packages/shared/src/protocol.generated.ts"
   },
   "devDependencies": {
-    "@biomejs/biome": "2.4.16",
+    "@biomejs/biome": "2.5.5",
     "@workspace/typescript-config": "workspace:*",
     "lefthook": "^2.1.9",
     "turbo": "^2.9.16",
